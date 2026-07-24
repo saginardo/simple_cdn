@@ -54,6 +54,7 @@ run_case() (
     grep -Fq -- '--no-build' "$log_file"
     grep -Fq 'compose -p cdn-platform -f' "$log_file"
     grep -Fq 'compose -p simple_cdn up -d --no-build control' "$log_file"
+    grep -Fq 'compose -p simple_cdn up -d --no-build --no-deps backup' "$log_file"
     for obsolete in \
       'ghcr.io/saginardo/simple_cdn:sha-old' \
       'ghcr.io/saginardo/simple_cdn@sha256:old-digest' \

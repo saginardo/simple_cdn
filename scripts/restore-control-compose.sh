@@ -476,9 +476,7 @@ until docker compose exec -T control curl --fail --silent --insecure https://127
   fi
   sleep 2 & wait $!
 done
-if ((backup_was_running)); then
-  docker compose --profile backup up -d backup
-fi
+docker compose --profile backup up -d backup
 
 cutover_complete=1
 services_stopped=0

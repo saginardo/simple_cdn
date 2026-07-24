@@ -132,14 +132,14 @@ prune_obsolete_control_images() {
 }
 
 cd "$root"
-if ! service_is_running "$active_project" control || ! service_is_running "$active_project" clickhouse; then
-  echo "control and clickhouse must both be running before an automated deployment" >&2
+if ! service_is_running "$active_project" control ||
+  ! service_is_running "$active_project" clickhouse ||
+  ! service_is_running "$active_project" backup; then
+  echo "control, clickhouse, and backup must all be running before an automated deployment" >&2
   exit 1
 fi
 control_renew_was_running=0
-backup_was_running=0
 if service_is_running "$active_project" control-cert-renew; then control_renew_was_running=1; fi
-if service_is_running "$active_project" backup; then backup_was_running=1; fi
 
 configured_clickhouse_database=$(sed -nE 's/^[[:space:]]*CLICKHOUSE_DATABASE[[:space:]]*=[[:space:]]*([^[:space:]#]+)[[:space:]]*$/\1/p' "$root/config/control.env" | tail -n 1)
 legacy_database_migration_expected=0
@@ -218,9 +218,7 @@ rollback_deployment() {
   if ((control_renew_was_running)); then
     docker compose -p "$active_project" up -d --no-build --no-deps control-cert-renew || return 1
   fi
-  if ((backup_was_running)); then
-    docker compose -p "$active_project" --profile backup up -d --no-build --no-deps backup || return 1
-  fi
+  docker compose -p "$active_project" --profile backup up -d --no-build --no-deps backup || return 1
   echo "Previous control deployment restored" >&2
   return 0
 }
@@ -247,12 +245,10 @@ cp -a "$root/app" "$rollback_root/app"
 cp -a "$root/config/control.env" "$rollback_root/control.env"
 cp -a "$root/config/backup.env" "$rollback_root/backup.env"
 deployment_changed=1
-if ((backup_was_running)); then
-  docker compose -p "$active_project" --profile backup stop backup
-fi
+docker compose -p "$active_project" --profile backup stop backup
 (cd "$source_root" && ./scripts/install-control-compose.sh "$root" "$image_ref")
 cd "$root"
-docker compose -p "$target_project" --profile backup config --quiet
+docker compose -p "$target_project" config --quiet
 
 if ((project_changed)); then
   docker compose -p "$active_project" -f "$rollback_root/compose.yaml" --project-directory "$root" down
@@ -278,10 +274,8 @@ if ((control_renew_was_running)); then
   docker compose -p "$target_project" up -d --no-build --no-deps control-cert-renew
   service_is_running "$target_project" control-cert-renew
 fi
-if ((backup_was_running)); then
-  docker compose -p "$target_project" --profile backup up -d --no-build --no-deps backup
-  service_is_running "$target_project" backup
-fi
+docker compose -p "$target_project" up -d --no-build --no-deps backup
+service_is_running "$target_project" backup
 
 # A completed one-shot bootstrap container would otherwise pin an obsolete image.
 docker compose -p "$target_project" rm -f control-cert-bootstrap >/dev/null 2>&1 || true

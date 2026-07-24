@@ -4,7 +4,7 @@
 
 一个面向单管理员的轻量自托管 CDN：使用一台 Debian 12 VPS 运行控制面，并由 3-10 台 Debian 12 VPS 作为边缘节点。Cloudflare 仅提供权威 DNS，终端用户直接连接边缘节点。
 
-当前版本：`0.1.4`（以 [`VERSION`](VERSION) 为准）。
+当前版本：`0.1.5`（以 [`VERSION`](VERSION) 为准）。
 
 ## 已实现功能
 

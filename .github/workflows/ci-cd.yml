@@ -95,7 +95,8 @@ jobs:
           printf '%s\n' \
             'CDN_CONTROL_IMAGE=ghcr.io/saginardo/simple_cdn:main' \
             'CDN_DEPLOY_DIR=.' >.env
-          docker compose --project-directory . -f deploy/docker-compose.yaml --profile backup config --quiet
+          docker compose --project-directory . -f deploy/docker-compose.yaml config --quiet
+          docker compose --project-directory . -f deploy/docker-compose.yaml config --services | grep -Fxq backup
 
   browser:
     name: Browser smoke tests

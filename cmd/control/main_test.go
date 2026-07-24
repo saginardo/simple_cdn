@@ -343,6 +343,9 @@ func TestComposeBackupCommandsResolveRuntimeSettings(t *testing.T) {
 	if !strings.Contains(compose, "./backup/status:/var/lib/cdn-platform-operations:ro") || !strings.Contains(compose, "./backup/status:/var/lib/cdn-platform-operations\n") {
 		t.Fatal("Compose does not share backup status with the controller")
 	}
+	if !strings.Contains(compose, "\n  backup:\n") || strings.Contains(compose, `profiles: ["backup"]`) {
+		t.Fatal("Compose does not start the required backup service by default")
+	}
 }
 
 func TestComposeDeploymentPullsPublishedImageWithoutHostBuild(t *testing.T) {
@@ -414,7 +417,7 @@ func TestGitHubActionsBuildPublishesImmutableImageWithoutProductionConfig(t *tes
 		t.Fatal(err)
 	}
 	deploy := string(deployContents)
-	for _, expected := range []string{"docker pull \"$image_ref\"", "--no-build", "wait_for_control", "rollback_deployment", "running_image", "prune_obsolete_control_images", "docker image rm"} {
+	for _, expected := range []string{"docker pull \"$image_ref\"", "--no-build", "wait_for_control", "rollback_deployment", "running_image", "prune_obsolete_control_images", "docker image rm", "control, clickhouse, and backup must all be running"} {
 		if !strings.Contains(deploy, expected) {
 			t.Fatalf("deployment script is missing %q", expected)
 		}

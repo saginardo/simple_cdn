@@ -56,7 +56,7 @@ sudo docker compose pull
 sudo docker compose run --rm --no-deps control keygen
 ```
 
-Put the generated key in `CONTROL_ENCRYPTION_KEY`. Set `CONTROL_TLS_DOMAIN`, `CONTROL_PUBLIC_URL`, `EDGE_CONTROL_URL`, the scoped Cloudflare token, and ACME email. Then start the stack:
+Put the generated key in `CONTROL_ENCRYPTION_KEY`. Set `CONTROL_TLS_DOMAIN`, `CONTROL_PUBLIC_URL`, `EDGE_CONTROL_URL`, the scoped Cloudflare token, and ACME email. Because backup is a required service, also populate `config/backup.env` and `config/restic-password` before starting the stack. Then start it normally:
 
 ```bash
 sudo docker compose up -d
@@ -78,34 +78,34 @@ The backup container uses SQLite's online backup API and a native ClickHouse `BA
 
 The web override is stored inside the control database, so it cannot be the only recovery copy of the credentials needed to open that database's Restic snapshot. Always retain the repository coordinates, S3 credentials, `CONTROL_ENCRYPTION_KEY`, and Restic password in a separate offline recovery record. Keep working fallback values in `config/backup.env` and `config/restic-password` when practical.
 
-Initialize a new Restic repository once before starting the scheduler:
+Initialize a new Restic repository once before its first scheduled run:
 
 ```bash
 cd /opt/cdn-platform
-sudo docker compose --profile backup run --rm --entrypoint \
+sudo docker compose run --rm --entrypoint \
   /usr/local/lib/cdn-platform/compose-backup-restic.sh backup init
 ```
 
 The wrapper resolves the database override first and falls back to `config/backup.env`. Saving settings does not initialize or migrate a repository. Initialize each new repository once, then use **Validate repository** in the web form. Other manual Restic operations must use the same wrapper, for example:
 
 ```bash
-sudo docker compose --profile backup run --rm --entrypoint \
+sudo docker compose run --rm --entrypoint \
   /usr/local/lib/cdn-platform/compose-backup-restic.sh backup \
   snapshots --tag cdn-control-compose
 ```
 
-Start the optional scheduler only after these values are complete:
+The scheduler is a required service and starts with the rest of the stack. After these values are complete, start or reconcile the stack and run an immediate backup:
 
 ```bash
 cd /opt/cdn-platform
-sudo docker compose --profile backup up -d backup
-sudo docker compose --profile backup run --rm --entrypoint \
+sudo docker compose up -d
+sudo docker compose run --rm --entrypoint \
   /usr/local/lib/cdn-platform/compose-backup-run.sh backup
 ```
 
 The default schedule is 03:25 Asia/Shanghai with up to 20 minutes of random delay. A scheduled or manual wrapper run takes a backup-only lock, then makes up to `BACKUP_MAX_ATTEMPTS` attempts (default 3), using `BACKUP_RETRY_DELAYS_SECONDS` (default `30,120`) between failures. It atomically updates `backup/status/backup.json`; the Settings view and message center expose running, retrying, successful, skipped-during-restore, and final-failure states. A final failure also sends an SMTP alert through the effective database-or-environment SMTP profile. A restore-maintenance skip is not retried or alerted. If snapshot creation succeeds but `forget --prune` fails, retries run only the retention phase so one scheduled run cannot create duplicate snapshots. Repository validation and online-restore snapshot listing use lock-free reads, and cancelled Restic subprocesses receive an interrupt grace period to remove any lock held by a stateful operation. The scheduler remains alive after a failed or skipped run and evaluates the next scheduled time.
 
-Retention is 7 daily, 4 weekly, and 6 monthly snapshots. The backup includes the `simple_cdn` ClickHouse database, not recreatable `system` diagnostic tables, plus `compose.yaml` and `.env` so the exact GHCR image reference is recorded. Restore accepts legacy snapshots containing `cdn_platform` and promotes them under the current name. Backup and certificate containers take a shared operation lock, while a restore cutover takes the exclusive lock and publishes a maintenance marker so no new writer operation starts during the swap. After an image upgrade, recreate the optional scheduler with `docker compose --profile backup up -d --no-build backup`; the GitHub Actions deployment does this automatically when the scheduler is running.
+Retention is 7 daily, 4 weekly, and 6 monthly snapshots. The backup includes the `simple_cdn` ClickHouse database, not recreatable `system` diagnostic tables, plus `compose.yaml` and `.env` so the exact GHCR image reference is recorded. Restore accepts legacy snapshots containing `cdn_platform` and promotes them under the current name. Backup and certificate containers take a shared operation lock, while a restore cutover takes the exclusive lock and publishes a maintenance marker so no new writer operation starts during the swap. After an image upgrade, ordinary `docker compose up -d --no-build` includes the required scheduler; the deployment script also recreates and verifies it automatically.
 
 ## Restore
 

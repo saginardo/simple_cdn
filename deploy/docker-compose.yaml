@@ -120,7 +120,6 @@ services:
 
   backup:
     <<: *control-image
-    profiles: ["backup"]
     entrypoint: ["/usr/local/lib/cdn-platform/compose-backup-loop.sh"]
     user: "0:0"
     network_mode: host
