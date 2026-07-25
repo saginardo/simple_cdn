@@ -46,22 +46,11 @@ import { useListPagination } from "@/hooks/use-list-pagination";
 
 interface BulkUpgradeResult {
   created: number;
-  already_active: number;
-  up_to_date: number;
-  blocked: number;
-  results: Array<{
-    node_id: string;
-    name: string;
-    state: string;
-    detail?: string;
-    task?: NodeUpgradeTask;
-  }>;
 }
 
 export function NodesPage() {
   const queryClient = useQueryClient();
   const [createOpen, setCreateOpen] = useState(false);
-  const [bulkResult, setBulkResult] = useState<BulkUpgradeResult | null>(null);
   const nodes = useQuery({
     queryKey: ["nodes"],
     queryFn: () => api<Node[]>("/api/nodes"),
@@ -75,7 +64,6 @@ export function NodesPage() {
     mutationFn: () =>
       api<BulkUpgradeResult>("/api/nodes/upgrade-all", { method: "POST" }),
     onSuccess: (result) => {
-      setBulkResult(result);
       void queryClient.invalidateQueries({ queryKey: ["nodes"] });
       toast.success(`已创建 ${result.created} 个升级任务`);
     },
@@ -216,12 +204,6 @@ export function NodesPage() {
         ) : null}
       </PageBody>
       <CreateNodeDialog open={createOpen} onOpenChange={setCreateOpen} />
-      <BulkResultDialog
-        result={bulkResult}
-        onOpenChange={(open) => {
-          if (!open) setBulkResult(null);
-        }}
-      />
     </>
   );
 }
@@ -311,90 +293,6 @@ function CreateNodeDialog({
   );
 }
 
-function BulkResultDialog({
-  result,
-  onOpenChange,
-}: {
-  result: BulkUpgradeResult | null;
-  onOpenChange: (open: boolean) => void;
-}) {
-  const pagination = useListPagination(result?.results ?? []);
-
-  return (
-    <Dialog open={Boolean(result)} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>批量升级结果</DialogTitle>
-          <DialogDescription>
-            {result
-              ? `新建 ${result.created}，进行中 ${result.already_active}，已最新 ${result.up_to_date}，受阻 ${result.blocked}`
-              : ""}
-          </DialogDescription>
-        </DialogHeader>
-        {result ? (
-          <div className="border">
-            <div className="max-h-[55vh] overflow-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>节点</TableHead>
-                    <TableHead>结果</TableHead>
-                    <TableHead>说明</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {pagination.items.map((item) => (
-                    <TableRow key={item.node_id}>
-                      <TableCell className="font-medium">{item.name}</TableCell>
-                      <TableCell>
-                        <StatusBadge
-                          status={bulkStateStatus(item.state)}
-                          label={bulkStateLabel(item.state)}
-                        />
-                      </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
-                        {item.detail || "--"}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-            <ListPagination pagination={pagination} itemLabel="条结果" />
-          </div>
-        ) : null}
-        <DialogFooter>
-          <Button onClick={() => onOpenChange(false)}>完成</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
 function activeUpgrade(task?: NodeUpgradeTask) {
   return task?.status === "queued" || task?.status === "applying";
-}
-function bulkStateLabel(state: string) {
-  return (
-    (
-      {
-        created: "已创建",
-        already_active: "进行中",
-        up_to_date: "已最新",
-        blocked: "受阻",
-      } as Record<string, string>
-    )[state] ?? state
-  );
-}
-function bulkStateStatus(state: string) {
-  return (
-    (
-      {
-        created: "queued",
-        already_active: "applying",
-        up_to_date: "succeeded",
-        blocked: "failed",
-      } as Record<string, string>
-    )[state] ?? state
-  );
 }

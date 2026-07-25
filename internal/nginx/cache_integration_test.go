@@ -19,7 +19,7 @@ import (
 	"simple_cdn/internal/domain"
 )
 
-func TestRenderedStaticAssetsCacheAcrossCookies(t *testing.T) {
+func TestRenderedCacheUsesOnlyStaticSuffixes(t *testing.T) {
 	binary, err := exec.LookPath("nginx")
 	if err != nil {
 		t.Skip("nginx is not installed")
@@ -135,17 +135,17 @@ func TestRenderedStaticAssetsCacheAcrossCookies(t *testing.T) {
 		return string(body), response.Header.Get("X-Test-Cache"), response.Header.Get("X-Origin-Sequence")
 	}
 
-	if body, cache, sequence := request("/assets/app.js", "session=first", ""); body != "origin-1" || cache != "MISS" || sequence != "1" {
+	if body, cache, sequence := request("/assets/app.js", "session=first", "Bearer first"); body != "origin-1" || cache != "MISS" || sequence != "1" {
 		t.Fatalf("first static response body=%q cache=%q sequence=%q", body, cache, sequence)
 	}
-	if body, cache, sequence := request("/assets/app.js", "session=second", ""); body != "origin-1" || cache != "HIT" || sequence != "1" {
+	if body, cache, sequence := request("/assets/app.js", "session=second", "Bearer second"); body != "origin-1" || cache != "HIT" || sequence != "1" {
 		t.Fatalf("cached static response body=%q cache=%q sequence=%q", body, cache, sequence)
 	}
-	if body, cache, sequence := request("/api/data", "session=dynamic", ""); body != "origin-2" || cache != "BYPASS" || sequence != "2" {
-		t.Fatalf("dynamic response body=%q cache=%q sequence=%q", body, cache, sequence)
+	if body, cache, sequence := request("/api/data", "session=dynamic", "Bearer dynamic"); body != "origin-2" || cache != "" || sequence != "2" {
+		t.Fatalf("first dynamic response body=%q cache=%q sequence=%q", body, cache, sequence)
 	}
-	if body, cache, sequence := request("/assets/private.css", "session=protected", "Bearer token"); body != "origin-3" || cache != "BYPASS" || sequence != "3" {
-		t.Fatalf("authorized static response body=%q cache=%q sequence=%q", body, cache, sequence)
+	if body, cache, sequence := request("/api/data", "", ""); body != "origin-3" || cache != "" || sequence != "3" {
+		t.Fatalf("repeated dynamic response body=%q cache=%q sequence=%q", body, cache, sequence)
 	}
 	if body, cache, sequence := request("/assets/session.js", "session=first", ""); body != "origin-4" || cache != "MISS" || sequence != "4" {
 		t.Fatalf("first Set-Cookie static response body=%q cache=%q sequence=%q", body, cache, sequence)
@@ -159,17 +159,17 @@ func TestRenderedStaticAssetsCacheAcrossCookies(t *testing.T) {
 	if len(originRequests) != 5 {
 		t.Fatalf("origin requests = %#v", originRequests)
 	}
-	if originRequests[0].Path != "/assets/app.js" || originRequests[0].Cookie != "" {
+	if originRequests[0].Path != "/assets/app.js" || originRequests[0].Cookie != "session=first" || originRequests[0].Authorization != "Bearer first" {
 		t.Fatalf("public static origin request = %#v", originRequests[0])
 	}
-	if originRequests[1].Path != "/api/data" || originRequests[1].Cookie != "session=dynamic" {
-		t.Fatalf("dynamic origin request = %#v", originRequests[1])
+	if originRequests[1].Path != "/api/data" || originRequests[1].Cookie != "session=dynamic" || originRequests[1].Authorization != "Bearer dynamic" {
+		t.Fatalf("first dynamic origin request = %#v", originRequests[1])
 	}
-	if originRequests[2].Path != "/assets/private.css" || originRequests[2].Cookie != "session=protected" || originRequests[2].Authorization != "Bearer token" {
-		t.Fatalf("authorized static origin request = %#v", originRequests[2])
+	if originRequests[2].Path != "/api/data" || originRequests[2].Cookie != "" || originRequests[2].Authorization != "" {
+		t.Fatalf("repeated dynamic origin request = %#v", originRequests[2])
 	}
 	for _, request := range originRequests[3:] {
-		if request.Path != "/assets/session.js" || request.Cookie != "" {
+		if request.Path != "/assets/session.js" || request.Cookie == "" {
 			t.Fatalf("Set-Cookie static origin request = %#v", request)
 		}
 	}

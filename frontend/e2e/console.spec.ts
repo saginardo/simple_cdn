@@ -1491,7 +1491,7 @@ test("cache defaults are configurable and overridden by individual nodes", async
     },
     capabilities: [],
     agent_version: "0.1.2",
-    target_agent_version: "0.1.5",
+    target_agent_version: "0.1.6",
     applied_version: 8,
     last_heartbeat_at: now.toISOString(),
     created_at: now.toISOString(),
@@ -1556,7 +1556,7 @@ test("cache defaults are configurable and overridden by individual nodes", async
 
   await page.goto("/#/nodes/node-1");
   await expect(page.getByText("v0.1.2", { exact: true })).toBeVisible();
-  await expect(page.getByText("v0.1.5", { exact: true })).toBeVisible();
+  await expect(page.getByText("v0.1.6", { exact: true })).toBeVisible();
   await expect(page.getByText("全局默认 4 GB")).toBeVisible();
   const override = page.getByLabel("覆写全局缓存配额");
   const nodeCacheSize = page.getByLabel("节点缓存总上限（GB）");
@@ -1694,6 +1694,57 @@ test("all primary workspaces and the new-site editor mount without runtime error
   await page.getByRole("tab", { name: "备份与恢复" }).click();
   await expect(page.getByText("S3 在线恢复")).toBeVisible();
   expect(errors).toEqual([]);
+});
+
+test("bulk node upgrade refreshes the page without opening a result dialog", async ({
+  page,
+}) => {
+  const node = {
+    id: "node-1",
+    name: "edge-hong-kong",
+    public_ipv4: "203.0.113.41",
+    status: "active",
+    capabilities: ["self_upgrade"],
+    agent_version: "0.1.4",
+    target_agent_version: "0.1.6",
+    applied_version: 8,
+    last_heartbeat_at: now.toISOString(),
+    created_at: now.toISOString(),
+    updated_at: now.toISOString(),
+    upgrade_capable: true,
+    upgrade_up_to_date: false,
+    can_upgrade: true,
+  };
+  await mockAPI(page, {
+    "/api/nodes": [node],
+    "/api/nodes/upgrade-all": {
+      created: 1,
+      already_active: 0,
+      up_to_date: 0,
+      blocked: 0,
+      results: [
+        {
+          node_id: node.id,
+          name: node.name,
+          state: "created",
+        },
+      ],
+    },
+  });
+  await page.goto("/#/nodes");
+  await expect(page.getByText(node.name, { exact: true })).toBeVisible();
+
+  const nodesRefresh = page.waitForRequest((request) => {
+    const url = new URL(request.url());
+    return url.pathname === "/api/nodes" && request.method() === "GET";
+  });
+  await page.getByRole("button", { name: /全部升级/ }).click();
+  await nodesRefresh;
+
+  await expect(page.getByText("已创建 1 个升级任务")).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "批量升级结果" })).toHaveCount(
+    0,
+  );
 });
 
 test("backup restore permanently deletes a confirmed S3 snapshot", async ({

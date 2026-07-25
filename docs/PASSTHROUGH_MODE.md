@@ -4,9 +4,9 @@
 
 ## 结论
 
-站点默认使用 Nginx 磁盘缓存，适合可缓存的 HTTP 内容。对于不需要视频缓存、只要求稳定转发的 HTTP(S) 流媒体或通用上游代理，必须启用站点级 `passthrough` 模式，而不是继续保留 `proxy_cache` 后只补充 `Range` / `If-Range` 请求头。
+普通站点默认只对已识别的静态资源后缀使用 Nginx 磁盘缓存，其他 URI 直接关闭缓存。对于要求整个主机名都稳定直通的 HTTP(S) 流媒体或通用上游代理，必须启用站点级 `passthrough` 模式，而不是继续保留 `proxy_cache` 后只补充 `Range` / `If-Range` 请求头。
 
-该模式用于整站流量，不能与“同一站点的部分路径仍要走缓存”混用。若需要路径级差异策略，应拆分为不同站点或单独设计缓存策略。
+该模式用于整站流量，不能保留普通模式下的静态后缀缓存；需要静态资源缓存时应关闭透传并重新发布，非静态 URI 仍会保持无缓存。
 
 ## 问题特征与根因
 
@@ -35,7 +35,7 @@
 
 启用后，Nginx 在普通主源站和备用源站位置会：
 
-- 不生成站点级 `proxy_cache` 策略，并显式 `proxy_cache off`。
+- 不生成站点级静态缓存选择策略，并显式 `proxy_cache off`。
 - 设置 `proxy_buffering off` 与 `proxy_request_buffering off`。
 - 使用站点配置的 6、15、30 或 60 分钟读写空闲超时，默认 6 分钟。
 - 显式转发 `Range $http_range` 与 `If-Range $http_if_range`。
@@ -94,7 +94,7 @@ RESULT http=206 bytes=2097152
 
 1. 查询站点配置，确认 `passthrough=1`、站点已发布，且分配节点已应用新 desired state。
 2. 运行上面的 Range 命令，检查 `206`、`Content-Range` 和下载字节数。
-3. 若仍是 `200` 或下载了完整文件，检查控制面是否为新版、是否点击过发布、边缘 agent 是否已确认目标版本，以及实际生成的 Nginx 是否仍含该站点的 `proxy_cache cdn_cache`。
+3. 若仍是 `200` 或下载了完整文件，检查控制面是否为新版、是否点击过发布、边缘 agent 是否已确认目标版本，以及实际生成的 Nginx 是否仍含该站点的 `proxy_cache $cdn_static_cache_zone`。
 4. 若返回 `206` 但速度仍慢，再分别比较业务域名、边缘 `${EDGE_DIAGNOSTIC_PORT}` 和真实源站，定位网络路径或源站吞吐；不要重新启用缓存来掩盖 Range 语义问题。
 
 相关实现：`internal/domain/domain.go`、`internal/store/store.go`、`internal/control/server.go`、`frontend/src/features/sites/`、`internal/nginx/render.go`。

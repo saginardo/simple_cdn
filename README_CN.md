@@ -4,7 +4,7 @@
 
 一个面向单管理员的轻量自托管 CDN：使用一台 Debian 12 VPS 运行控制面，并由 3-10 台 Debian 12 VPS 作为边缘节点。Cloudflare 仅提供权威 DNS，终端用户直接连接边缘节点。
 
-当前版本：`0.1.5`（以 [`VERSION`](VERSION) 为准）。
+当前版本：`0.1.6`（以 [`VERSION`](VERSION) 为准）。
 
 ## 已实现功能
 
@@ -13,7 +13,7 @@
 - 支持从管理界面对单个节点或全部节点执行在线升级，包括资格检查、mTLS 任务下发、所有制品的 SHA-256 校验、独立 systemd 更新器、新代理心跳就绪检查和事务式回滚。
 - 全局恶意路径访问策略：在回源前由 Nginx 拒绝请求，持久记录边缘事件，通过原生 nftables 执行 IPv4 封禁，支持全节点对账、自动过期和管理界面手动解封。另支持边缘本地客户端 IP 限速，可配置每秒请求阈值，并可选择按 2xx/3xx/4xx/5xx 响应计数触发。
 - 边缘代理以原子方式暂存版本化 Nginx 基础配置、每站点 HTTP 和 `stream` 配置片段及证书；检查本机公网端口占用，执行 `nginx -t`，重新加载健康的 Nginx，或拉起已失败/停止的 Nginx。代理会确认重新加载确实创建了新一代 worker 进程；失败时恢复最后一份正常配置和 TLS 文件，并在不阻塞心跳循环的前提下上报 Linux 主机状态和 `/opt/cdn-edge/cache` 磁盘用量。
-- Nginx OSS 缓存策略：每个边缘节点共享一个缓存区，默认总磁盘上限为 1 GiB。全局节点默认值可被单个节点覆盖，站点共享该节点配额。策略包括规范化缓存代际、缓存锁、重新验证、后台刷新、`STALE` 回退，以及 HTTP(S) 主备源站故障切换。带 Authorization 的请求和非静态 Cookie 请求绕过共享缓存；常见 CSS、JavaScript、字体和图片扩展名可跨浏览器 Cookie 复用缓存，并在没有 Authorization 时以不携带 Cookie 的方式回源。HTTP(S) 站点会自动对 WebSocket Upgrade、SSE Accept、`X-CDN-Stream: 1` 和 POST 响应关闭缓存与响应缓冲；整站透传模式会对整个主机名禁用缓存和缓冲，同时转发字节范围。`grpc://` 和 `grpcs://` 源站通过客户端 HTTP/2 监听器使用原生 gRPC 代理。
+- Nginx OSS 静态资源缓存策略：每个边缘节点共享一个缓存区，默认总磁盘上限为 1 GiB。全局节点默认值可被单个节点覆盖，站点共享该节点配额。只有常见 CSS、JavaScript、字体、图片、WebAssembly 和 Web Manifest 后缀会选择缓存，其他 URI 均使用 `proxy_cache off`。缓存资格不检查请求中的 Authorization 或 Cookie，且这些请求头会原样回源。策略包括规范化缓存代际、缓存锁、重新验证、后台刷新、`STALE` 回退，以及 HTTP(S) 主备源站故障切换。HTTP(S) 站点会自动对 WebSocket Upgrade、SSE Accept、`X-CDN-Stream: 1` 和 POST 响应关闭缓存与响应缓冲；整站透传模式会对整个主机名禁用缓存和缓冲，同时转发字节范围。`grpc://` 和 `grpcs://` 源站通过客户端 HTTP/2 监听器使用原生 gRPC 代理。
 - Nginx stream TCP 转发：客户端 TLS 终止和上游 TLS/SNI 校验可独立选择，支持动态上游 DNS 解析、按端口配置超时、原子多文件回滚，以及不监听 80/443 的纯 TCP 站点。
 - Cloudflare DNS-only A 记录对账：节点可达性和站点级 HTTPS/SNI/证书健康检查都带滞回。连续 3 次探测失败时移除节点，连续 5 次成功时恢复；若所有节点均异常，则有意保持 DNS 不变。
 - 经过身份验证的运行时设置：支持 60-300 秒 DNS TTL、按站点发布的 TTL 覆盖、加密保存 Cloudflare 与 SMTP 设置，以及加密保存 Restic S3/R2 备份凭据和计划。数据库覆盖优先于环境变量回退值，修改后无需重启控制器。
