@@ -243,93 +243,91 @@ export function LogsPage() {
           <Card>
             <CardContent className="p-0">
               {logs.data.logs.length ? (
-                <div className="overflow-x-auto">
-                  <Table className="table-fixed min-w-[1120px]">
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead className="w-40 pl-5">时间</TableHead>
-                        <TableHead className="w-[26rem]">请求</TableHead>
-                        <TableHead className="w-20">状态</TableHead>
-                        <TableHead className="w-40">客户端</TableHead>
-                        <TableHead className="w-48">站点 / 节点</TableHead>
-                        <TableHead className="w-24">缓存</TableHead>
-                        <TableHead className="w-32 pr-5 text-right">
-                          耗时 / 大小
-                        </TableHead>
+                <Table className="table-fixed min-w-[1120px]">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-40 pl-5">时间</TableHead>
+                      <TableHead className="w-[26rem]">请求</TableHead>
+                      <TableHead className="w-20">状态</TableHead>
+                      <TableHead className="w-40">客户端</TableHead>
+                      <TableHead className="w-48">站点 / 节点</TableHead>
+                      <TableHead className="w-24">缓存</TableHead>
+                      <TableHead className="w-32 pr-5 text-right">
+                        耗时 / 大小
+                      </TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {logs.data.logs.map((entry, index) => (
+                      <TableRow
+                        key={
+                          entry.id ||
+                          `${entry.timestamp}-${entry.node_id}-${index}`
+                        }
+                        className={entry.id ? "cursor-pointer" : undefined}
+                        tabIndex={entry.id ? 0 : undefined}
+                        aria-label={
+                          entry.id
+                            ? `查看请求 ${entry.method} ${entry.path}`
+                            : undefined
+                        }
+                        onClick={() => {
+                          if (entry.id)
+                            navigate(`/logs/${encodeURIComponent(entry.id)}`);
+                        }}
+                        onKeyDown={(event) => {
+                          if (
+                            entry.id &&
+                            (event.key === "Enter" || event.key === " ")
+                          ) {
+                            event.preventDefault();
+                            navigate(`/logs/${encodeURIComponent(entry.id)}`);
+                          }
+                        }}
+                      >
+                        <TableCell className="whitespace-nowrap pl-5 text-xs text-muted-foreground">
+                          {formatDateTime(entry.timestamp)}
+                        </TableCell>
+                        <TableCell className="min-w-0 overflow-hidden">
+                          <div className="flex min-w-0 items-center gap-2 overflow-hidden">
+                            <span className="shrink-0 font-mono text-xs font-medium">
+                              {entry.method}
+                            </span>
+                            <code
+                              className="block min-w-0 truncate text-xs"
+                              title={entry.path}
+                            >
+                              {entry.path}
+                            </code>
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <HTTPStatusBadge status={entry.status} />
+                        </TableCell>
+                        <TableCell className="font-mono text-xs">
+                          {entry.client_ip}
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          <div>{siteName(sites.data, entry.site_id)}</div>
+                          <div className="text-muted-foreground">
+                            {nodeName(nodes.data, entry.node_id)}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <StatusBadge
+                            status={entry.cache_status || "UNCACHED"}
+                          />
+                        </TableCell>
+                        <TableCell className="pr-5 text-right text-xs tabular-nums">
+                          <div>{formatNumber(entry.duration_ms)} ms</div>
+                          <div className="text-muted-foreground">
+                            {formatBytes(entry.bytes)}
+                          </div>
+                        </TableCell>
                       </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {logs.data.logs.map((entry, index) => (
-                        <TableRow
-                          key={
-                            entry.id ||
-                            `${entry.timestamp}-${entry.node_id}-${index}`
-                          }
-                          className={entry.id ? "cursor-pointer" : undefined}
-                          tabIndex={entry.id ? 0 : undefined}
-                          aria-label={
-                            entry.id
-                              ? `查看请求 ${entry.method} ${entry.path}`
-                              : undefined
-                          }
-                          onClick={() => {
-                            if (entry.id)
-                              navigate(`/logs/${encodeURIComponent(entry.id)}`);
-                          }}
-                          onKeyDown={(event) => {
-                            if (
-                              entry.id &&
-                              (event.key === "Enter" || event.key === " ")
-                            ) {
-                              event.preventDefault();
-                              navigate(`/logs/${encodeURIComponent(entry.id)}`);
-                            }
-                          }}
-                        >
-                          <TableCell className="whitespace-nowrap pl-5 text-xs text-muted-foreground">
-                            {formatDateTime(entry.timestamp)}
-                          </TableCell>
-                          <TableCell className="min-w-0 overflow-hidden">
-                            <div className="flex min-w-0 items-center gap-2 overflow-hidden">
-                              <span className="shrink-0 font-mono text-xs font-medium">
-                                {entry.method}
-                              </span>
-                              <code
-                                className="block min-w-0 truncate text-xs"
-                                title={entry.path}
-                              >
-                                {entry.path}
-                              </code>
-                            </div>
-                          </TableCell>
-                          <TableCell>
-                            <HTTPStatusBadge status={entry.status} />
-                          </TableCell>
-                          <TableCell className="font-mono text-xs">
-                            {entry.client_ip}
-                          </TableCell>
-                          <TableCell className="text-xs">
-                            <div>{siteName(sites.data, entry.site_id)}</div>
-                            <div className="text-muted-foreground">
-                              {nodeName(nodes.data, entry.node_id)}
-                            </div>
-                          </TableCell>
-                          <TableCell>
-                            <StatusBadge
-                              status={entry.cache_status || "UNCACHED"}
-                            />
-                          </TableCell>
-                          <TableCell className="pr-5 text-right text-xs tabular-nums">
-                            <div>{formatNumber(entry.duration_ms)} ms</div>
-                            <div className="text-muted-foreground">
-                              {formatBytes(entry.bytes)}
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
+                    ))}
+                  </TableBody>
+                </Table>
               ) : (
                 <div className="p-6">
                   <EmptyState

@@ -754,7 +754,7 @@ function NodeSelector({
                 return (
                   <label
                     key={node.id}
-                    className="flex items-center gap-3 border px-3 py-3 text-sm hover:bg-muted/30"
+                    className="flex items-center gap-3 rounded-lg border px-3 py-3 text-sm hover:bg-muted/30"
                   >
                     <Checkbox
                       checked={checked}
@@ -782,7 +782,7 @@ function NodeSelector({
             <ListPagination
               pagination={pagination}
               itemLabel="个节点"
-              className="mt-3 border"
+              className="mt-3 rounded-lg border"
             />
           </>
         ) : (
@@ -842,7 +842,7 @@ function TCPForwards({
             {pagination.items.map((forward, pageIndex) => {
               const index = pagination.startIndex + pageIndex;
               return (
-                <div key={index} className="relative border p-4">
+                <div key={index} className="relative rounded-lg border p-4">
                   <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
                     <Field label="名称" id={`tcp-name-${index}`}>
                       <Input
@@ -974,7 +974,7 @@ function TCPForwards({
             <ListPagination
               pagination={pagination}
               itemLabel="个转发端口"
-              className="border"
+              className="rounded-lg border"
             />
           </>
         ) : (
@@ -1077,7 +1077,7 @@ function SiteOperations({
             extra={tls?.published_after_certificate ? "已部署" : undefined}
           />
         ) : null}
-        <div className="border px-3 py-2">
+        <div className="rounded-lg border px-3 py-2">
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
               <div className="text-sm">节点分配</div>
@@ -1093,7 +1093,7 @@ function SiteOperations({
           </div>
           {assignedNodes.length ? (
             <>
-              <div className="mt-3 max-h-44 overflow-auto border">
+              <div className="mt-3 max-h-44 overflow-auto rounded-lg border">
                 <Table>
                   <TableBody>
                     {assignedPagination.items.map((node) => (
@@ -1154,7 +1154,7 @@ function SiteOperations({
           </Button>
         ) : null}
         {cacheable ? (
-          <div className="flex flex-wrap items-center justify-between gap-3 border px-3 py-2">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border px-3 py-2">
             <div className="min-w-0">
               <div className="text-sm">缓存版本</div>
               <div className="text-xs text-muted-foreground">
@@ -1183,7 +1183,7 @@ function SiteOperations({
           源站白名单
         </Button>
         {showPublishTargets ? (
-          <div className="border">
+          <div className="overflow-hidden rounded-lg border">
             <div className="border-b px-3 py-2 text-xs text-muted-foreground">
               {site.deleting ? "本次删除涉及节点" : "本次发布涉及节点"}
             </div>
@@ -1274,7 +1274,7 @@ function AllowlistDialog({
                   <ListPagination
                     pagination={currentPagination}
                     itemLabel="个节点"
-                    className="border"
+                    className="rounded-lg border"
                   />
                 ) : null}
                 {pendingRemovalNodes.length ? (
@@ -1289,7 +1289,7 @@ function AllowlistDialog({
                       <ListPagination
                         pagination={pendingRemovalPagination}
                         itemLabel="个节点"
-                        className="border"
+                        className="rounded-lg border"
                       />
                     ) : null}
                   </>
@@ -1329,7 +1329,7 @@ function AllowlistNodeGroup({
       {nodes.map((node) => (
         <div
           key={node.node_id}
-          className="flex flex-wrap items-center gap-2 border px-3 py-2"
+          className="flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2"
         >
           <div className="min-w-40 flex-1">
             <div className="truncate text-sm font-medium">{node.node_name}</div>
@@ -1360,7 +1360,7 @@ function OperationState({
 }) {
   const visibleDetail = detail || localizeTaskDetail(task?.detail);
   return (
-    <div className="flex items-start justify-between gap-3 border px-3 py-2 text-sm">
+    <div className="flex items-start justify-between gap-3 rounded-lg border px-3 py-2 text-sm">
       <div>
         <span>{label}</span>
         {visibleDetail ? (
@@ -1440,7 +1440,7 @@ function Toggle({
   onChange: (checked: boolean) => void;
 }) {
   return (
-    <div className="flex items-center justify-between border px-3 py-2">
+    <div className="flex items-center justify-between rounded-lg border px-3 py-2">
       <Label>{label}</Label>
       <Switch checked={checked} onCheckedChange={onChange} />
     </div>

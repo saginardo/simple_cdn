@@ -23,6 +23,7 @@ import {
   PageError,
   PageHeader,
   PageLoading,
+  Panel,
 } from "@/components/page";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
@@ -56,11 +57,13 @@ import {
 import { useListPagination } from "@/hooks/use-list-pagination";
 import { api, errorMessage, jsonBody } from "@/lib/api";
 import { formatDateTime, formatNumber } from "@/lib/format";
+import { toneSurface } from "@/lib/tones";
 import type {
   MonitoringNode,
   MonitoringOverview,
   MonitoringTarget,
 } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 export function MonitoringPage() {
   const queryClient = useQueryClient();
@@ -194,206 +197,199 @@ export function MonitoringPage() {
               </TabsList>
               <TabsContent value="nodes">
                 {data.nodes.length ? (
-                  <div className="border bg-card">
-                    <div className="overflow-x-auto">
-                      <Table className="min-w-[940px]">
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead className="pl-5">节点</TableHead>
-                            <TableHead>调度</TableHead>
-                            <TableHead>监测</TableHead>
-                            <TableHead className="w-44">评分</TableHead>
-                            <TableHead>成功率</TableHead>
-                            <TableHead>平均时延</TableHead>
-                            <TableHead>连续异常</TableHead>
-                            <TableHead className="pr-5">最后拨测</TableHead>
-                            <TableHead className="w-10" />
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {nodesPagination.items.map((node) => (
-                            <NodeRow
-                              key={node.node_id}
-                              node={node}
-                              healthyScore={data.healthy_score}
-                            />
-                          ))}
-                        </TableBody>
-                      </Table>
-                    </div>
+                  <Panel>
+                    <Table className="min-w-[940px]">
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="pl-5">节点</TableHead>
+                          <TableHead>调度</TableHead>
+                          <TableHead>监测</TableHead>
+                          <TableHead className="w-44">评分</TableHead>
+                          <TableHead>成功率</TableHead>
+                          <TableHead>平均时延</TableHead>
+                          <TableHead>连续异常</TableHead>
+                          <TableHead className="pr-5">最后拨测</TableHead>
+                          <TableHead className="w-10" />
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {nodesPagination.items.map((node) => (
+                          <NodeRow
+                            key={node.node_id}
+                            node={node}
+                            healthyScore={data.healthy_score}
+                          />
+                        ))}
+                      </TableBody>
+                    </Table>
                     <ListPagination
                       pagination={nodesPagination}
                       itemLabel="个节点"
                     />
-                  </div>
+                  </Panel>
                 ) : (
                   <EmptyState title="暂无边缘节点" />
                 )}
               </TabsContent>
               <TabsContent value="results">
                 {results.length ? (
-                  <div className="border bg-card">
-                    <div className="overflow-x-auto">
-                      <Table className="min-w-[820px]">
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead className="pl-5">节点</TableHead>
-                            <TableHead>拨测目标</TableHead>
-                            <TableHead>TCP 结果</TableHead>
-                            <TableHead>成功次数</TableHead>
-                            <TableHead>平均时延</TableHead>
-                            <TableHead className="pr-5">拨测时间</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {resultsPagination.items.map(({ node, result }) => {
-                            const succeeded =
-                              result.successful_attempts === result.attempts;
-                            return (
-                              <TableRow
-                                key={`${node.node_id}:${result.target_id}`}
-                              >
-                                <TableCell className="pl-5">
-                                  <div className="font-medium">{node.name}</div>
-                                  <div className="font-mono text-xs text-muted-foreground">
-                                    {node.public_ipv4}
+                  <Panel>
+                    <Table className="min-w-[820px]">
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="pl-5">节点</TableHead>
+                          <TableHead>拨测目标</TableHead>
+                          <TableHead>TCP 结果</TableHead>
+                          <TableHead>成功次数</TableHead>
+                          <TableHead>平均时延</TableHead>
+                          <TableHead className="pr-5">拨测时间</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {resultsPagination.items.map(({ node, result }) => {
+                          const succeeded =
+                            result.successful_attempts === result.attempts;
+                          return (
+                            <TableRow
+                              key={`${node.node_id}:${result.target_id}`}
+                            >
+                              <TableCell className="pl-5">
+                                <div className="font-medium">{node.name}</div>
+                                <div className="font-mono text-xs text-muted-foreground">
+                                  {node.public_ipv4}
+                                </div>
+                              </TableCell>
+                              <TableCell>
+                                <div className="font-medium">
+                                  {result.target_name}
+                                </div>
+                                <div className="font-mono text-xs text-muted-foreground">
+                                  {result.address}
+                                </div>
+                              </TableCell>
+                              <TableCell>
+                                <StatusBadge
+                                  status={succeeded ? "succeeded" : "failed"}
+                                  label={succeeded ? "可达" : "异常"}
+                                />
+                                {result.error ? (
+                                  <div
+                                    className="mt-1 max-w-64 truncate text-xs text-muted-foreground"
+                                    title={result.error}
+                                  >
+                                    {result.error}
                                   </div>
-                                </TableCell>
-                                <TableCell>
-                                  <div className="font-medium">
-                                    {result.target_name}
-                                  </div>
-                                  <div className="font-mono text-xs text-muted-foreground">
-                                    {result.address}
-                                  </div>
-                                </TableCell>
-                                <TableCell>
-                                  <StatusBadge
-                                    status={succeeded ? "succeeded" : "failed"}
-                                    label={succeeded ? "可达" : "异常"}
-                                  />
-                                  {result.error ? (
-                                    <div
-                                      className="mt-1 max-w-64 truncate text-xs text-muted-foreground"
-                                      title={result.error}
-                                    >
-                                      {result.error}
-                                    </div>
-                                  ) : null}
-                                </TableCell>
-                                <TableCell className="tabular-nums">
-                                  {result.successful_attempts} /{" "}
-                                  {result.attempts}
-                                </TableCell>
-                                <TableCell className="tabular-nums">
-                                  {result.successful_attempts
-                                    ? `${result.average_latency_ms.toFixed(1)} ms`
-                                    : "--"}
-                                </TableCell>
-                                <TableCell className="pr-5 whitespace-nowrap text-xs text-muted-foreground">
-                                  {formatDateTime(result.checked_at)}
-                                </TableCell>
-                              </TableRow>
-                            );
-                          })}
-                        </TableBody>
-                      </Table>
-                    </div>
+                                ) : null}
+                              </TableCell>
+                              <TableCell className="tabular-nums">
+                                {result.successful_attempts} / {result.attempts}
+                              </TableCell>
+                              <TableCell className="tabular-nums">
+                                {result.successful_attempts
+                                  ? `${result.average_latency_ms.toFixed(1)} ms`
+                                  : "--"}
+                              </TableCell>
+                              <TableCell className="pr-5 whitespace-nowrap text-xs text-muted-foreground">
+                                {formatDateTime(result.checked_at)}
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
                     <ListPagination
                       pagination={resultsPagination}
                       itemLabel="条结果"
                     />
-                  </div>
+                  </Panel>
                 ) : (
                   <EmptyState title="等待节点上报拨测结果" />
                 )}
               </TabsContent>
               <TabsContent value="targets">
                 {data.targets.length ? (
-                  <div className="border bg-card">
-                    <div className="overflow-x-auto">
-                      <Table className="min-w-[660px]">
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead className="pl-5">名称</TableHead>
-                            <TableHead>目标地址</TableHead>
-                            <TableHead>状态</TableHead>
-                            <TableHead>更新时间</TableHead>
-                            <TableHead className="w-24 pr-5 text-right">
-                              操作
-                            </TableHead>
+                  <Panel>
+                    <Table className="min-w-[660px]">
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="pl-5">名称</TableHead>
+                          <TableHead>目标地址</TableHead>
+                          <TableHead>状态</TableHead>
+                          <TableHead>更新时间</TableHead>
+                          <TableHead className="w-24 pr-5 text-right">
+                            操作
+                          </TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {targetsPagination.items.map((target) => (
+                          <TableRow key={target.id}>
+                            <TableCell className="pl-5 font-medium">
+                              {target.name}
+                            </TableCell>
+                            <TableCell className="font-mono text-xs">
+                              {target.address}
+                            </TableCell>
+                            <TableCell>
+                              <div className="flex items-center gap-2">
+                                <Switch
+                                  checked={target.enabled}
+                                  disabled={toggleTarget.isPending}
+                                  aria-label={`${target.enabled ? "停用" : "启用"} ${target.name}`}
+                                  onCheckedChange={(enabled) =>
+                                    toggleTarget.mutate({
+                                      id: target.id,
+                                      enabled,
+                                    })
+                                  }
+                                />
+                                <span className="text-xs text-muted-foreground">
+                                  {target.enabled ? "启用" : "停用"}
+                                </span>
+                              </div>
+                            </TableCell>
+                            <TableCell className="text-xs text-muted-foreground">
+                              {formatDateTime(target.updated_at)}
+                            </TableCell>
+                            <TableCell className="pr-5 text-right">
+                              <div className="flex justify-end gap-1">
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <Button
+                                      variant="ghost"
+                                      size="icon-sm"
+                                      aria-label={`重命名 ${target.name}`}
+                                      onClick={() => setEditTarget(target)}
+                                    >
+                                      <Pencil />
+                                    </Button>
+                                  </TooltipTrigger>
+                                  <TooltipContent>重命名目标</TooltipContent>
+                                </Tooltip>
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <Button
+                                      variant="ghost"
+                                      size="icon-sm"
+                                      aria-label={`删除 ${target.name}`}
+                                      onClick={() => setRemoveTarget(target)}
+                                    >
+                                      <Trash2 />
+                                    </Button>
+                                  </TooltipTrigger>
+                                  <TooltipContent>删除目标</TooltipContent>
+                                </Tooltip>
+                              </div>
+                            </TableCell>
                           </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {targetsPagination.items.map((target) => (
-                            <TableRow key={target.id}>
-                              <TableCell className="pl-5 font-medium">
-                                {target.name}
-                              </TableCell>
-                              <TableCell className="font-mono text-xs">
-                                {target.address}
-                              </TableCell>
-                              <TableCell>
-                                <div className="flex items-center gap-2">
-                                  <Switch
-                                    checked={target.enabled}
-                                    disabled={toggleTarget.isPending}
-                                    aria-label={`${target.enabled ? "停用" : "启用"} ${target.name}`}
-                                    onCheckedChange={(enabled) =>
-                                      toggleTarget.mutate({
-                                        id: target.id,
-                                        enabled,
-                                      })
-                                    }
-                                  />
-                                  <span className="text-xs text-muted-foreground">
-                                    {target.enabled ? "启用" : "停用"}
-                                  </span>
-                                </div>
-                              </TableCell>
-                              <TableCell className="text-xs text-muted-foreground">
-                                {formatDateTime(target.updated_at)}
-                              </TableCell>
-                              <TableCell className="pr-5 text-right">
-                                <div className="flex justify-end gap-1">
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <Button
-                                        variant="ghost"
-                                        size="icon-sm"
-                                        aria-label={`重命名 ${target.name}`}
-                                        onClick={() => setEditTarget(target)}
-                                      >
-                                        <Pencil />
-                                      </Button>
-                                    </TooltipTrigger>
-                                    <TooltipContent>重命名目标</TooltipContent>
-                                  </Tooltip>
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <Button
-                                        variant="ghost"
-                                        size="icon-sm"
-                                        aria-label={`删除 ${target.name}`}
-                                        onClick={() => setRemoveTarget(target)}
-                                      >
-                                        <Trash2 />
-                                      </Button>
-                                    </TooltipTrigger>
-                                    <TooltipContent>删除目标</TooltipContent>
-                                  </Tooltip>
-                                </div>
-                              </TableCell>
-                            </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
-                    </div>
+                        ))}
+                      </TableBody>
+                    </Table>
                     <ListPagination
                       pagination={targetsPagination}
                       itemLabel="个目标"
                     />
-                  </div>
+                  </Panel>
                 ) : (
                   <EmptyState title="暂无拨测目标" />
                 )}
@@ -529,11 +525,10 @@ function Summary({
     <Card size="sm">
       <CardContent className="flex items-center gap-3">
         <div
-          className={
-            danger
-              ? "grid size-9 shrink-0 place-items-center rounded-md bg-red-50 text-red-600 dark:bg-red-950 dark:text-red-300 [&_svg]:size-4"
-              : "grid size-9 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground [&_svg]:size-4"
-          }
+          className={cn(
+            "grid size-9 shrink-0 place-items-center rounded-md [&_svg]:size-4",
+            toneSurface[danger ? "danger" : "neutral"],
+          )}
         >
           {icon}
         </div>

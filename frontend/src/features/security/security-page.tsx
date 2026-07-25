@@ -21,6 +21,7 @@ import {
   PageError,
   PageHeader,
   PageLoading,
+  Panel,
 } from "@/components/page";
 import { StatusBadge } from "@/components/status-badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -775,7 +776,7 @@ function PolicyDialogShell({
                 </Select>
               </div>
             ) : null}
-            <div className="flex items-center justify-between border px-3 py-2 sm:col-span-2">
+            <div className="flex items-center justify-between rounded-lg border px-3 py-2 sm:col-span-2">
               <Label htmlFor="policy-enabled">启用策略</Label>
               <Switch
                 id="policy-enabled"
@@ -932,7 +933,7 @@ function RateDialogShell({
                 onChange={(event) => setRPS(Number(event.target.value))}
               />
             </Field>
-            <div className="flex items-center justify-between border px-3 py-2 sm:col-span-2">
+            <div className="flex items-center justify-between rounded-lg border px-3 py-2 sm:col-span-2">
               <Label htmlFor="rate-enabled">启用策略</Label>
               <Switch
                 id="rate-enabled"
@@ -940,7 +941,7 @@ function RateDialogShell({
                 onCheckedChange={setEnabled}
               />
             </div>
-            <div className="flex items-center justify-between border px-3 py-2 sm:col-span-2">
+            <div className="flex items-center justify-between rounded-lg border px-3 py-2 sm:col-span-2">
               <div>
                 <Label htmlFor="rate-conditional">仅统计指定响应</Label>
                 <p className="text-xs text-muted-foreground">
@@ -959,7 +960,7 @@ function RateDialogShell({
                 {[2, 3, 4, 5].map((code) => (
                   <label
                     key={code}
-                    className="flex items-center gap-2 border px-3 py-2 text-sm"
+                    className="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm"
                   >
                     <Checkbox
                       checked={classes.includes(code)}
@@ -977,7 +978,7 @@ function RateDialogShell({
                 ))}
               </div>
             ) : null}
-            <div className="flex items-center justify-between border px-3 py-2 sm:col-span-2">
+            <div className="flex items-center justify-between rounded-lg border px-3 py-2 sm:col-span-2">
               <div>
                 <Label htmlFor="rate-ban-enabled">连续超限后封禁 IP</Label>
                 <p className="text-xs text-muted-foreground">
@@ -1088,7 +1089,7 @@ function Summary({
           <p className="text-sm text-muted-foreground">{label}</p>
           <p className="mt-2 text-2xl font-semibold tabular-nums">{value}</p>
         </div>
-        <Icon className="size-4 text-sky-600" />
+        <Icon className="size-4 text-info" />
       </CardContent>
     </Card>
   );
@@ -1124,18 +1125,18 @@ function DataFrame({
   children: React.ReactNode;
 }) {
   return (
-    <div className="border bg-card">
+    <Panel>
       {empty ? (
         <div className="p-5">
           <EmptyState title={emptyTitle} />
         </div>
       ) : (
         <>
-          <div className="overflow-x-auto">{children}</div>
+          {children}
           {footer}
         </>
       )}
-    </div>
+    </Panel>
   );
 }
 function Field({

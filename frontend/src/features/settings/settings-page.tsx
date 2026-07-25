@@ -227,7 +227,7 @@ function BrandingForm({ settings }: { settings: Settings }) {
         </div>
         <div className="grid gap-2">
           <Label>预览</Label>
-          <div className="flex min-h-16 w-full max-w-sm items-center gap-3 border bg-sidebar px-3 py-2 text-sidebar-foreground">
+          <div className="flex min-h-16 w-full max-w-sm items-center gap-3 rounded-lg border bg-sidebar px-3 py-2 text-sidebar-foreground">
             <BrandMark logoDataURL={logoDataURL} className="size-8" />
             <span className="grid min-w-0 text-left leading-tight">
               <span className="truncate font-semibold">
@@ -577,7 +577,7 @@ function SMTPForm({ settings }: { settings: Settings }) {
       source={sourceLabel(initial.source)}
     >
       <form className="grid gap-5" onSubmit={submit}>
-        <div className="flex items-center justify-between border px-3 py-3">
+        <div className="flex items-center justify-between rounded-lg border px-3 py-3">
           <div>
             <Label htmlFor="smtp-enabled">启用发信</Label>
             <p className="text-xs text-muted-foreground">
@@ -669,7 +669,7 @@ function SMTPForm({ settings }: { settings: Settings }) {
               每类通知可独立启用，测试邮件不受分类开关影响
             </p>
           </div>
-          <div className="grid border sm:grid-cols-2">
+          <div className="grid overflow-hidden rounded-lg border sm:grid-cols-2">
             {smtpNotificationCategories.map((category, index) => (
               <div
                 key={category.value}

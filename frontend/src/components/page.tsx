@@ -47,6 +47,29 @@ export function PageBody({
   );
 }
 
+/**
+ * Framed surface for tables and stat grids that sit directly on the page body.
+ * Mirrors Card's radius and ring so both container styles read as one system.
+ */
+export function Panel({
+  className,
+  children,
+}: {
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div
+      className={cn(
+        "overflow-hidden rounded-xl bg-card text-sm text-card-foreground ring-1 ring-foreground/10",
+        className,
+      )}
+    >
+      {children}
+    </div>
+  );
+}
+
 export function PageLoading({ rows = 4 }: { rows?: number }) {
   return (
     <div className="space-y-3" aria-label="正在加载">
@@ -86,7 +109,7 @@ export function EmptyState({
   description?: string;
 }) {
   return (
-    <div className="flex min-h-44 flex-col items-center justify-center border border-dashed bg-muted/20 px-6 py-10 text-center">
+    <div className="flex min-h-44 flex-col items-center justify-center rounded-xl border border-dashed bg-muted/20 px-6 py-10 text-center">
       <Inbox className="mb-3 size-8 text-muted-foreground" aria-hidden="true" />
       <h2 className="text-sm font-medium">{title}</h2>
       {description ? (

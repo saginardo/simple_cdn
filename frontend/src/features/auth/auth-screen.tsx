@@ -147,7 +147,7 @@ export function AuthScreen({
         {stage === "setup" && !setupResult ? (
           <Card>
             <CardHeader>
-              <div className="mb-2 grid size-9 place-items-center rounded-md bg-emerald-100 text-emerald-700">
+              <div className="mb-2 grid size-9 place-items-center rounded-md bg-success/10 text-success">
                 <ShieldCheck className="size-5" />
               </div>
               <h1 className="text-lg font-semibold">初始化控制面</h1>
@@ -196,7 +196,7 @@ export function AuthScreen({
         {stage === "setup" && setupResult ? (
           <Card>
             <CardHeader>
-              <div className="mb-2 grid size-9 place-items-center rounded-md bg-emerald-100 text-emerald-700">
+              <div className="mb-2 grid size-9 place-items-center rounded-md bg-success/10 text-success">
                 <Check className="size-5" />
               </div>
               <h1 className="text-lg font-semibold">管理员已创建</h1>
@@ -206,7 +206,7 @@ export function AuthScreen({
               <div className="grid gap-2">
                 <Label>TOTP 密钥</Label>
                 <div className="flex min-w-0 items-center gap-2">
-                  <code className="min-w-0 flex-1 overflow-x-auto border bg-muted px-3 py-2 text-xs">
+                  <code className="min-w-0 flex-1 overflow-x-auto rounded-md border bg-muted px-3 py-2 text-xs">
                     {setupResult.totp_secret}
                   </code>
                   <CopyButton
@@ -218,7 +218,7 @@ export function AuthScreen({
               <Separator />
               <div className="grid gap-2">
                 <Label>恢复代码</Label>
-                <div className="grid grid-cols-2 gap-1 border bg-muted/50 p-3 font-mono text-xs">
+                <div className="grid grid-cols-2 gap-1 rounded-lg border bg-muted/50 p-3 font-mono text-xs">
                   {setupResult.recovery_codes.map((code) => (
                     <span key={code}>{code}</span>
                   ))}

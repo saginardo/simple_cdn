@@ -13,7 +13,7 @@ import { toast } from "sonner";
 
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { ListPagination } from "@/components/list-pagination";
-import { EmptyState, PageError } from "@/components/page";
+import { EmptyState, PageError, Panel } from "@/components/page";
 import { StatusBadge } from "@/components/status-badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -177,7 +177,7 @@ export function BackupRestore() {
             <PageError title="备份状态加载失败" error={status.error} />
           ) : null}
           {status.data ? (
-            <div className="flex flex-col gap-2 border px-4 py-3 sm:flex-row sm:items-center">
+            <div className="flex flex-col gap-2 rounded-lg border px-4 py-3 sm:flex-row sm:items-center">
               <StatusBadge
                 status={backupState(status.data.state)}
                 label={backupLabel(status.data.state)}
@@ -195,7 +195,7 @@ export function BackupRestore() {
               ) : null}
             </div>
           ) : (
-            <div className="border px-4 py-3 text-sm text-muted-foreground">
+            <div className="rounded-lg border px-4 py-3 text-sm text-muted-foreground">
               尚无备份运行状态
             </div>
           )}
@@ -216,66 +216,62 @@ export function BackupRestore() {
               正在读取快照
             </div>
           ) : snapshots.data?.length ? (
-            <div className="border">
-              <div className="overflow-x-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>备份时间</TableHead>
-                      <TableHead>快照</TableHead>
-                      <TableHead>主机</TableHead>
-                      <TableHead className="text-right">操作</TableHead>
+            <Panel>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>备份时间</TableHead>
+                    <TableHead>快照</TableHead>
+                    <TableHead>主机</TableHead>
+                    <TableHead className="text-right">操作</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {snapshotsPagination.items.map((snapshot) => (
+                    <TableRow key={snapshot.id}>
+                      <TableCell className="whitespace-nowrap">
+                        {formatDateTime(snapshot.time)}
+                      </TableCell>
+                      <TableCell>
+                        <code>{snapshot.short_id}</code>
+                      </TableCell>
+                      <TableCell>{snapshot.hostname || "--"}</TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex justify-end gap-1">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={busy || activeRestore(current?.state)}
+                            onClick={() => setSelected(snapshot)}
+                          >
+                            <ShieldCheck />
+                            准备恢复
+                          </Button>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="destructive"
+                                size="icon-sm"
+                                aria-label={`删除快照 ${snapshot.short_id}`}
+                                disabled={busy || activeRestore(current?.state)}
+                                onClick={() => setDeleting(snapshot)}
+                              >
+                                <Trash2 />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>删除备份快照</TooltipContent>
+                          </Tooltip>
+                        </div>
+                      </TableCell>
                     </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {snapshotsPagination.items.map((snapshot) => (
-                      <TableRow key={snapshot.id}>
-                        <TableCell className="whitespace-nowrap">
-                          {formatDateTime(snapshot.time)}
-                        </TableCell>
-                        <TableCell>
-                          <code>{snapshot.short_id}</code>
-                        </TableCell>
-                        <TableCell>{snapshot.hostname || "--"}</TableCell>
-                        <TableCell className="text-right">
-                          <div className="flex justify-end gap-1">
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              disabled={busy || activeRestore(current?.state)}
-                              onClick={() => setSelected(snapshot)}
-                            >
-                              <ShieldCheck />
-                              准备恢复
-                            </Button>
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <Button
-                                  variant="destructive"
-                                  size="icon-sm"
-                                  aria-label={`删除快照 ${snapshot.short_id}`}
-                                  disabled={
-                                    busy || activeRestore(current?.state)
-                                  }
-                                  onClick={() => setDeleting(snapshot)}
-                                >
-                                  <Trash2 />
-                                </Button>
-                              </TooltipTrigger>
-                              <TooltipContent>删除备份快照</TooltipContent>
-                            </Tooltip>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
+                  ))}
+                </TableBody>
+              </Table>
               <ListPagination
                 pagination={snapshotsPagination}
                 itemLabel="个快照"
               />
-            </div>
+            </Panel>
           ) : (
             <EmptyState
               title="没有可用快照"

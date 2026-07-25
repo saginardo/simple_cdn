@@ -8,6 +8,7 @@ import {
   PageError,
   PageHeader,
   PageLoading,
+  Panel,
 } from "@/components/page";
 import { ListPagination } from "@/components/list-pagination";
 import { StatusBadge } from "@/components/status-badge";
@@ -51,61 +52,59 @@ export function SitesPage() {
         {query.error ? <PageError error={query.error} /> : null}
         {query.data ? (
           query.data.length ? (
-            <div className="border bg-card">
-              <div className="overflow-x-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="pl-5">站点</TableHead>
-                      <TableHead>协议</TableHead>
-                      <TableHead>节点</TableHead>
-                      <TableHead>版本</TableHead>
-                      <TableHead>发布状态</TableHead>
-                      <TableHead>更新时间</TableHead>
-                      <TableHead className="w-12 pr-5">
-                        <span className="sr-only">管理</span>
-                      </TableHead>
+            <Panel>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="pl-5">站点</TableHead>
+                    <TableHead>协议</TableHead>
+                    <TableHead>节点</TableHead>
+                    <TableHead>版本</TableHead>
+                    <TableHead>发布状态</TableHead>
+                    <TableHead>更新时间</TableHead>
+                    <TableHead className="w-12 pr-5">
+                      <span className="sr-only">管理</span>
+                    </TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {pagination.items.map((site) => (
+                    <TableRow key={site.id}>
+                      <TableCell className="pl-5">
+                        <div className="font-medium">{site.name}</div>
+                        <div className="max-w-sm truncate text-xs text-muted-foreground">
+                          {site.domains.join(", ") || "无 HTTP 域名"}
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-sm">
+                        {siteProtocol(site)}
+                      </TableCell>
+                      <TableCell className="tabular-nums">
+                        {formatNumber(site.node_ids.length)}
+                      </TableCell>
+                      <TableCell className="text-sm font-medium tabular-nums">
+                        V{formatNumber(site.config_version)}
+                      </TableCell>
+                      <TableCell>
+                        <SiteStatus site={site} />
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                        {formatDateTime(site.updated_at)}
+                      </TableCell>
+                      <TableCell className="pr-5">
+                        <Button asChild variant="ghost" size="icon-sm">
+                          <Link
+                            to={`/sites/${encodeURIComponent(site.id)}`}
+                            aria-label={`管理 ${site.name}`}
+                          >
+                            <ArrowRight />
+                          </Link>
+                        </Button>
+                      </TableCell>
                     </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {pagination.items.map((site) => (
-                      <TableRow key={site.id}>
-                        <TableCell className="pl-5">
-                          <div className="font-medium">{site.name}</div>
-                          <div className="max-w-sm truncate text-xs text-muted-foreground">
-                            {site.domains.join(", ") || "无 HTTP 域名"}
-                          </div>
-                        </TableCell>
-                        <TableCell className="text-sm">
-                          {siteProtocol(site)}
-                        </TableCell>
-                        <TableCell className="tabular-nums">
-                          {formatNumber(site.node_ids.length)}
-                        </TableCell>
-                        <TableCell className="text-sm font-medium tabular-nums">
-                          V{formatNumber(site.config_version)}
-                        </TableCell>
-                        <TableCell>
-                          <SiteStatus site={site} />
-                        </TableCell>
-                        <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
-                          {formatDateTime(site.updated_at)}
-                        </TableCell>
-                        <TableCell className="pr-5">
-                          <Button asChild variant="ghost" size="icon-sm">
-                            <Link
-                              to={`/sites/${encodeURIComponent(site.id)}`}
-                              aria-label={`管理 ${site.name}`}
-                            >
-                              <ArrowRight />
-                            </Link>
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
+                  ))}
+                </TableBody>
+              </Table>
               <ListPagination
                 pagination={pagination}
                 itemLabel="个站点"
@@ -122,7 +121,7 @@ export function SitesPage() {
                   </Button>
                 }
               />
-            </div>
+            </Panel>
           ) : (
             <EmptyState
               title="暂无站点"

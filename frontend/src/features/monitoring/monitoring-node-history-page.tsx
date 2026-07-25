@@ -10,6 +10,7 @@ import {
   PageError,
   PageHeader,
   PageLoading,
+  Panel,
 } from "@/components/page";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
@@ -152,30 +153,34 @@ export function MonitoringNodeHistoryPage() {
         ) : null}
         {data ? (
           <>
-            <dl className="grid border bg-card sm:grid-cols-2 xl:grid-cols-4">
-              <HistoryDatum label="节点状态">
-                <StatusBadge
-                  status={data.node.status}
-                  label={data.node.monitor_auto_paused ? "监测暂停" : undefined}
+            <Panel>
+              <dl className="grid sm:grid-cols-2 xl:grid-cols-4">
+                <HistoryDatum label="节点状态">
+                  <StatusBadge
+                    status={data.node.status}
+                    label={
+                      data.node.monitor_auto_paused ? "监测暂停" : undefined
+                    }
+                  />
+                </HistoryDatum>
+                <HistoryDatum
+                  label="历史目标"
+                  value={`${formatNumber(data.series.length)} 个`}
                 />
-              </HistoryDatum>
-              <HistoryDatum
-                label="历史目标"
-                value={`${formatNumber(data.series.length)} 个`}
-              />
-              <HistoryDatum
-                label="TCP 成功率"
-                value={
-                  totals.attempts
-                    ? `${((100 * totals.successes) / totals.attempts).toFixed(1)}%`
-                    : "--"
-                }
-              />
-              <HistoryDatum
-                label="聚合间隔"
-                value={formatBucket(data.bucket_seconds)}
-              />
-            </dl>
+                <HistoryDatum
+                  label="TCP 成功率"
+                  value={
+                    totals.attempts
+                      ? `${((100 * totals.successes) / totals.attempts).toFixed(1)}%`
+                      : "--"
+                  }
+                />
+                <HistoryDatum
+                  label="聚合间隔"
+                  value={formatBucket(data.bucket_seconds)}
+                />
+              </dl>
+            </Panel>
 
             <div className="flex justify-end">
               <Tabs

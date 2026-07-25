@@ -52,7 +52,9 @@ import {
   formatNumber,
   formatPercent,
 } from "@/lib/format";
+import { httpStatusTone, toneFill, toneText, type Tone } from "@/lib/tones";
 import type { Overview, OverviewPoint, OverviewSite } from "@/lib/types";
+import { cn } from "@/lib/utils";
 import { useListPagination } from "@/hooks/use-list-pagination";
 
 type Metric = "requests" | "bytes" | "error_requests";
@@ -161,28 +163,28 @@ export function OverviewPage() {
                 label="请求数"
                 value={formatNumber(totals?.requests)}
                 meta="最近 24 小时"
-                tone="text-sky-600"
+                tone="info"
               />
               <MetricCard
                 icon={DatabaseZap}
                 label="传输量"
                 value={formatBytes(totals?.bytes)}
                 meta="边缘下行流量"
-                tone="text-emerald-600"
+                tone="success"
               />
               <MetricCard
                 icon={TriangleAlert}
                 label="错误请求"
                 value={formatNumber(totals?.error_requests)}
                 meta="HTTP 4xx 与 5xx"
-                tone="text-amber-600"
+                tone="warning"
               />
               <MetricCard
                 icon={TriangleAlert}
                 label="错误率"
                 value={formatPercent(errorRate, 2)}
                 meta={`${formatNumber(query.data.sites.length)} 个站点`}
-                tone={errorRate > 0.05 ? "text-red-600" : "text-emerald-600"}
+                tone={errorRate > 0.05 ? "danger" : "success"}
               />
             </section>
 
@@ -238,7 +240,10 @@ export function OverviewPage() {
                             </div>
                             <div className="h-1.5 overflow-hidden rounded-full bg-muted">
                               <div
-                                className={statusTone(item.code)}
+                                className={cn(
+                                  "h-full",
+                                  toneFill[httpStatusTone(item.code)],
+                                )}
                                 style={{
                                   width: `${Math.max(1, ratio * 100)}%`,
                                 }}
@@ -265,73 +270,71 @@ export function OverviewPage() {
               <CardContent className="px-0">
                 {query.data.sites.length ? (
                   <>
-                    <div className="overflow-x-auto">
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <SortableSiteTableHead
-                              className="pl-6"
-                              label="站点"
-                              sortKey="name"
-                              sort={siteSort}
-                              onSort={handleSiteSort}
-                            />
-                            <SortableSiteTableHead
-                              label="请求数"
-                              sortKey="requests"
-                              sort={siteSort}
-                              onSort={handleSiteSort}
-                            />
-                            <SortableSiteTableHead
-                              label="传输量"
-                              sortKey="bytes"
-                              sort={siteSort}
-                              onSort={handleSiteSort}
-                            />
-                            <TableHead>错误率</TableHead>
-                            <TableHead className="w-12 pr-6">
-                              <span className="sr-only">详情</span>
-                            </TableHead>
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <SortableSiteTableHead
+                            className="pl-6"
+                            label="站点"
+                            sortKey="name"
+                            sort={siteSort}
+                            onSort={handleSiteSort}
+                          />
+                          <SortableSiteTableHead
+                            label="请求数"
+                            sortKey="requests"
+                            sort={siteSort}
+                            onSort={handleSiteSort}
+                          />
+                          <SortableSiteTableHead
+                            label="传输量"
+                            sortKey="bytes"
+                            sort={siteSort}
+                            onSort={handleSiteSort}
+                          />
+                          <TableHead>错误率</TableHead>
+                          <TableHead className="w-12 pr-6">
+                            <span className="sr-only">详情</span>
+                          </TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {sitesPagination.items.map((site) => (
+                          <TableRow key={site.id}>
+                            <TableCell className="pl-6">
+                              <div className="font-medium">{site.name}</div>
+                              <div className="max-w-md truncate text-xs text-muted-foreground">
+                                {site.domains.join(", ") || "未配置域名"}
+                              </div>
+                            </TableCell>
+                            <TableCell className="tabular-nums">
+                              {formatNumber(site.requests)}
+                            </TableCell>
+                            <TableCell className="tabular-nums">
+                              {formatBytes(site.bytes)}
+                            </TableCell>
+                            <TableCell className="tabular-nums">
+                              {formatPercent(
+                                site.requests
+                                  ? site.error_requests / site.requests
+                                  : 0,
+                                2,
+                              )}
+                            </TableCell>
+                            <TableCell className="pr-6">
+                              <Button asChild variant="ghost" size="icon-sm">
+                                <Link
+                                  to={`/overview/sites/${encodeURIComponent(site.id)}`}
+                                  aria-label={`查看 ${site.name} 分析`}
+                                >
+                                  <ArrowRight />
+                                </Link>
+                              </Button>
+                            </TableCell>
                           </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {sitesPagination.items.map((site) => (
-                            <TableRow key={site.id}>
-                              <TableCell className="pl-6">
-                                <div className="font-medium">{site.name}</div>
-                                <div className="max-w-md truncate text-xs text-muted-foreground">
-                                  {site.domains.join(", ") || "未配置域名"}
-                                </div>
-                              </TableCell>
-                              <TableCell className="tabular-nums">
-                                {formatNumber(site.requests)}
-                              </TableCell>
-                              <TableCell className="tabular-nums">
-                                {formatBytes(site.bytes)}
-                              </TableCell>
-                              <TableCell className="tabular-nums">
-                                {formatPercent(
-                                  site.requests
-                                    ? site.error_requests / site.requests
-                                    : 0,
-                                  2,
-                                )}
-                              </TableCell>
-                              <TableCell className="pr-6">
-                                <Button asChild variant="ghost" size="icon-sm">
-                                  <Link
-                                    to={`/overview/sites/${encodeURIComponent(site.id)}`}
-                                    aria-label={`查看 ${site.name} 分析`}
-                                  >
-                                    <ArrowRight />
-                                  </Link>
-                                </Button>
-                              </TableCell>
-                            </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
-                    </div>
+                        ))}
+                      </TableBody>
+                    </Table>
                     <ListPagination
                       pagination={sitesPagination}
                       itemLabel="个站点"
@@ -534,7 +537,7 @@ function MetricCard({
   label: string;
   value: string;
   meta: string;
-  tone: string;
+  tone: Tone;
 }) {
   return (
     <Card>
@@ -546,15 +549,11 @@ function MetricCard({
           </p>
           <p className="mt-1 text-xs text-muted-foreground">{meta}</p>
         </div>
-        <Icon className={`mt-0.5 size-4 ${tone}`} aria-hidden="true" />
+        <Icon
+          className={cn("mt-0.5 size-4", toneText[tone])}
+          aria-hidden="true"
+        />
       </CardContent>
     </Card>
   );
-}
-
-function statusTone(code: number) {
-  if (code >= 500) return "h-full bg-red-500";
-  if (code >= 400) return "h-full bg-amber-500";
-  if (code >= 300) return "h-full bg-sky-500";
-  return "h-full bg-emerald-500";
 }

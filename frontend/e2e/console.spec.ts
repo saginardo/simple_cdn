@@ -1456,13 +1456,13 @@ test("log rows truncate long paths, color errors, and open request details", asy
     (statusBox?.x ?? 0) + 1,
   );
   await expect(notFoundRow.getByText("404", { exact: true })).toHaveClass(
-    /bg-amber-50/,
+    /bg-warning\/10/,
   );
   const badGatewayRow = page.getByRole("row", {
     name: new RegExp(`查看请求 GET ${accessLogs[1].path}`),
   });
   await expect(badGatewayRow.getByText("502", { exact: true })).toHaveClass(
-    /bg-red-50/,
+    /bg-destructive\/10/,
   );
 
   await notFoundRow.click();

@@ -9,6 +9,7 @@ import {
   PageError,
   PageHeader,
   PageLoading,
+  Panel,
 } from "@/components/page";
 import { ListPagination } from "@/components/list-pagination";
 import {
@@ -119,7 +120,7 @@ export function OverviewSitePage() {
                       {statusPagination.items.map((item) => (
                         <div
                           key={item.code}
-                          className="flex items-center justify-between border px-4 py-3"
+                          className="flex items-center justify-between rounded-lg border px-4 py-3"
                         >
                           <span className="font-mono text-sm">
                             HTTP {item.code}
@@ -155,9 +156,9 @@ export function OverviewSitePage() {
 
 function Summary({ label, value }: { label: string; value: string }) {
   return (
-    <div className="border bg-card px-5 py-4">
+    <Panel className="px-5 py-4">
       <p className="text-sm text-muted-foreground">{label}</p>
       <p className="mt-2 text-2xl font-semibold tabular-nums">{value}</p>
-    </div>
+    </Panel>
   );
 }

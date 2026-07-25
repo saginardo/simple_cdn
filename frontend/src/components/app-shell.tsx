@@ -106,7 +106,7 @@ export function AppShell() {
                 >
                   <Bell />
                   {messageQuery.data?.unread_count ? (
-                    <span className="absolute -right-0.5 -top-0.5 size-2 rounded-full bg-red-500" />
+                    <span className="absolute -right-0.5 -top-0.5 size-2 rounded-full bg-destructive" />
                   ) : null}
                 </Button>
               </TooltipTrigger>

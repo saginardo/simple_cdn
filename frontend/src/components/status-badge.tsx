@@ -1,4 +1,5 @@
 import { Badge } from "@/components/ui/badge";
+import { toneBadge, type Tone } from "@/lib/tones";
 import { cn } from "@/lib/utils";
 
 const labels: Record<string, string> = {
@@ -25,29 +26,18 @@ const labels: Record<string, string> = {
   forced: "强制完成",
 };
 
-const tones: Record<string, string> = {
-  active:
-    "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300",
-  succeeded:
-    "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300",
-  completed:
-    "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300",
-  ready:
-    "border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-900 dark:bg-sky-950 dark:text-sky-300",
-  pending:
-    "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300",
-  queued:
-    "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300",
-  applying:
-    "border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-900 dark:bg-sky-950 dark:text-sky-300",
-  dispatching:
-    "border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-900 dark:bg-sky-950 dark:text-sky-300",
-  running:
-    "border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-900 dark:bg-sky-950 dark:text-sky-300",
-  failed:
-    "border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300",
-  revoked:
-    "border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300",
+const tones: Record<string, Tone> = {
+  active: "success",
+  succeeded: "success",
+  completed: "success",
+  ready: "info",
+  applying: "info",
+  dispatching: "info",
+  running: "info",
+  pending: "warning",
+  queued: "warning",
+  failed: "danger",
+  revoked: "danger",
 };
 
 export function StatusBadge({
@@ -58,7 +48,10 @@ export function StatusBadge({
   label?: string;
 }) {
   return (
-    <Badge variant="outline" className={cn("font-normal", tones[status])}>
+    <Badge
+      variant="outline"
+      className={cn("font-normal", tones[status] && toneBadge[tones[status]])}
+    >
       {label ?? labels[status] ?? status}
     </Badge>
   );

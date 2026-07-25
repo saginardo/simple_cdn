@@ -18,6 +18,7 @@ import {
   PageError,
   PageHeader,
   PageLoading,
+  Panel,
 } from "@/components/page";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
@@ -106,7 +107,7 @@ export function CertificatesPage() {
         {query.data ? (
           sites.length ? (
             <>
-              <div className="grid grid-cols-2 gap-px border bg-border lg:grid-cols-4">
+              <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border bg-border lg:grid-cols-4">
                 <Metric
                   icon={KeyRound}
                   label="证书站点"
@@ -146,8 +147,8 @@ export function CertificatesPage() {
               </Tabs>
 
               {filtered.length ? (
-                <div className="border bg-card">
-                  <div className="hidden overflow-x-auto md:block">
+                <Panel>
+                  <div className="hidden md:block">
                     <Table>
                       <TableHeader>
                         <TableRow>
@@ -197,7 +198,7 @@ export function CertificatesPage() {
                     itemLabel="个站点"
                     disabled={query.isFetching}
                   />
-                </div>
+                </Panel>
               ) : (
                 <EmptyState
                   title="当前筛选无证书记录"
@@ -235,7 +236,7 @@ function Metric({
 }) {
   return (
     <div className="flex min-h-24 items-center gap-3 bg-card px-4 py-4 sm:px-5">
-      <div className="flex size-9 shrink-0 items-center justify-center border bg-muted/30">
+      <div className="flex size-9 shrink-0 items-center justify-center rounded-md border bg-muted/30">
         <Icon
           className={alert ? "size-4 text-destructive" : "size-4 text-primary"}
           aria-hidden={true}

@@ -759,7 +759,7 @@ function CacheStatus({
             {cache.statuses.map((item) => (
               <div
                 key={item.status}
-                className="flex items-center justify-between border px-3 py-2 text-xs"
+                className="flex items-center justify-between rounded-lg border px-3 py-2 text-xs"
               >
                 <StatusBadge status={item.status} />
                 <span className="tabular-nums text-muted-foreground">
@@ -786,46 +786,44 @@ function AssignedSites({ sites }: { sites: NodeDetail["sites"] }) {
       <CardContent className="px-0">
         {sites.length ? (
           <>
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="pl-6">站点</TableHead>
-                    <TableHead>状态</TableHead>
-                    <TableHead>缓存</TableHead>
-                    <TableHead className="pr-6 text-right">管理</TableHead>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="pl-6">站点</TableHead>
+                  <TableHead>状态</TableHead>
+                  <TableHead>缓存</TableHead>
+                  <TableHead className="pr-6 text-right">管理</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {pagination.items.map((site) => (
+                  <TableRow key={site.id}>
+                    <TableCell className="pl-6">
+                      <div className="font-medium">{site.name}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {site.domains.join(", ")}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <StatusBadge
+                        status={site.published ? "succeeded" : "pending"}
+                        label={site.published ? "已发布" : "未发布"}
+                      />
+                    </TableCell>
+                    <TableCell>
+                      {site.cache_enabled ? "启用" : "关闭"}
+                    </TableCell>
+                    <TableCell className="pr-6 text-right">
+                      <Button asChild variant="outline" size="sm">
+                        <Link to={`/sites/${encodeURIComponent(site.id)}`}>
+                          查看
+                        </Link>
+                      </Button>
+                    </TableCell>
                   </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {pagination.items.map((site) => (
-                    <TableRow key={site.id}>
-                      <TableCell className="pl-6">
-                        <div className="font-medium">{site.name}</div>
-                        <div className="text-xs text-muted-foreground">
-                          {site.domains.join(", ")}
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <StatusBadge
-                          status={site.published ? "succeeded" : "pending"}
-                          label={site.published ? "已发布" : "未发布"}
-                        />
-                      </TableCell>
-                      <TableCell>
-                        {site.cache_enabled ? "启用" : "关闭"}
-                      </TableCell>
-                      <TableCell className="pr-6 text-right">
-                        <Button asChild variant="outline" size="sm">
-                          <Link to={`/sites/${encodeURIComponent(site.id)}`}>
-                            查看
-                          </Link>
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
+                ))}
+              </TableBody>
+            </Table>
             <ListPagination pagination={pagination} itemLabel="个站点" />
           </>
         ) : (
@@ -870,7 +868,7 @@ function UninstallPanel({
       </CardHeader>
       <CardContent className="grid gap-3">
         {job ? (
-          <div className="space-y-2 border bg-muted/30 p-3 text-sm">
+          <div className="space-y-2 rounded-lg border bg-muted/30 p-3 text-sm">
             <div className="flex items-center justify-between">
               <span>卸载流程</span>
               <StatusBadge status={job.status} />
@@ -978,7 +976,7 @@ function CommandDialog({
           </DialogDescription>
         </DialogHeader>
         <div className="relative">
-          <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-all border bg-zinc-950 p-4 pr-12 text-xs leading-5 text-zinc-100">
+          <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-lg border bg-terminal p-4 pr-12 text-xs leading-5 text-terminal-foreground">
             {command}
           </pre>
           <div className="absolute right-2 top-2">

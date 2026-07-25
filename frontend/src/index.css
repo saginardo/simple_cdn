@@ -25,6 +25,11 @@
   --color-input: var(--input);
   --color-border: var(--border);
   --color-destructive: var(--destructive);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-info: var(--info);
+  --color-terminal: var(--terminal);
+  --color-terminal-foreground: var(--terminal-foreground);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);
@@ -64,6 +69,14 @@
   --accent: oklch(0.93 0.025 190);
   --accent-foreground: oklch(0.25 0.045 190);
   --destructive: oklch(0.577 0.245 27.325);
+  /* Semantic status colors. Lightness is tuned so each one stays legible as
+     foreground text, and tinted surfaces are derived via /10 and /25 alphas. */
+  --success: oklch(0.52 0.13 158);
+  --warning: oklch(0.55 0.13 70);
+  --info: oklch(0.53 0.15 250);
+  /* Terminal surfaces stay dark in both themes on purpose. */
+  --terminal: oklch(0.16 0.012 250);
+  --terminal-foreground: oklch(0.93 0.008 250);
   --border: oklch(0.89 0.009 250);
   --input: oklch(0.89 0.009 250);
   --ring: oklch(0.57 0.1 190);
@@ -99,6 +112,9 @@
   --accent: oklch(0.3 0.04 190);
   --accent-foreground: oklch(0.985 0 0);
   --destructive: oklch(0.704 0.191 22.216);
+  --success: oklch(0.78 0.15 158);
+  --warning: oklch(0.82 0.15 80);
+  --info: oklch(0.72 0.14 250);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);

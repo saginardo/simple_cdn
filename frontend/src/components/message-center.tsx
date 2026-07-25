@@ -23,6 +23,7 @@ import {
 import { api, errorMessage } from "@/lib/api";
 import { useListPagination } from "@/hooks/use-list-pagination";
 import { formatDateTime } from "@/lib/format";
+import { toneText, type Tone } from "@/lib/tones";
 import type { Message, MessagePage } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -137,7 +138,7 @@ export function MessageCenter({
                   key={message.id}
                   className={cn(
                     "group relative px-5 py-4 hover:bg-muted/40",
-                    !message.read_at && "bg-sky-50/50 dark:bg-sky-950/20",
+                    !message.read_at && "bg-info/5",
                   )}
                 >
                   <button
@@ -147,7 +148,7 @@ export function MessageCenter({
                   >
                     <div className="mb-1 flex items-center gap-2">
                       {!message.read_at ? (
-                        <Circle className="size-2 fill-sky-500 text-sky-500" />
+                        <Circle className="size-2 fill-info text-info" />
                       ) : null}
                       <span
                         className={cn(
@@ -207,11 +208,13 @@ function severityLabel(severity: Message["severity"]) {
   ];
 }
 
+const severityTones: Record<Message["severity"], Tone> = {
+  info: "info",
+  success: "success",
+  warning: "warning",
+  error: "danger",
+};
+
 function severityTone(severity: Message["severity"]) {
-  return {
-    info: "text-sky-700 dark:text-sky-300",
-    success: "text-emerald-700 dark:text-emerald-300",
-    warning: "text-amber-700 dark:text-amber-300",
-    error: "text-red-700 dark:text-red-300",
-  }[severity];
+  return toneText[severityTones[severity]];
 }

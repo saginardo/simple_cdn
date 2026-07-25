@@ -17,6 +17,7 @@ import {
   PageError,
   PageHeader,
   PageLoading,
+  Panel,
 } from "@/components/page";
 import { ListPagination } from "@/components/list-pagination";
 import { StatusBadge } from "@/components/status-badge";
@@ -103,81 +104,79 @@ export function NodesPage() {
         {nodes.error ? <PageError error={nodes.error} /> : null}
         {nodes.data ? (
           nodes.data.length ? (
-            <div className="border bg-card">
-              <div className="overflow-x-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="pl-5">节点</TableHead>
-                      <TableHead>状态</TableHead>
-                      <TableHead>公网 IPv4</TableHead>
-                      <TableHead>心跳</TableHead>
-                      <TableHead>代理版本</TableHead>
-                      <TableHead>升级</TableHead>
-                      <TableHead className="w-12 pr-5">
-                        <span className="sr-only">管理</span>
-                      </TableHead>
+            <Panel>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="pl-5">节点</TableHead>
+                    <TableHead>状态</TableHead>
+                    <TableHead>公网 IPv4</TableHead>
+                    <TableHead>心跳</TableHead>
+                    <TableHead>代理版本</TableHead>
+                    <TableHead>升级</TableHead>
+                    <TableHead className="w-12 pr-5">
+                      <span className="sr-only">管理</span>
+                    </TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {pagination.items.map((node) => (
+                    <TableRow key={node.id}>
+                      <TableCell className="pl-5">
+                        <div className="font-medium">{node.name}</div>
+                        <div className="font-mono text-xs text-muted-foreground">
+                          {node.id}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <StatusBadge status={node.status} />
+                      </TableCell>
+                      <TableCell className="font-mono text-xs">
+                        {node.public_ipv4}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                        {node.last_heartbeat_at
+                          ? formatDateTime(node.last_heartbeat_at)
+                          : "尚未注册"}
+                      </TableCell>
+                      <TableCell>
+                        <div className="text-sm font-medium">
+                          {node.agent_version
+                            ? `v${node.agent_version}`
+                            : "版本未知"}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          配置 v{formatNumber(node.applied_version)}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        {node.upgrade_task &&
+                        activeUpgrade(node.upgrade_task) ? (
+                          <StatusBadge status={node.upgrade_task.status} />
+                        ) : node.upgrade_up_to_date ? (
+                          <StatusBadge status="succeeded" label="最新" />
+                        ) : node.can_upgrade ? (
+                          <StatusBadge status="ready" label="可升级" />
+                        ) : (
+                          <span className="text-xs text-muted-foreground">
+                            {node.upgrade_blocker || "不可升级"}
+                          </span>
+                        )}
+                      </TableCell>
+                      <TableCell className="pr-5">
+                        <Button asChild variant="ghost" size="icon-sm">
+                          <Link
+                            to={`/nodes/${encodeURIComponent(node.id)}`}
+                            aria-label={`管理 ${node.name}`}
+                          >
+                            <ArrowRight />
+                          </Link>
+                        </Button>
+                      </TableCell>
                     </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {pagination.items.map((node) => (
-                      <TableRow key={node.id}>
-                        <TableCell className="pl-5">
-                          <div className="font-medium">{node.name}</div>
-                          <div className="font-mono text-xs text-muted-foreground">
-                            {node.id}
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <StatusBadge status={node.status} />
-                        </TableCell>
-                        <TableCell className="font-mono text-xs">
-                          {node.public_ipv4}
-                        </TableCell>
-                        <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
-                          {node.last_heartbeat_at
-                            ? formatDateTime(node.last_heartbeat_at)
-                            : "尚未注册"}
-                        </TableCell>
-                        <TableCell>
-                          <div className="text-sm font-medium">
-                            {node.agent_version
-                              ? `v${node.agent_version}`
-                              : "版本未知"}
-                          </div>
-                          <div className="text-xs text-muted-foreground">
-                            配置 v{formatNumber(node.applied_version)}
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          {node.upgrade_task &&
-                          activeUpgrade(node.upgrade_task) ? (
-                            <StatusBadge status={node.upgrade_task.status} />
-                          ) : node.upgrade_up_to_date ? (
-                            <StatusBadge status="succeeded" label="最新" />
-                          ) : node.can_upgrade ? (
-                            <StatusBadge status="ready" label="可升级" />
-                          ) : (
-                            <span className="text-xs text-muted-foreground">
-                              {node.upgrade_blocker || "不可升级"}
-                            </span>
-                          )}
-                        </TableCell>
-                        <TableCell className="pr-5">
-                          <Button asChild variant="ghost" size="icon-sm">
-                            <Link
-                              to={`/nodes/${encodeURIComponent(node.id)}`}
-                              aria-label={`管理 ${node.name}`}
-                            >
-                              <ArrowRight />
-                            </Link>
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
+                  ))}
+                </TableBody>
+              </Table>
               <ListPagination
                 pagination={pagination}
                 itemLabel="个节点"
@@ -194,7 +193,7 @@ export function NodesPage() {
                   </Button>
                 }
               />
-            </div>
+            </Panel>
           ) : (
             <EmptyState
               title="暂无边缘节点"
