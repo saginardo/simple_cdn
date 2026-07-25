@@ -443,10 +443,7 @@ function NodeRow({
           : { status: "failed", label: "异常" };
   const historyPath = `/monitoring/nodes/${encodeURIComponent(node.node_id)}`;
   return (
-    <TableRow
-      className="cursor-pointer"
-      onClick={() => navigate(historyPath)}
-    >
+    <TableRow className="cursor-pointer" onClick={() => navigate(historyPath)}>
       <TableCell className="pl-5">
         <div className="font-medium">{node.name}</div>
         <div className="font-mono text-xs text-muted-foreground">
