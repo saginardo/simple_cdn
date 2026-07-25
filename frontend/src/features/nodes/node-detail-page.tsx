@@ -129,12 +129,20 @@ export function NodeDetailPage() {
 
   const statusMutation = useMutation({
     mutationFn: (status: NodeStatus) =>
-      api(`/api/nodes/${encodeURIComponent(nodeId)}/status`, {
-        method: "POST",
-        body: JSON.stringify({ status }),
-      }),
-    onSuccess: () => {
-      toast.success("节点状态已更新");
+      api<{ ok: boolean; smart_routing_disabled: boolean }>(
+        `/api/nodes/${encodeURIComponent(nodeId)}/status`,
+        {
+          method: "POST",
+          body: JSON.stringify({ status }),
+        },
+      ),
+    onSuccess: (result) => {
+      toast.success(
+        result.smart_routing_disabled
+          ? "节点状态已更新，智能路由已关闭"
+          : "节点状态已更新",
+      );
+      void queryClient.invalidateQueries({ queryKey: ["monitoring"] });
       refresh();
     },
     onError: (error) => toast.error(errorMessage(error)),

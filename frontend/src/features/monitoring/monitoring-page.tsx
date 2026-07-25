@@ -7,7 +7,9 @@ import {
   Gauge,
   LoaderCircle,
   Pencil,
+  Plus,
   RefreshCw,
+  Route,
   Server,
   Trash2,
 } from "lucide-react";
@@ -28,6 +30,7 @@ import {
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -39,6 +42,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
+import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import {
   Table,
@@ -62,6 +66,10 @@ import type {
   MonitoringNode,
   MonitoringOverview,
   MonitoringTarget,
+  SmartRoutingConfig,
+  SmartRoutingNode,
+  SmartRoutingOverview,
+  SmartRoutingWindow,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -72,13 +80,21 @@ export function MonitoringPage() {
     null,
   );
   const [editTarget, setEditTarget] = useState<MonitoringTarget | null>(null);
+  const [editSmartRouting, setEditSmartRouting] =
+    useState<SmartRoutingNode | null>(null);
   const query = useQuery({
     queryKey: ["monitoring"],
     queryFn: () => api<MonitoringOverview>("/api/monitoring"),
     refetchInterval: 10_000,
   });
-  const refresh = () =>
-    queryClient.invalidateQueries({ queryKey: ["monitoring"] });
+  const smartRoutingQuery = useQuery({
+    queryKey: ["monitoring", "smart-routing"],
+    queryFn: () => api<SmartRoutingOverview>("/api/monitoring/smart-routing"),
+    refetchInterval: 10_000,
+  });
+  const refresh = () => {
+    void queryClient.invalidateQueries({ queryKey: ["monitoring"] });
+  };
   const toggleTarget = useMutation({
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
       api<MonitoringTarget>(
@@ -115,6 +131,30 @@ export function MonitoringPage() {
   );
   const resultsPagination = useListPagination(results);
   const targetsPagination = useListPagination(data?.targets ?? []);
+  const smartRoutingPagination = useListPagination(
+    smartRoutingQuery.data?.nodes ?? [],
+  );
+  const updateSmartRouting = useMutation({
+    mutationFn: ({
+      node,
+      config,
+    }: {
+      node: SmartRoutingNode;
+      config: SmartRoutingConfig;
+    }) =>
+      api<{ ok: boolean }>(
+        `/api/monitoring/nodes/${encodeURIComponent(node.node_id)}/smart-routing`,
+        { method: "PUT", ...jsonBody(config) },
+      ),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["monitoring", "smart-routing"],
+      });
+      void queryClient.invalidateQueries({ queryKey: ["monitoring"] });
+      toast.success("智能路由设置已更新");
+    },
+    onError: (error) => toast.error(errorMessage(error)),
+  });
   const enabledTargets = data?.targets.filter((target) => target.enabled) ?? [];
   const capableNodes = data?.nodes.filter((node) => node.capable) ?? [];
   const healthyNodes = capableNodes.filter(
@@ -138,7 +178,10 @@ export function MonitoringPage() {
               variant="outline"
               size="icon"
               aria-label="刷新监测数据"
-              onClick={() => void query.refetch()}
+              onClick={() => {
+                void query.refetch();
+                void smartRoutingQuery.refetch();
+              }}
             >
               <RefreshCw className={query.isFetching ? "animate-spin" : ""} />
             </Button>
@@ -175,9 +218,9 @@ export function MonitoringPage() {
               />
               <Summary
                 icon={<Clock />}
-                label="自动暂停"
+                label="智能路由暂停"
                 value={formatNumber(autoPaused)}
-                detail={`连续 ${data.auto_pause_after} 轮异常`}
+                detail="评分或时间规则"
                 danger={Boolean(autoPaused)}
               />
             </section>
@@ -192,6 +235,7 @@ export function MonitoringPage() {
             <Tabs defaultValue="nodes" className="space-y-4">
               <TabsList>
                 <TabsTrigger value="nodes">节点评分</TabsTrigger>
+                <TabsTrigger value="smart-routing">智能路由</TabsTrigger>
                 <TabsTrigger value="results">拨测明细</TabsTrigger>
                 <TabsTrigger value="targets">目标配置</TabsTrigger>
               </TabsList>
@@ -230,6 +274,60 @@ export function MonitoringPage() {
                 ) : (
                   <EmptyState title="暂无边缘节点" />
                 )}
+              </TabsContent>
+              <TabsContent value="smart-routing">
+                {smartRoutingQuery.isLoading ? <PageLoading /> : null}
+                {smartRoutingQuery.error ? (
+                  <PageError error={smartRoutingQuery.error} />
+                ) : null}
+                {smartRoutingQuery.data ? (
+                  smartRoutingQuery.data.nodes.length ? (
+                    <Panel>
+                      <Table className="min-w-[1120px]">
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead className="pl-5">节点</TableHead>
+                            <TableHead>智能路由</TableHead>
+                            <TableHead>调度</TableHead>
+                            <TableHead>评分门控</TableHead>
+                            <TableHead>当前评分</TableHead>
+                            <TableHead>时间门控</TableHead>
+                            <TableHead>阻断原因</TableHead>
+                            <TableHead>下次切换</TableHead>
+                            <TableHead className="w-14 pr-5 text-right">
+                              操作
+                            </TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {smartRoutingPagination.items.map((node) => (
+                            <SmartRoutingRow
+                              key={node.node_id}
+                              node={node}
+                              busy={updateSmartRouting.isPending}
+                              onToggle={(enabled) =>
+                                updateSmartRouting.mutate({
+                                  node,
+                                  config: smartRoutingConfigFromNode(
+                                    node,
+                                    enabled,
+                                  ),
+                                })
+                              }
+                              onEdit={() => setEditSmartRouting(node)}
+                            />
+                          ))}
+                        </TableBody>
+                      </Table>
+                      <ListPagination
+                        pagination={smartRoutingPagination}
+                        itemLabel="个节点"
+                      />
+                    </Panel>
+                  ) : (
+                    <EmptyState title="暂无边缘节点" />
+                  )
+                ) : null}
               </TabsContent>
               <TabsContent value="results">
                 {results.length ? (
@@ -406,6 +504,22 @@ export function MonitoringPage() {
           if (!open) setEditTarget(null);
         }}
       />
+      <SmartRoutingDialog
+        key={editSmartRouting?.node_id ?? "closed"}
+        node={editSmartRouting}
+        timezone={smartRoutingQuery.data?.timezone ?? "Asia/Shanghai"}
+        busy={updateSmartRouting.isPending}
+        onOpenChange={(open) => {
+          if (!open) setEditSmartRouting(null);
+        }}
+        onSave={(config) => {
+          if (!editSmartRouting) return;
+          updateSmartRouting.mutate(
+            { node: editSmartRouting, config },
+            { onSuccess: () => setEditSmartRouting(null) },
+          );
+        }}
+      />
       <ConfirmDialog
         open={Boolean(removeTarget)}
         onOpenChange={(open) => {
@@ -453,7 +567,7 @@ function NodeRow({
       <TableCell>
         <StatusBadge
           status={node.status}
-          label={node.monitor_auto_paused ? "监测暂停" : undefined}
+          label={node.monitor_auto_paused ? "智能暂停" : undefined}
         />
       </TableCell>
       <TableCell>
@@ -501,6 +615,538 @@ function NodeRow({
       </TableCell>
     </TableRow>
   );
+}
+
+function SmartRoutingRow({
+  node,
+  busy,
+  onToggle,
+  onEdit,
+}: {
+  node: SmartRoutingNode;
+  busy: boolean;
+  onToggle: (enabled: boolean) => void;
+  onEdit: () => void;
+}) {
+  const canEnable = node.score.enabled || node.schedule.enabled;
+  const scoreState =
+    node.score.gate === "blocked"
+      ? { status: "failed", label: "已阻断" }
+      : node.score.gate === "allowed"
+        ? { status: "succeeded", label: "已放行" }
+        : { status: "pending", label: "待判定" };
+  const scheduleState =
+    node.schedule.gate === "open"
+      ? { status: "succeeded", label: "窗口内" }
+      : { status: "failed", label: "窗口外" };
+  const blockedBy = node.blocked_by
+    .map((reason) => (reason === "score" ? "评分" : "时间"))
+    .join("、");
+
+  return (
+    <TableRow>
+      <TableCell className="pl-5">
+        <div className="font-medium">{node.name}</div>
+        <div className="font-mono text-xs text-muted-foreground">
+          {node.public_ipv4}
+        </div>
+      </TableCell>
+      <TableCell>
+        <div className="flex items-center gap-2">
+          <Switch
+            checked={node.enabled}
+            disabled={busy || (!node.enabled && !canEnable)}
+            aria-label={`${node.enabled ? "停用" : "启用"} ${node.name} 智能路由`}
+            onCheckedChange={onToggle}
+          />
+          <span className="text-xs text-muted-foreground">
+            {node.enabled ? "启用" : "人工接管"}
+          </span>
+        </div>
+      </TableCell>
+      <TableCell>
+        <StatusBadge
+          status={node.status}
+          label={node.auto_paused ? "智能暂停" : undefined}
+        />
+      </TableCell>
+      <TableCell>
+        {node.score.enabled ? (
+          <div className="space-y-1">
+            <StatusBadge status={scoreState.status} label={scoreState.label} />
+            <div className="whitespace-nowrap text-xs text-muted-foreground">
+              &lt; {node.score.pause_below_score} ×{" "}
+              {node.score.pause_after_rounds}
+              <span className="mx-1">/</span>≥ {node.score.resume_at_score} ×{" "}
+              {node.score.resume_after_rounds}
+            </div>
+          </div>
+        ) : (
+          <span className="text-muted-foreground">未启用</span>
+        )}
+      </TableCell>
+      <TableCell>
+        {!node.capable ? (
+          <span className="text-muted-foreground">不支持拨测</span>
+        ) : node.score.current_score === undefined ? (
+          <span className="text-muted-foreground">等待上报</span>
+        ) : (
+          <div>
+            <span className="font-medium tabular-nums">
+              {node.score.current_score}
+            </span>
+            {node.score.stale ? (
+              <div className="text-xs text-muted-foreground">数据过期</div>
+            ) : null}
+          </div>
+        )}
+      </TableCell>
+      <TableCell>
+        {node.schedule.enabled ? (
+          <div className="space-y-1">
+            <StatusBadge
+              status={scheduleState.status}
+              label={scheduleState.label}
+            />
+            <div className="text-xs text-muted-foreground">
+              {node.schedule.windows.length} 个窗口
+            </div>
+          </div>
+        ) : (
+          <span className="text-muted-foreground">未启用</span>
+        )}
+      </TableCell>
+      <TableCell>
+        {node.enabled ? (
+          blockedBy ? (
+            <StatusBadge status="failed" label={blockedBy} />
+          ) : (
+            <StatusBadge status="succeeded" label="无" />
+          )
+        ) : (
+          <StatusBadge status="pending" label="人工接管" />
+        )}
+      </TableCell>
+      <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+        {node.schedule.enabled
+          ? formatDateTime(node.schedule.next_transition_at)
+          : "--"}
+      </TableCell>
+      <TableCell className="pr-5 text-right">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label={`编辑 ${node.name} 智能路由`}
+              onClick={onEdit}
+            >
+              <Pencil />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>编辑智能路由</TooltipContent>
+        </Tooltip>
+      </TableCell>
+    </TableRow>
+  );
+}
+
+const weekdays = [
+  { value: 1, label: "一" },
+  { value: 2, label: "二" },
+  { value: 3, label: "三" },
+  { value: 4, label: "四" },
+  { value: 5, label: "五" },
+  { value: 6, label: "六" },
+  { value: 7, label: "日" },
+];
+
+function SmartRoutingDialog({
+  node,
+  timezone,
+  busy,
+  onOpenChange,
+  onSave,
+}: {
+  node: SmartRoutingNode | null;
+  timezone: string;
+  busy: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSave: (config: SmartRoutingConfig) => void;
+}) {
+  const [config, setConfig] = useState<SmartRoutingConfig>(() =>
+    node ? smartRoutingConfigFromNode(node) : emptySmartRoutingConfig(),
+  );
+  const validationError = smartRoutingValidationError(config);
+
+  function updateScore(values: Partial<SmartRoutingConfig["score"]>) {
+    setConfig((current) => ({
+      ...current,
+      score: { ...current.score, ...values },
+    }));
+  }
+
+  function updateSchedule(values: Partial<SmartRoutingConfig["schedule"]>) {
+    setConfig((current) => ({
+      ...current,
+      schedule: { ...current.schedule, ...values },
+    }));
+  }
+
+  function updateWindow(index: number, window: SmartRoutingWindow) {
+    updateSchedule({
+      windows: config.schedule.windows.map((current, currentIndex) =>
+        currentIndex === index ? window : current,
+      ),
+    });
+  }
+
+  return (
+    <Dialog open={Boolean(node)} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!validationError) onSave(config);
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle>智能路由</DialogTitle>
+            <DialogDescription>
+              {node?.name} · {node?.public_ipv4}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid gap-5 py-5">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <Label htmlFor="smart-routing-enabled">自动调度</Label>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  {config.enabled ? "智能路由接管" : "人工接管"}
+                </div>
+              </div>
+              <Switch
+                id="smart-routing-enabled"
+                checked={config.enabled}
+                onCheckedChange={(enabled) =>
+                  setConfig((current) => ({ ...current, enabled }))
+                }
+              />
+            </div>
+
+            <Separator />
+
+            <section className="grid gap-4">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <h3 className="text-sm font-medium">评分门控</h3>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    当前评分 {node?.score.current_score ?? "--"}
+                  </div>
+                </div>
+                <Switch
+                  checked={config.score.enabled}
+                  aria-label="启用评分门控"
+                  onCheckedChange={(enabled) => updateScore({ enabled })}
+                />
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <div className="grid gap-2">
+                  <Label htmlFor="smart-pause-score">暂停分数</Label>
+                  <Input
+                    id="smart-pause-score"
+                    type="number"
+                    min={1}
+                    max={100}
+                    disabled={!config.score.enabled}
+                    value={config.score.pause_below_score}
+                    onChange={(event) =>
+                      updateScore({
+                        pause_below_score: Number(event.target.value),
+                      })
+                    }
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="smart-pause-rounds">暂停轮数</Label>
+                  <Input
+                    id="smart-pause-rounds"
+                    type="number"
+                    min={1}
+                    max={120}
+                    disabled={!config.score.enabled}
+                    value={config.score.pause_after_rounds}
+                    onChange={(event) =>
+                      updateScore({
+                        pause_after_rounds: Number(event.target.value),
+                      })
+                    }
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="smart-resume-score">恢复分数</Label>
+                  <Input
+                    id="smart-resume-score"
+                    type="number"
+                    min={1}
+                    max={100}
+                    disabled={!config.score.enabled}
+                    value={config.score.resume_at_score}
+                    onChange={(event) =>
+                      updateScore({
+                        resume_at_score: Number(event.target.value),
+                      })
+                    }
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="smart-resume-rounds">恢复轮数</Label>
+                  <Input
+                    id="smart-resume-rounds"
+                    type="number"
+                    min={1}
+                    max={120}
+                    disabled={!config.score.enabled}
+                    value={config.score.resume_after_rounds}
+                    onChange={(event) =>
+                      updateScore({
+                        resume_after_rounds: Number(event.target.value),
+                      })
+                    }
+                  />
+                </div>
+              </div>
+            </section>
+
+            <Separator />
+
+            <section className="grid gap-4">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <h3 className="text-sm font-medium">时间门控</h3>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    {timezone}
+                  </div>
+                </div>
+                <Switch
+                  checked={config.schedule.enabled}
+                  aria-label="启用时间门控"
+                  onCheckedChange={(enabled) => updateSchedule({ enabled })}
+                />
+              </div>
+
+              {config.schedule.windows.map((window, index) => (
+                <div key={index} className="grid gap-3 rounded-md border p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-xs font-medium">
+                      时间窗 {index + 1}
+                    </span>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label={`删除时间窗 ${index + 1}`}
+                          onClick={() =>
+                            updateSchedule({
+                              windows: config.schedule.windows.filter(
+                                (_, currentIndex) => currentIndex !== index,
+                              ),
+                            })
+                          }
+                        >
+                          <Trash2 />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>删除时间窗</TooltipContent>
+                    </Tooltip>
+                  </div>
+                  <div
+                    className="flex flex-wrap gap-x-4 gap-y-2"
+                    role="group"
+                    aria-label={`时间窗 ${index + 1} 星期`}
+                  >
+                    {weekdays.map((weekday) => (
+                      <label
+                        key={weekday.value}
+                        className="flex cursor-pointer items-center gap-2 text-sm"
+                      >
+                        <Checkbox
+                          checked={window.weekdays.includes(weekday.value)}
+                          onCheckedChange={(checked) => {
+                            const selected = Boolean(checked);
+                            const values = selected
+                              ? [...window.weekdays, weekday.value]
+                              : window.weekdays.filter(
+                                  (value) => value !== weekday.value,
+                                );
+                            updateWindow(index, {
+                              ...window,
+                              weekdays: [...new Set(values)].sort(
+                                (left, right) => left - right,
+                              ),
+                            });
+                          }}
+                        />
+                        周{weekday.label}
+                      </label>
+                    ))}
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="grid gap-2">
+                      <Label htmlFor={`smart-window-${index}-start`}>
+                        开始
+                      </Label>
+                      <Input
+                        id={`smart-window-${index}-start`}
+                        type="time"
+                        value={window.start}
+                        onChange={(event) =>
+                          updateWindow(index, {
+                            ...window,
+                            start: event.target.value,
+                          })
+                        }
+                      />
+                    </div>
+                    <div className="grid gap-2">
+                      <Label htmlFor={`smart-window-${index}-end`}>结束</Label>
+                      <Input
+                        id={`smart-window-${index}-end`}
+                        type="time"
+                        value={window.end}
+                        onChange={(event) =>
+                          updateWindow(index, {
+                            ...window,
+                            end: event.target.value,
+                          })
+                        }
+                      />
+                    </div>
+                  </div>
+                </div>
+              ))}
+
+              <Button
+                type="button"
+                variant="outline"
+                className="w-fit"
+                disabled={config.schedule.windows.length >= 32}
+                onClick={() =>
+                  updateSchedule({
+                    windows: [
+                      ...config.schedule.windows,
+                      {
+                        weekdays: [1, 2, 3, 4, 5],
+                        start: "09:00",
+                        end: "18:00",
+                      },
+                    ],
+                  })
+                }
+              >
+                <Plus />
+                添加时间窗
+              </Button>
+            </section>
+
+            {validationError ? (
+              <div className="text-sm text-destructive">{validationError}</div>
+            ) : null}
+          </div>
+
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={busy}
+              onClick={() => onOpenChange(false)}
+            >
+              取消
+            </Button>
+            <Button type="submit" disabled={busy || Boolean(validationError)}>
+              {busy ? <LoaderCircle className="animate-spin" /> : <Route />}
+              保存
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function smartRoutingConfigFromNode(
+  node: SmartRoutingNode,
+  enabled = node.enabled,
+): SmartRoutingConfig {
+  return {
+    enabled,
+    score: {
+      enabled: node.score.enabled,
+      pause_below_score: node.score.pause_below_score,
+      pause_after_rounds: node.score.pause_after_rounds,
+      resume_at_score: node.score.resume_at_score,
+      resume_after_rounds: node.score.resume_after_rounds,
+    },
+    schedule: {
+      enabled: node.schedule.enabled,
+      windows: node.schedule.windows.map((window) => ({
+        ...window,
+        weekdays: [...window.weekdays],
+      })),
+    },
+  };
+}
+
+function emptySmartRoutingConfig(): SmartRoutingConfig {
+  return {
+    enabled: true,
+    score: {
+      enabled: true,
+      pause_below_score: 80,
+      pause_after_rounds: 4,
+      resume_at_score: 80,
+      resume_after_rounds: 1,
+    },
+    schedule: { enabled: false, windows: [] },
+  };
+}
+
+function smartRoutingValidationError(config: SmartRoutingConfig) {
+  if (config.enabled && !config.score.enabled && !config.schedule.enabled) {
+    return "至少启用一个门控规则";
+  }
+  if (
+    config.score.pause_below_score < 1 ||
+    config.score.pause_below_score > 100 ||
+    config.score.resume_at_score < 1 ||
+    config.score.resume_at_score > 100
+  ) {
+    return "评分阈值必须在 1 到 100 之间";
+  }
+  if (config.score.resume_at_score < config.score.pause_below_score) {
+    return "恢复分数不能低于暂停分数";
+  }
+  if (
+    config.score.pause_after_rounds < 1 ||
+    config.score.pause_after_rounds > 120 ||
+    config.score.resume_after_rounds < 1 ||
+    config.score.resume_after_rounds > 120
+  ) {
+    return "连续轮数必须在 1 到 120 之间";
+  }
+  if (config.schedule.enabled && config.schedule.windows.length === 0) {
+    return "时间门控至少需要一个时间窗";
+  }
+  if (
+    config.schedule.windows.some(
+      (window) => window.weekdays.length === 0 || !window.start || !window.end,
+    )
+  ) {
+    return "每个时间窗都需要星期、开始和结束时间";
+  }
+  return "";
 }
 
 function Summary({

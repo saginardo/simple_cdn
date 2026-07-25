@@ -240,6 +240,82 @@ const monitoring = {
   ],
 };
 
+const smartRouting = {
+  timezone: "Asia/Shanghai",
+  nodes: [
+    {
+      node_id: "node-1",
+      name: "edge-hong-kong",
+      public_ipv4: "203.0.113.41",
+      status: "active",
+      capable: true,
+      auto_paused: false,
+      enabled: true,
+      blocked_by: [],
+      score: {
+        enabled: true,
+        pause_below_score: 80,
+        pause_after_rounds: 4,
+        resume_at_score: 85,
+        resume_after_rounds: 2,
+        gate: "allowed",
+        current_score: 96,
+        last_checked_at: now.toISOString(),
+        stale: false,
+        low_streak: 0,
+        recovery_streak: 0,
+      },
+      schedule: {
+        enabled: true,
+        windows: [
+          {
+            weekdays: [1, 2, 3, 4, 5, 6, 7],
+            start: "08:00",
+            end: "23:00",
+          },
+        ],
+        gate: "open",
+        next_transition_at: new Date(
+          now.getTime() + 5 * 60 * 60 * 1000,
+        ).toISOString(),
+      },
+      updated_at: now.toISOString(),
+    },
+    {
+      node_id: "node-2",
+      name: "edge-singapore",
+      public_ipv4: "203.0.113.42",
+      status: "draining",
+      capable: true,
+      auto_paused: true,
+      enabled: true,
+      blocked_by: ["score", "schedule"],
+      score: {
+        enabled: true,
+        pause_below_score: 80,
+        pause_after_rounds: 4,
+        resume_at_score: 85,
+        resume_after_rounds: 2,
+        gate: "blocked",
+        current_score: 35,
+        last_checked_at: now.toISOString(),
+        stale: false,
+        low_streak: 0,
+        recovery_streak: 0,
+      },
+      schedule: {
+        enabled: true,
+        windows: [{ weekdays: [1, 2, 3, 4, 5], start: "09:00", end: "18:00" }],
+        gate: "closed",
+        next_transition_at: new Date(
+          now.getTime() + 2 * 24 * 60 * 60 * 1000,
+        ).toISOString(),
+      },
+      updated_at: now.toISOString(),
+    },
+  ],
+};
+
 function monitoringHistory(range: string) {
   const presets: Record<string, { duration: number; bucket: number }> = {
     "1h": { duration: 60 * 60 * 1000, bucket: 30 },
@@ -489,6 +565,17 @@ async function mockAPI(page: Page, overrides: Record<string, unknown> = {}) {
       return;
     }
     if (
+      url.pathname === "/api/nodes/node-1/status" &&
+      route.request().method() === "POST"
+    ) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true, smart_routing_disabled: true }),
+      });
+      return;
+    }
+    if (
       url.pathname === "/api/settings/cache" &&
       route.request().method() === "PUT"
     ) {
@@ -522,6 +609,17 @@ async function mockAPI(page: Page, overrides: Record<string, unknown> = {}) {
           created_at: now.toISOString(),
           updated_at: now.toISOString(),
         }),
+      });
+      return;
+    }
+    if (
+      url.pathname.match(/^\/api\/monitoring\/nodes\/[^/]+\/smart-routing$/) &&
+      route.request().method() === "PUT"
+    ) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true }),
       });
       return;
     }
@@ -621,6 +719,7 @@ async function mockAPI(page: Page, overrides: Record<string, unknown> = {}) {
         nodes: [],
       },
       "/api/monitoring": monitoring,
+      "/api/monitoring/smart-routing": smartRouting,
       "/api/settings": {
         branding,
         cache: { default_size_gb: cacheDefaultSizeGB },
@@ -1569,6 +1668,8 @@ test("cache defaults are configurable and overridden by individual nodes", async
   await page.getByRole("button", { name: "保存缓存配置" }).click();
   await expect(page.getByText("节点缓存配额已保存")).toBeVisible();
   await expect(page.getByText("当前配置 2 GB")).toBeVisible();
+  await page.getByRole("button", { name: "暂停调度" }).click();
+  await expect(page.getByText("节点状态已更新，智能路由已关闭")).toBeVisible();
 });
 
 test("canceled node uninstall returns the panel to its idle state", async ({
@@ -1823,7 +1924,7 @@ test("monitoring workspace shows scoring, probe results, and target controls", a
     page.getByRole("heading", { name: "监测", level: 1 }),
   ).toBeVisible();
   await expect(page.getByText("edge-hong-kong")).toBeVisible();
-  await expect(page.getByText("监测暂停")).toBeVisible();
+  await expect(page.getByText("智能暂停")).toBeVisible();
   await expect(page.getByText("96", { exact: true })).toBeVisible();
   await page.screenshot({
     path: testInfo.outputPath("monitoring-desktop.png"),
@@ -1865,6 +1966,77 @@ test("monitoring workspace shows scoring, probe results, and target controls", a
   await renameDialog.getByLabel("名称").fill("核心 API");
   await renameDialog.getByRole("button", { name: "保存" }).click();
   await expect(page.getByText("拨测目标名称已更新")).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("smart routing tab edits per-node score and schedule gates", async ({
+  page,
+}, testInfo) => {
+  const errors = trackPageErrors(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await mockAPI(page);
+  await page.goto("/#/monitoring");
+
+  await page.getByRole("tab", { name: "智能路由" }).click();
+  await expect(page.getByText("评分、时间", { exact: true })).toBeVisible();
+  await expect(page.getByText("窗口内", { exact: true })).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("smart-routing-desktop.png"),
+    fullPage: true,
+  });
+
+  await page
+    .getByRole("button", { name: "编辑 edge-hong-kong 智能路由" })
+    .click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByText("Asia/Shanghai")).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("smart-routing-dialog.png"),
+    fullPage: true,
+  });
+  await dialog.getByLabel("暂停分数").fill("75");
+  const requestPromise = page.waitForRequest(
+    (request) =>
+      request.url().endsWith("/api/monitoring/nodes/node-1/smart-routing") &&
+      request.method() === "PUT",
+  );
+  await dialog.getByRole("button", { name: "保存" }).click();
+  const request = await requestPromise;
+  expect(request.postDataJSON()).toMatchObject({
+    enabled: true,
+    score: {
+      enabled: true,
+      pause_below_score: 75,
+      pause_after_rounds: 4,
+      resume_at_score: 85,
+      resume_after_rounds: 2,
+    },
+    schedule: {
+      enabled: true,
+      windows: [
+        {
+          weekdays: [1, 2, 3, 4, 5, 6, 7],
+          start: "08:00",
+          end: "23:00",
+        },
+      ],
+    },
+  });
+  await expect(page.getByText("智能路由设置已更新")).toBeVisible();
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.reload();
+  await page.getByRole("tab", { name: "智能路由" }).click();
+  await expect(page.getByText("edge-hong-kong")).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth + 1,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: testInfo.outputPath("smart-routing-mobile.png"),
+    fullPage: true,
+  });
   expect(errors).toEqual([]);
 });
 

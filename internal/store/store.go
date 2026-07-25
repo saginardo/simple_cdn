@@ -689,9 +689,19 @@ func (s *Store) CreateNode(name, publicIPv4 string) (domain.Node, error) {
 	}
 	created := now()
 	node := domain.Node{ID: uuid.NewString(), Name: strings.TrimSpace(name), PublicIPv4: parsed.String(), NginxCapacity: domain.DefaultNginxCapacity(), Status: domain.NodePending, Capabilities: []string{}, CreatedAt: created, UpdatedAt: created}
-	_, err := s.db.Exec(`INSERT INTO nodes(id, name, public_ipv4, status, nginx_worker_processes, nginx_worker_connections, nginx_worker_rlimit_nofile, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, node.ID, node.Name, node.PublicIPv4, node.Status, node.NginxCapacity.WorkerProcesses, node.NginxCapacity.WorkerConnections, node.NginxCapacity.WorkerRlimitNoFile, stamp(created), stamp(created))
+	tx, err := s.db.Begin()
 	if err != nil {
+		return domain.Node{}, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`INSERT INTO nodes(id, name, public_ipv4, status, nginx_worker_processes, nginx_worker_connections, nginx_worker_rlimit_nofile, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, node.ID, node.Name, node.PublicIPv4, node.Status, node.NginxCapacity.WorkerProcesses, node.NginxCapacity.WorkerConnections, node.NginxCapacity.WorkerRlimitNoFile, stamp(created), stamp(created)); err != nil {
 		return domain.Node{}, fmt.Errorf("create node: %w", err)
+	}
+	if err := insertDefaultSmartRoutingPolicyTx(tx, node.ID, created); err != nil {
+		return domain.Node{}, fmt.Errorf("create node smart routing policy: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Node{}, err
 	}
 	return node, nil
 }
@@ -1158,12 +1168,21 @@ func (s *Store) Secret(name string) ([]byte, error) {
 }
 
 func (s *Store) SetNodeStatus(nodeID string, status domain.NodeStatus) error {
+	_, err := s.setNodeStatus(nodeID, status, false)
+	return err
+}
+
+func (s *Store) SetNodeStatusManual(nodeID string, status domain.NodeStatus) (bool, error) {
+	return s.setNodeStatus(nodeID, status, true)
+}
+
+func (s *Store) setNodeStatus(nodeID string, status domain.NodeStatus, manual bool) (bool, error) {
 	if status != domain.NodeActive && status != domain.NodeDraining && status != domain.NodeRevoked && status != domain.NodePending {
-		return errors.New("invalid node status")
+		return false, errors.New("invalid node status")
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer tx.Rollback()
 	var currentStatus domain.NodeStatus
@@ -1172,59 +1191,74 @@ func (s *Store) SetNodeStatus(nodeID string, status domain.NodeStatus) error {
 		SELECT 1 FROM node_uninstall_jobs WHERE node_id = nodes.id AND status IN (?, ?, ?, ?)
 	) FROM nodes WHERE nodes.id = ?`, NodeUninstallPreparing, NodeUninstallReady, NodeUninstallRunning, NodeUninstallFailed, nodeID).Scan(&currentStatus, &activeUninstall)
 	if errors.Is(err, sql.ErrNoRows) {
-		return ErrNotFound
+		return false, ErrNotFound
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
 	if currentStatus == domain.NodeUninstalling || currentStatus == domain.NodeUninstalled {
-		return errors.New("uninstalling or uninstalled nodes cannot change status")
+		return false, errors.New("uninstalling or uninstalled nodes cannot change status")
 	}
 	if activeUninstall != 0 && status != currentStatus && status != domain.NodeRevoked {
-		return ErrUninstallActive
+		return false, ErrUninstallActive
+	}
+	smartRoutingDisabled := false
+	if manual {
+		result, err := tx.Exec(`UPDATE node_smart_routing SET enabled = 0, updated_at = ? WHERE node_id = ? AND enabled = 1`, stamp(now()), nodeID)
+		if err != nil {
+			return false, err
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return false, err
+		}
+		smartRoutingDisabled = changed != 0
 	}
 	if status == domain.NodeRevoked {
 		result, err := tx.Exec(`UPDATE nodes SET status = ?, monitor_auto_paused = 0, cert_fingerprint = NULL, active_upgrade_task_id = '', updated_at = ? WHERE id = ?`, status, stamp(now()), nodeID)
 		if err != nil {
-			return err
+			return false, err
 		}
 		changed, err := result.RowsAffected()
 		if err != nil {
-			return err
+			return false, err
 		}
 		if changed != 1 {
-			return ErrNotFound
+			return false, ErrNotFound
 		}
 		if _, err := tx.Exec(`DELETE FROM enrollment_tokens WHERE node_id = ? AND used_at IS NULL`, nodeID); err != nil {
-			return err
+			return false, err
 		}
 		if _, err := tx.Exec(`UPDATE node_uninstall_jobs SET previous_status = ?, updated_at = ? WHERE node_id = ? AND status IN (?, ?, ?, ?)`,
 			status, stamp(now()), nodeID, NodeUninstallPreparing, NodeUninstallReady, NodeUninstallRunning, NodeUninstallFailed); err != nil {
-			return err
+			return false, err
 		}
 		if _, err := tx.Exec(`UPDATE node_upgrade_tasks SET status = ?, error_code = 'authorization_revoked',
 			detail = 'node authorization was revoked during online upgrade', completed_at = ?, updated_at = ?
 			WHERE node_id = ? AND status IN (?, ?)`, domain.NodeUpgradeFailed, stamp(now()), stamp(now()), nodeID,
 			domain.NodeUpgradeQueued, domain.NodeUpgradeApplying); err != nil {
-			return err
+			return false, err
 		}
 	} else {
 		result, err := tx.Exec(`UPDATE nodes SET status = ?, monitor_auto_paused = 0, updated_at = ? WHERE id = ?`, status, stamp(now()), nodeID)
 		if err != nil {
-			return err
+			return false, err
 		}
 		changed, err := result.RowsAffected()
 		if err != nil {
-			return err
+			return false, err
 		}
 		if changed != 1 {
-			return ErrNotFound
+			return false, ErrNotFound
 		}
 	}
 	if _, err := tx.Exec(`UPDATE node_monitoring_status SET consecutive_abnormal = 0, updated_at = ? WHERE node_id = ?`, stamp(now()), nodeID); err != nil {
-		return err
+		return false, err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return smartRoutingDisabled, nil
 }
 
 func (s *Store) CreateSite(site domain.Site, zoneID string) (domain.Site, error) {

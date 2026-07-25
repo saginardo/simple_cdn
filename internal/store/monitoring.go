@@ -51,6 +51,7 @@ type MonitoringRoundOutcome struct {
 	NodeStatus    domain.NodeStatus
 	StatusChanged bool
 	AutoPaused    bool
+	Transition    SmartRoutingTransition
 }
 
 func (s *Store) ListMonitoringTargets(enabledOnly bool) ([]domain.MonitoringTarget, error) {
@@ -218,17 +219,9 @@ func (s *Store) DeleteMonitoringTarget(targetID string) error {
 }
 
 func resetMonitoringStateTx(tx *sql.Tx) error {
-	var enabledTargets int
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM monitoring_targets WHERE enabled = 1`).Scan(&enabledTargets); err != nil {
+	if _, err := tx.Exec(`UPDATE node_smart_routing SET score_low_streak = 0, score_recovery_streak = 0, updated_at = ?
+		WHERE score_low_streak != 0 OR score_recovery_streak != 0`, stamp(now())); err != nil {
 		return err
-	}
-	if enabledTargets == 0 {
-		updatedAt := stamp(now())
-		if _, err := tx.Exec(`UPDATE nodes SET status = CASE WHEN status = ? AND monitor_auto_paused = 1 THEN ? ELSE status END,
-			monitor_auto_paused = 0, updated_at = CASE WHEN monitor_auto_paused = 1 THEN ? ELSE updated_at END
-			WHERE monitor_auto_paused = 1`, domain.NodeDraining, domain.NodeActive, updatedAt); err != nil {
-			return err
-		}
 	}
 	if _, err := tx.Exec(`DELETE FROM monitoring_probe_results`); err != nil {
 		return err
@@ -289,12 +282,12 @@ func (s *Store) RecordMonitoringRound(nodeID string, results []domain.Monitoring
 	if len(targetIDs) == 0 || !monitoringResultsMatchTargets(results, targetIDs) {
 		return MonitoringRoundOutcome{}, ErrMonitoringTargetsChanged
 	}
-	var nodeStatus domain.NodeStatus
-	var autoPaused int
-	if err := tx.QueryRow(`SELECT status, monitor_auto_paused FROM nodes WHERE id = ?`, nodeID).Scan(&nodeStatus, &autoPaused); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return MonitoringRoundOutcome{}, ErrNotFound
-		}
+	recordedAt := now()
+	if err := ensureSmartRoutingPolicyTx(tx, nodeID, recordedAt); err != nil {
+		return MonitoringRoundOutcome{}, err
+	}
+	policy, err := scanSmartRoutingPolicy(tx.QueryRow(`SELECT `+smartRoutingPolicyColumns+` FROM node_smart_routing WHERE node_id = ?`, nodeID))
+	if err != nil {
 		return MonitoringRoundOutcome{}, err
 	}
 	priorAbnormal := 0
@@ -315,18 +308,20 @@ func (s *Store) RecordMonitoringRound(nodeID string, results []domain.Monitoring
 	if status.Score < MonitoringHealthyScore {
 		status.ConsecutiveAbnormal = priorAbnormal + 1
 	}
-	statusChanged := false
-	if status.ConsecutiveAbnormal >= MonitoringAutoPauseAfter && nodeStatus == domain.NodeActive {
-		nodeStatus = domain.NodeDraining
-		autoPaused = 1
-		statusChanged = true
-	} else if status.ConsecutiveAbnormal == 0 && autoPaused != 0 && nodeStatus == domain.NodeDraining {
-		nodeStatus = domain.NodeActive
-		autoPaused = 0
-		statusChanged = true
+	transition := SmartRoutingTransition{
+		NodeID: nodeID, PreviousScoreGate: policy.ScoreGate, ScoreGate: policy.ScoreGate,
+		PreviousScheduleGate: policy.ScheduleGate, ScheduleGate: policy.ScheduleGate,
 	}
-	if _, err := tx.Exec(`UPDATE nodes SET status = ?, monitor_auto_paused = ?, updated_at = CASE WHEN status != ? OR monitor_auto_paused != ? THEN ? ELSE updated_at END WHERE id = ?`,
-		nodeStatus, autoPaused, nodeStatus, autoPaused, stamp(now()), nodeID); err != nil {
+	if policy.Enabled && policy.ScoreEnabled {
+		transition.ScoreGateChanged = advanceSmartRoutingScore(&policy, status.Score)
+		transition.ScoreGate = policy.ScoreGate
+		policy.UpdatedAt = recordedAt
+		if _, err := tx.Exec(`UPDATE node_smart_routing SET score_gate = ?, score_low_streak = ?, score_recovery_streak = ?, updated_at = ? WHERE node_id = ?`,
+			policy.ScoreGate, policy.ScoreLowStreak, policy.ScoreRecoveryStreak, stamp(policy.UpdatedAt), nodeID); err != nil {
+			return MonitoringRoundOutcome{}, err
+		}
+	}
+	if err := reconcileSmartRoutingNodeTx(tx, &policy, &transition, recordedAt); err != nil {
 		return MonitoringRoundOutcome{}, err
 	}
 	if _, err := tx.Exec(`INSERT INTO node_monitoring_status(node_id, score, success_rate, average_latency_ms, consecutive_abnormal, last_checked_at, updated_at)
@@ -349,7 +344,10 @@ func (s *Store) RecordMonitoringRound(nodeID string, results []domain.Monitoring
 	if err := tx.Commit(); err != nil {
 		return MonitoringRoundOutcome{}, err
 	}
-	return MonitoringRoundOutcome{Status: status, NodeStatus: nodeStatus, StatusChanged: statusChanged, AutoPaused: autoPaused != 0}, nil
+	return MonitoringRoundOutcome{
+		Status: status, NodeStatus: transition.NodeStatus, StatusChanged: transition.StatusChanged,
+		AutoPaused: transition.AutoPaused, Transition: transition,
+	}, nil
 }
 
 func monitoringResultsMatchTargets(results []domain.MonitoringProbeResult, targetIDs []string) bool {

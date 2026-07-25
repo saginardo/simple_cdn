@@ -100,7 +100,7 @@ func TestMonitoringNeverResumesManuallyPausedNode(t *testing.T) {
 	}
 }
 
-func TestManualPauseTakesOwnershipAndTargetChangeReleasesAutoPause(t *testing.T) {
+func TestManualPauseTakesOwnershipAndMissingScoreRetainsAutoPause(t *testing.T) {
 	database, err := Open(filepath.Join(t.TempDir(), "control.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -165,12 +165,12 @@ func TestManualPauseTakesOwnershipAndTargetChangeReleasesAutoPause(t *testing.T)
 	if err := database.DeleteMonitoringTarget(secondTarget.ID); err != nil {
 		t.Fatal(err)
 	}
-	released, err := database.GetNode(node.ID)
+	retained, err := database.GetNode(node.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if released.Status != domain.NodeActive || released.MonitorAutoPaused {
-		t.Fatalf("target change did not release automatic pause: %#v", released)
+	if retained.Status != domain.NodeDraining || !retained.MonitorAutoPaused {
+		t.Fatalf("missing score did not retain automatic pause: %#v", retained)
 	}
 	statuses, err := database.ListNodeMonitoringStatuses()
 	if err != nil || len(statuses) != 0 {
@@ -231,6 +231,30 @@ func TestMonitoringTargetRenamePreservesCurrentStateAndRequiresUniqueName(t *tes
 	duplicate := "备用探针"
 	if _, err := database.UpdateMonitoringTarget(target.ID, &duplicate, nil); !errors.Is(err, ErrMonitoringTargetNameExists) {
 		t.Fatalf("duplicate name error = %v", err)
+	}
+}
+
+func TestMonitoringTargetSetChangeResetsPendingSmartRoutingStreak(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	node, _ := database.CreateNode("edge-target-reset", "203.0.113.129")
+	target, _ := database.CreateMonitoringTarget("主探针", "probe-reset.example.test:443")
+	if _, err := database.RecordMonitoringRound(node.ID, []domain.MonitoringProbeResult{failedMonitoringResult(target.ID, time.Now().UTC())}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := database.SmartRoutingPolicy(node.ID)
+	if err != nil || before.ScoreLowStreak != 1 || before.ScoreGate != SmartRoutingScoreUnknown {
+		t.Fatalf("policy before target change = %#v, %v", before, err)
+	}
+	if _, err := database.CreateMonitoringTarget("备用探针", "probe-reset-b.example.test:443"); err != nil {
+		t.Fatal(err)
+	}
+	after, err := database.SmartRoutingPolicy(node.ID)
+	if err != nil || after.ScoreLowStreak != 0 || after.ScoreGate != SmartRoutingScoreUnknown {
+		t.Fatalf("policy after target change = %#v, %v", after, err)
 	}
 }
 

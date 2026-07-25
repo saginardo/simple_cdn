@@ -16,6 +16,7 @@ import (
 	"simple_cdn/internal/domain"
 	"simple_cdn/internal/integrations"
 	"simple_cdn/internal/nginx"
+	"simple_cdn/internal/store"
 )
 
 type HealthManager struct {
@@ -84,6 +85,12 @@ func (m *HealthManager) Reconcile(ctx context.Context) error {
 		return finish()
 	}
 	if m.Server.Store != nil {
+		transitions, err := m.Server.Store.ReconcileSmartRouting(started)
+		if err != nil {
+			errorsFound = append(errorsFound, fmt.Errorf("reconcile smart routing: %w", err))
+		} else {
+			m.auditSmartRoutingTransitions(transitions)
+		}
 		if err := m.Server.Store.ReconcilePublishTasks(); err != nil {
 			errorsFound = append(errorsFound, fmt.Errorf("reconcile publish tasks: %w", err))
 		}
@@ -180,6 +187,29 @@ func (m *HealthManager) Reconcile(ctx context.Context) error {
 		errorsFound = append(errorsFound, fmt.Errorf("health reconciliation exceeded %s: %w", m.roundTimeout(), context.DeadlineExceeded))
 	}
 	return finish()
+}
+
+func (m *HealthManager) auditSmartRoutingTransitions(transitions []store.SmartRoutingTransition) {
+	if m.Server == nil || m.Server.Store == nil {
+		return
+	}
+	for _, transition := range transitions {
+		detail := fmt.Sprintf("trigger=schedule reconciliation status=%s blocked_by=%s", transition.NodeStatus, strings.Join(transition.BlockedBy, ","))
+		if transition.ScheduleGateChanged {
+			action := "smart_routing_schedule_opened"
+			if transition.ScheduleGate == store.SmartRoutingScheduleClosed {
+				action = "smart_routing_schedule_closed"
+			}
+			_ = m.Server.Store.Audit("system", action, "node", transition.NodeID, "", detail)
+		}
+		if transition.StatusChanged {
+			action := "smart_routing_auto_resume"
+			if transition.NodeStatus == domain.NodeDraining {
+				action = "smart_routing_auto_pause"
+			}
+			_ = m.Server.Store.Audit("system", action, "node", transition.NodeID, "", detail)
+		}
+	}
 }
 
 type nodeHealthProbe struct {

@@ -55,6 +55,194 @@ type monitoringProbeResponse struct {
 	CheckedAt          time.Time `json:"checked_at"`
 }
 
+type smartRoutingOverviewResponse struct {
+	Timezone string                     `json:"timezone"`
+	Nodes    []smartRoutingNodeResponse `json:"nodes"`
+}
+
+type smartRoutingNodeResponse struct {
+	NodeID     string                       `json:"node_id"`
+	Name       string                       `json:"name"`
+	PublicIPv4 string                       `json:"public_ipv4"`
+	Status     domain.NodeStatus            `json:"status"`
+	Capable    bool                         `json:"capable"`
+	AutoPaused bool                         `json:"auto_paused"`
+	Enabled    bool                         `json:"enabled"`
+	BlockedBy  []string                     `json:"blocked_by"`
+	Score      smartRoutingScoreResponse    `json:"score"`
+	Schedule   smartRoutingScheduleResponse `json:"schedule"`
+	UpdatedAt  time.Time                    `json:"updated_at"`
+}
+
+type smartRoutingScoreResponse struct {
+	Enabled           bool       `json:"enabled"`
+	PauseBelowScore   int        `json:"pause_below_score"`
+	PauseAfterRounds  int        `json:"pause_after_rounds"`
+	ResumeAtScore     int        `json:"resume_at_score"`
+	ResumeAfterRounds int        `json:"resume_after_rounds"`
+	Gate              string     `json:"gate"`
+	CurrentScore      *int       `json:"current_score,omitempty"`
+	LastCheckedAt     *time.Time `json:"last_checked_at,omitempty"`
+	Stale             bool       `json:"stale"`
+	LowStreak         int        `json:"low_streak"`
+	RecoveryStreak    int        `json:"recovery_streak"`
+}
+
+type smartRoutingScheduleResponse struct {
+	Enabled          bool                       `json:"enabled"`
+	Windows          []store.SmartRoutingWindow `json:"windows"`
+	Gate             string                     `json:"gate"`
+	NextTransitionAt *time.Time                 `json:"next_transition_at,omitempty"`
+}
+
+func (s *Server) smartRoutingOverview(response http.ResponseWriter, _ *http.Request) {
+	overview, err := s.loadSmartRoutingOverview(time.Now().UTC())
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, overview)
+}
+
+func (s *Server) loadSmartRoutingOverview(at time.Time) (smartRoutingOverviewResponse, error) {
+	states, err := s.Store.ListSmartRoutingNodeStates()
+	if err != nil {
+		return smartRoutingOverviewResponse{}, err
+	}
+	nodes := make([]smartRoutingNodeResponse, 0, len(states))
+	for _, state := range states {
+		if state.Node.Status == domain.NodeUninstalled {
+			continue
+		}
+		policy := state.Policy
+		item := smartRoutingNodeResponse{
+			NodeID: state.Node.ID, Name: state.Node.Name, PublicIPv4: state.Node.PublicIPv4,
+			Status: state.Node.Status, Capable: slices.Contains(state.Node.Capabilities, domain.EdgeCapabilityTCPMonitoring),
+			AutoPaused: state.Node.MonitorAutoPaused, Enabled: policy.Enabled, BlockedBy: policy.BlockedBy(), UpdatedAt: policy.UpdatedAt,
+			Score: smartRoutingScoreResponse{
+				Enabled: policy.ScoreEnabled, PauseBelowScore: policy.ScorePauseBelow,
+				PauseAfterRounds: policy.ScorePauseRounds, ResumeAtScore: policy.ScoreResumeAt,
+				ResumeAfterRounds: policy.ScoreResumeRounds, Gate: policy.ScoreGate,
+				CurrentScore: state.CurrentScore, LastCheckedAt: state.LastCheckedAt,
+				Stale:     state.LastCheckedAt == nil || state.LastCheckedAt.Before(at.Add(-monitoringStaleAfter)),
+				LowStreak: policy.ScoreLowStreak, RecoveryStreak: policy.ScoreRecoveryStreak,
+			},
+			Schedule: smartRoutingScheduleResponse{
+				Enabled: policy.ScheduleEnabled, Windows: policy.ScheduleWindows, Gate: policy.ScheduleGate,
+			},
+		}
+		if policy.ScheduleEnabled {
+			item.Schedule.NextTransitionAt = store.SmartRoutingNextTransition(at, policy.ScheduleWindows)
+		}
+		nodes = append(nodes, item)
+	}
+	return smartRoutingOverviewResponse{Timezone: store.SmartRoutingTimezone, Nodes: nodes}, nil
+}
+
+func (s *Server) updateNodeSmartRouting(response http.ResponseWriter, request *http.Request) {
+	var input store.SmartRoutingConfig
+	if !readJSON(response, request, &input) {
+		return
+	}
+	nodeID := request.PathValue("id")
+	outcome, err := s.Store.UpdateSmartRoutingPolicy(nodeID, input, time.Now().UTC(), monitoringStaleAfter)
+	if err != nil {
+		writeStoreError(response, err)
+		return
+	}
+	actor := adminID(request.Context())
+	if outcome.ConfigChanged {
+		detail := fmt.Sprintf("enabled=%t score=%t pause<%d/%d resume>=%d/%d schedule=%t windows=%d",
+			outcome.Policy.Enabled, outcome.Policy.ScoreEnabled, outcome.Policy.ScorePauseBelow,
+			outcome.Policy.ScorePauseRounds, outcome.Policy.ScoreResumeAt, outcome.Policy.ScoreResumeRounds,
+			outcome.Policy.ScheduleEnabled, len(outcome.Policy.ScheduleWindows))
+		s.audit(request, actor, "update_smart_routing", "node", nodeID, detail)
+	}
+	s.auditSmartRoutingTransition(request, actor, "configuration", outcome.Transition)
+	if outcome.Transition.ScoreGateChanged &&
+		(outcome.Transition.PreviousScoreGate == store.SmartRoutingScoreBlocked || outcome.Transition.ScoreGate == store.SmartRoutingScoreBlocked) {
+		s.notifySmartRoutingConfigurationTransition(request.Context(), nodeID, outcome)
+	}
+	writeJSON(response, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) notifySmartRoutingConfigurationTransition(ctx context.Context, nodeID string, outcome store.SmartRoutingUpdateOutcome) {
+	if s.Notifier == nil {
+		return
+	}
+	node, err := s.Store.GetNode(nodeID)
+	if err != nil {
+		if s.Logger != nil {
+			s.Logger.Warn("load node for smart routing configuration notification", "node_id", nodeID, "error", err)
+		}
+		return
+	}
+	details := []integrations.NotificationDetail{
+		{Label: "节点", Value: node.Name},
+		{Label: "公网地址", Value: node.PublicIPv4},
+		{Label: "暂停规则", Value: fmt.Sprintf("低于 %d 分连续 %d 轮", outcome.Policy.ScorePauseBelow, outcome.Policy.ScorePauseRounds)},
+		{Label: "恢复规则", Value: fmt.Sprintf("达到 %d 分连续 %d 轮", outcome.Policy.ScoreResumeAt, outcome.Policy.ScoreResumeRounds)},
+	}
+	notification := integrations.Notification{
+		Category: integrations.NotificationCategoryMonitoring, OccurredAt: time.Now().UTC(),
+		Key: "monitoring:node:" + nodeID, Cooldown: monitoringNotificationCooldown, Details: details,
+	}
+	if outcome.Transition.ScoreGate == store.SmartRoutingScoreBlocked {
+		notification.Severity = integrations.NotificationSeverityError
+		notification.Subject = "[CDN] 评分规则更新，节点已触发阻断"
+		if outcome.Transition.StatusChanged && outcome.Transition.NodeStatus == domain.NodeDraining {
+			notification.Message = "评分规则更新后，当前评分满足暂停条件，智能路由已将节点移出边缘调度。"
+		} else {
+			notification.Message = "评分规则更新后，当前评分满足暂停条件；节点当前未由智能路由切换状态。"
+		}
+		notification.SuppressUntilResolved = true
+	} else {
+		notification.Severity = integrations.NotificationSeveritySuccess
+		if !outcome.Policy.ScoreEnabled {
+			notification.Subject = "[CDN] 评分门控已关闭，异常状态已解除"
+			notification.Message = "管理员关闭了评分门控，原评分异常事件已解除。"
+		} else if slices.Contains(outcome.Transition.BlockedBy, "schedule") {
+			notification.Subject = "[CDN] 评分门控已恢复，仍受时间规则限制"
+			notification.Message = "评分规则更新后，当前评分满足恢复条件；节点仍处于时间规则关闭区间。"
+		} else {
+			notification.Subject = "[CDN] 评分门控已恢复，节点可加入调度"
+			notification.Message = "评分规则更新后，当前评分满足恢复条件，评分异常事件已解除。"
+		}
+		notification.Resolved = true
+		notification.NotifyOnResolve = true
+	}
+	if err := integrations.SendNotification(ctx, s.Notifier, notification); err != nil && s.Logger != nil {
+		s.Logger.Warn("send smart routing configuration notification", "node_id", nodeID, "score_gate", outcome.Transition.ScoreGate, "error", err)
+	}
+}
+
+func (s *Server) auditSmartRoutingTransition(request *http.Request, actor, trigger string, transition store.SmartRoutingTransition) {
+	detail := fmt.Sprintf("trigger=%s status=%s blocked_by=%s", trigger, transition.NodeStatus, strings.Join(transition.BlockedBy, ","))
+	if transition.ScoreGateChanged {
+		action := "smart_routing_score_pending"
+		if transition.ScoreGate == store.SmartRoutingScoreBlocked {
+			action = "smart_routing_score_blocked"
+		} else if transition.ScoreGate == store.SmartRoutingScoreAllowed {
+			action = "smart_routing_score_allowed"
+		}
+		s.audit(request, actor, action, "node", transition.NodeID, detail)
+	}
+	if transition.ScheduleGateChanged {
+		action := "smart_routing_schedule_opened"
+		if transition.ScheduleGate == store.SmartRoutingScheduleClosed {
+			action = "smart_routing_schedule_closed"
+		}
+		s.audit(request, actor, action, "node", transition.NodeID, detail)
+	}
+	if transition.StatusChanged {
+		action := "smart_routing_auto_resume"
+		if transition.NodeStatus == domain.NodeDraining {
+			action = "smart_routing_auto_pause"
+		}
+		s.audit(request, actor, action, "node", transition.NodeID, detail)
+	}
+}
+
 func (s *Server) monitoringOverview(response http.ResponseWriter, _ *http.Request) {
 	targets, err := s.Store.ListMonitoringTargets(false)
 	if err != nil {
@@ -355,14 +543,12 @@ func (s *Server) edgeMonitoringReport(response http.ResponseWriter, request *htt
 		return
 	}
 	s.enqueueMonitoringHistory(nodeID, input.Results)
-	if outcome.StatusChanged || outcome.AutoPaused && outcome.Status.ConsecutiveAbnormal >= store.MonitoringAutoPauseAfter {
-		action := "monitor_auto_pause"
-		if outcome.StatusChanged && outcome.NodeStatus == domain.NodeActive {
-			action = "monitor_auto_resume"
-		}
-		if outcome.StatusChanged {
-			s.audit(request, "edge:"+nodeID, action, "node", nodeID, outcome.Status.String())
-		}
+	if outcome.Transition.ScoreGateChanged || outcome.Transition.StatusChanged {
+		s.auditSmartRoutingTransition(request, "edge:"+nodeID, "score report: "+outcome.Status.String(), outcome.Transition)
+	}
+	scoreIncidentTransition := outcome.Transition.ScoreGateChanged &&
+		(outcome.Transition.PreviousScoreGate == store.SmartRoutingScoreBlocked || outcome.Transition.ScoreGate == store.SmartRoutingScoreBlocked)
+	if scoreIncidentTransition || outcome.AutoPaused && outcome.Transition.ScoreGate == store.SmartRoutingScoreBlocked {
 		s.notifyMonitoringTransition(request.Context(), nodeID, input.Results, outcome)
 	}
 	writeJSON(response, http.StatusOK, map[string]bool{"accepted": true})
@@ -376,6 +562,13 @@ func (s *Server) notifyMonitoringTransition(ctx context.Context, nodeID string, 
 	if err != nil {
 		if s.Logger != nil {
 			s.Logger.Warn("load node for monitoring notification", "node_id", nodeID, "error", err)
+		}
+		return
+	}
+	policy, err := s.Store.SmartRoutingPolicy(nodeID)
+	if err != nil {
+		if s.Logger != nil {
+			s.Logger.Warn("load smart routing policy for monitoring notification", "node_id", nodeID, "error", err)
 		}
 		return
 	}
@@ -396,7 +589,8 @@ func (s *Server) notifyMonitoringTransition(ctx context.Context, nodeID string, 
 		{Label: "综合评分", Value: fmt.Sprintf("%d / 100", outcome.Status.Score)},
 		{Label: "成功率", Value: fmt.Sprintf("%.1f%%", outcome.Status.SuccessRate)},
 		{Label: "平均延迟", Value: fmt.Sprintf("%.1f ms", outcome.Status.AverageLatencyMS)},
-		{Label: "连续异常", Value: fmt.Sprintf("%d 轮", outcome.Status.ConsecutiveAbnormal)},
+		{Label: "暂停规则", Value: fmt.Sprintf("低于 %d 分连续 %d 轮", policy.ScorePauseBelow, policy.ScorePauseRounds)},
+		{Label: "恢复规则", Value: fmt.Sprintf("达到 %d 分连续 %d 轮", policy.ScoreResumeAt, policy.ScoreResumeRounds)},
 	}
 	failedTargets := 0
 	for _, result := range results {
@@ -424,17 +618,31 @@ func (s *Server) notifyMonitoringTransition(ctx context.Context, nodeID string, 
 		Cooldown:   monitoringNotificationCooldown,
 		Details:    details,
 	}
-	if outcome.NodeStatus == domain.NodeDraining {
+	if outcome.Transition.ScoreGate == store.SmartRoutingScoreBlocked {
 		notification.Severity = integrations.NotificationSeverityError
-		notification.Subject = "[CDN] 节点拨测异常，已暂停流量"
-		notification.Message = "节点连续多轮拨测低于健康阈值，控制面已自动暂停该节点，避免继续调度流量。"
-		// Repeated reports retry a failed first delivery, while a successfully
-		// delivered incident remains suppressed until its recovery notification.
+		if outcome.Transition.StatusChanged && outcome.NodeStatus == domain.NodeDraining {
+			notification.Subject = "[CDN] 节点评分异常，已移出调度"
+			notification.Message = "节点评分触发暂停规则，智能路由已将该节点移出边缘调度。"
+		} else if slices.Contains(outcome.Transition.BlockedBy, "schedule") {
+			notification.Subject = "[CDN] 节点评分异常，时间规则仍阻止调度"
+			notification.Message = "节点评分已触发暂停规则；节点同时处于时间规则关闭区间，仍不会加入边缘调度。"
+		} else {
+			notification.Subject = "[CDN] 节点评分异常，智能路由已阻止调度"
+			notification.Message = "节点评分触发暂停规则，当前节点状态未由智能路由切换，请检查人工调度状态。"
+		}
 		notification.SuppressUntilResolved = true
 	} else {
 		notification.Severity = integrations.NotificationSeveritySuccess
-		notification.Subject = "[CDN] 节点拨测恢复，已恢复流量"
-		notification.Message = "节点拨测已恢复健康，控制面已解除自动暂停并恢复流量调度。"
+		if outcome.NodeStatus == domain.NodeActive {
+			notification.Subject = "[CDN] 节点评分恢复，已加入调度"
+			notification.Message = "节点评分已满足恢复规则，智能路由已将该节点重新加入边缘调度。"
+		} else if slices.Contains(outcome.Transition.BlockedBy, "schedule") {
+			notification.Subject = "[CDN] 节点评分恢复，仍受时间规则限制"
+			notification.Message = "节点评分已恢复，但当前不在允许调度的时间窗口内，节点仍处于暂停调度状态。"
+		} else {
+			notification.Subject = "[CDN] 节点评分恢复，仍处于人工暂停"
+			notification.Message = "节点评分已恢复，但节点当前状态不允许加入调度，请检查人工调度状态。"
+		}
 		notification.Resolved = true
 		notification.NotifyOnResolve = true
 	}

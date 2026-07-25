@@ -32,6 +32,52 @@ var schemaMigrations = []schemaMigration{
 	{Version: 14, Name: "notification-preferences-and-delivery-state", Apply: migrateNotificationPreferences},
 	{Version: 15, Name: "node-nginx-capacity-and-site-timeouts", Apply: migrateNodeNginxCapacityAndSiteTimeouts},
 	{Version: 16, Name: "edge-agent-version", Apply: migrateEdgeAgentVersion},
+	{Version: 17, Name: "smart-routing", Apply: migrateSmartRouting},
+}
+
+func migrateSmartRouting(tx *sql.Tx) error {
+	createdAt := "1970-01-01T00:00:00Z"
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS node_smart_routing (
+		node_id TEXT PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
+		enabled INTEGER NOT NULL DEFAULT 1,
+		score_enabled INTEGER NOT NULL DEFAULT 1,
+		score_pause_below INTEGER NOT NULL DEFAULT 80,
+		score_pause_rounds INTEGER NOT NULL DEFAULT 4,
+		score_resume_at INTEGER NOT NULL DEFAULT 80,
+		score_resume_rounds INTEGER NOT NULL DEFAULT 1,
+		score_gate TEXT NOT NULL DEFAULT 'unknown',
+		score_low_streak INTEGER NOT NULL DEFAULT 0,
+		score_recovery_streak INTEGER NOT NULL DEFAULT 0,
+		schedule_enabled INTEGER NOT NULL DEFAULT 0,
+		schedule_windows_json TEXT NOT NULL DEFAULT '[]',
+		schedule_gate TEXT NOT NULL DEFAULT 'open',
+		updated_at TEXT NOT NULL
+	)`); err != nil {
+		return err
+	}
+	_, err := tx.Exec(`INSERT INTO node_smart_routing(
+		node_id, enabled, score_enabled, score_pause_below, score_pause_rounds,
+		score_resume_at, score_resume_rounds, score_gate, score_low_streak,
+		score_recovery_streak, schedule_enabled, schedule_windows_json,
+		schedule_gate, updated_at
+	)
+	SELECT nodes.id,
+		CASE WHEN nodes.status IN (?, ?) OR nodes.monitor_auto_paused = 1 THEN 1 ELSE 0 END,
+		1, 80, 4, 80, 1,
+		CASE
+			WHEN nodes.monitor_auto_paused = 1 THEN 'blocked'
+			WHEN COALESCE(status.score, -1) >= 80 THEN 'allowed'
+			ELSE 'unknown'
+		END,
+		CASE
+			WHEN COALESCE(status.score, 100) < 80 THEN MIN(status.consecutive_abnormal, 3)
+			ELSE 0
+		END,
+		0, 0, '[]', 'open', COALESCE(NULLIF(nodes.updated_at, ''), ?)
+	FROM nodes
+	LEFT JOIN node_monitoring_status AS status ON status.node_id = nodes.id
+	ON CONFLICT(node_id) DO NOTHING`, domain.NodePending, domain.NodeActive, createdAt)
+	return err
 }
 
 func migrateEdgeAgentVersion(tx *sql.Tx) error {

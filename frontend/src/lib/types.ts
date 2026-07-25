@@ -103,6 +103,63 @@ export interface MonitoringOverview {
   auto_pause_after: number;
 }
 
+export interface SmartRoutingWindow {
+  weekdays: number[];
+  start: string;
+  end: string;
+}
+
+export interface SmartRoutingNode {
+  node_id: string;
+  name: string;
+  public_ipv4: string;
+  status: NodeStatus;
+  capable: boolean;
+  auto_paused: boolean;
+  enabled: boolean;
+  blocked_by: Array<"score" | "schedule">;
+  score: {
+    enabled: boolean;
+    pause_below_score: number;
+    pause_after_rounds: number;
+    resume_at_score: number;
+    resume_after_rounds: number;
+    gate: "unknown" | "allowed" | "blocked";
+    current_score?: number;
+    last_checked_at?: string;
+    stale: boolean;
+    low_streak: number;
+    recovery_streak: number;
+  };
+  schedule: {
+    enabled: boolean;
+    windows: SmartRoutingWindow[];
+    gate: "open" | "closed";
+    next_transition_at?: string;
+  };
+  updated_at: string;
+}
+
+export interface SmartRoutingOverview {
+  timezone: string;
+  nodes: SmartRoutingNode[];
+}
+
+export interface SmartRoutingConfig {
+  enabled: boolean;
+  score: {
+    enabled: boolean;
+    pause_below_score: number;
+    pause_after_rounds: number;
+    resume_at_score: number;
+    resume_after_rounds: number;
+  };
+  schedule: {
+    enabled: boolean;
+    windows: SmartRoutingWindow[];
+  };
+}
+
 export type MonitoringHistoryRange = "1h" | "6h" | "12h" | "24h" | "7d";
 
 export interface MonitoringHistoryPoint {

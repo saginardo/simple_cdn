@@ -36,6 +36,47 @@ func TestMigrationsRecordCurrentVersionAndRemainIdempotent(t *testing.T) {
 	}
 }
 
+func TestSmartRoutingMigrationBackfillsExistingNodeOwnership(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	active, _ := database.CreateNode("active-edge", "203.0.113.126")
+	autoPaused, _ := database.CreateNode("auto-paused-edge", "203.0.113.127")
+	manualPaused, _ := database.CreateNode("manual-paused-edge", "203.0.113.128")
+	if _, err := database.db.Exec(`UPDATE nodes SET status = ? WHERE id = ?`, domain.NodeActive, active.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`UPDATE nodes SET status = ?, monitor_auto_paused = 1 WHERE id = ?`, domain.NodeDraining, autoPaused.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`UPDATE nodes SET status = ?, monitor_auto_paused = 0 WHERE id = ?`, domain.NodeDraining, manualPaused.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`DROP TABLE node_smart_routing`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`DELETE FROM schema_migrations WHERE version = 17`); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	activePolicy, err := database.SmartRoutingPolicy(active.ID)
+	if err != nil || !activePolicy.Enabled || activePolicy.ScoreGate != SmartRoutingScoreUnknown {
+		t.Fatalf("active policy = %#v, %v", activePolicy, err)
+	}
+	autoPolicy, err := database.SmartRoutingPolicy(autoPaused.ID)
+	if err != nil || !autoPolicy.Enabled || autoPolicy.ScoreGate != SmartRoutingScoreBlocked {
+		t.Fatalf("auto-paused policy = %#v, %v", autoPolicy, err)
+	}
+	manualPolicy, err := database.SmartRoutingPolicy(manualPaused.ID)
+	if err != nil || manualPolicy.Enabled || !manualPolicy.ScoreEnabled {
+		t.Fatalf("manual policy = %#v, %v", manualPolicy, err)
+	}
+}
+
 func TestEdgeAgentVersionMigrationUpgradesLegacySchema(t *testing.T) {
 	database, err := Open(filepath.Join(t.TempDir(), "control.db"))
 	if err != nil {
@@ -45,7 +86,7 @@ func TestEdgeAgentVersionMigrationUpgradesLegacySchema(t *testing.T) {
 	if _, err := database.db.Exec(`ALTER TABLE nodes DROP COLUMN agent_version`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.db.Exec(`DELETE FROM schema_migrations WHERE version = 16`); err != nil {
+	if _, err := database.db.Exec(`DELETE FROM schema_migrations WHERE version >= 16`); err != nil {
 		t.Fatal(err)
 	}
 	if err := database.Migrate(); err != nil {

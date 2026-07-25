@@ -118,6 +118,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/backups/restores/{id}", s.requireAdmin(s.cancelOnlineRestore))
 	mux.HandleFunc("GET /api/security", s.requireAdmin(s.getSecurityOverview))
 	mux.HandleFunc("GET /api/monitoring", s.requireAdmin(s.monitoringOverview))
+	mux.HandleFunc("GET /api/monitoring/smart-routing", s.requireAdmin(s.smartRoutingOverview))
+	mux.HandleFunc("PUT /api/monitoring/nodes/{id}/smart-routing", s.requireAdmin(s.updateNodeSmartRouting))
 	mux.HandleFunc("GET /api/monitoring/nodes/{id}/history", s.requireAdmin(s.monitoringNodeHistory))
 	mux.HandleFunc("POST /api/monitoring/targets", s.requireAdmin(s.createMonitoringTarget))
 	mux.HandleFunc("PUT /api/monitoring/targets/{id}", s.requireAdmin(s.updateMonitoringTarget))
@@ -541,12 +543,17 @@ func (s *Server) setNodeStatus(response http.ResponseWriter, request *http.Reque
 		writeError(response, http.StatusBadRequest, errors.New("status must be active, draining, or revoked"))
 		return
 	}
-	if err := s.Store.SetNodeStatus(request.PathValue("id"), input.Status); err != nil {
+	smartRoutingDisabled, err := s.Store.SetNodeStatusManual(request.PathValue("id"), input.Status)
+	if err != nil {
 		writeStoreError(response, err)
 		return
 	}
-	s.audit(request, adminID(request.Context()), "set_status", "node", request.PathValue("id"), string(input.Status))
-	writeJSON(response, http.StatusOK, map[string]bool{"ok": true})
+	detail := string(input.Status)
+	if smartRoutingDisabled {
+		detail += "; smart routing disabled by manual takeover"
+	}
+	s.audit(request, adminID(request.Context()), "set_status", "node", request.PathValue("id"), detail)
+	writeJSON(response, http.StatusOK, map[string]bool{"ok": true, "smart_routing_disabled": smartRoutingDisabled})
 }
 
 func (s *Server) listSites(response http.ResponseWriter, request *http.Request) {
