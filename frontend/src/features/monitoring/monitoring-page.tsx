@@ -12,7 +12,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { useMemo, useState, type FormEvent, type ReactNode } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 
 import { ConfirmDialog } from "@/components/confirm-dialog";
@@ -441,21 +441,11 @@ function NodeRow({
         : node.score >= healthyScore
           ? { status: "succeeded", label: "正常" }
           : { status: "failed", label: "异常" };
-  const openHistory = () =>
-    navigate(`/monitoring/nodes/${encodeURIComponent(node.node_id)}`);
+  const historyPath = `/monitoring/nodes/${encodeURIComponent(node.node_id)}`;
   return (
     <TableRow
-      role="link"
-      tabIndex={0}
-      aria-label={`查看 ${node.name} 拨测历史`}
-      className="cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
-      onClick={openHistory}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          openHistory();
-        }
-      }}
+      className="cursor-pointer"
+      onClick={() => navigate(historyPath)}
     >
       <TableCell className="pl-5">
         <div className="font-medium">{node.name}</div>
@@ -498,11 +488,19 @@ function NodeRow({
       <TableCell className="tabular-nums">
         {formatNumber(node.consecutive_abnormal)}
       </TableCell>
-      <TableCell className="pr-5 whitespace-nowrap text-xs text-muted-foreground">
+      <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
         {formatDateTime(node.last_checked_at)}
       </TableCell>
-      <TableCell className="text-muted-foreground">
-        <ChevronRight className="size-4" aria-hidden="true" />
+      <TableCell className="pr-5">
+        <Button asChild variant="ghost" size="icon-sm">
+          <Link
+            to={historyPath}
+            aria-label={`查看 ${node.name} 拨测历史`}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <ChevronRight />
+          </Link>
+        </Button>
       </TableCell>
     </TableRow>
   );

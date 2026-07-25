@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, RotateCcw, Search } from "lucide-react";
-import { useMemo, useState, type FormEvent } from "react";
+import { useId, useMemo, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { HTTPStatusBadge } from "@/components/http-status-badge";
@@ -264,7 +264,11 @@ export function LogsPage() {
                           entry.id ||
                           `${entry.timestamp}-${entry.node_id}-${index}`
                         }
-                        className={entry.id ? "cursor-pointer" : undefined}
+                        className={
+                          entry.id
+                            ? "cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+                            : undefined
+                        }
                         tabIndex={entry.id ? 0 : undefined}
                         aria-label={
                           entry.id
@@ -383,11 +387,13 @@ function FilterSelect({
   onChange: (value: string) => void;
   options: string[][];
 }) {
+  const id = useId();
+
   return (
     <div className="grid min-w-0 gap-1.5">
-      <Label>{label}</Label>
+      <Label htmlFor={id}>{label}</Label>
       <Select value={value} onValueChange={onChange}>
-        <SelectTrigger className="w-full">
+        <SelectTrigger id={id} className="w-full">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>

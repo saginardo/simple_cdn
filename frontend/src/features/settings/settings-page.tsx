@@ -610,10 +610,9 @@ function SMTPForm({ settings }: { settings: Settings }) {
               onChange={(event) => setPort(Number(event.target.value))}
             />
           </Field>
-          <div className="grid gap-2">
-            <Label>安全连接</Label>
+          <Field label="安全连接" id="smtp-security">
             <Select value={security} onValueChange={setSecurity}>
-              <SelectTrigger className="w-full">
+              <SelectTrigger id="smtp-security" className="w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -621,7 +620,7 @@ function SMTPForm({ settings }: { settings: Settings }) {
                 <SelectItem value="tls">隐式 TLS</SelectItem>
               </SelectContent>
             </Select>
-          </div>
+          </Field>
           <Field label="用户名" id="smtp-user">
             <Input
               id="smtp-user"
@@ -896,13 +895,12 @@ function BackupForm({ settings }: { settings: Settings }) {
               onChange={(event) => setBackupTime(event.target.value)}
             />
           </Field>
-          <div className="grid gap-2">
-            <Label>随机延迟</Label>
+          <Field label="随机延迟" id="backup-delay">
             <Select
               value={String(delay)}
               onValueChange={(value) => setDelay(Number(value))}
             >
-              <SelectTrigger className="w-full">
+              <SelectTrigger id="backup-delay" className="w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -914,7 +912,7 @@ function BackupForm({ settings }: { settings: Settings }) {
                 <SelectItem value="3600">最多 60 分钟</SelectItem>
               </SelectContent>
             </Select>
-          </div>
+          </Field>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button type="submit" disabled={busy}>

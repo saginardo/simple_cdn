@@ -101,12 +101,19 @@ export function AppShell() {
                   variant="ghost"
                   size="icon-sm"
                   className="relative"
-                  aria-label="打开消息中心"
+                  aria-label={
+                    messageQuery.data?.unread_count
+                      ? `打开消息中心，${messageQuery.data.unread_count} 条未读`
+                      : "打开消息中心"
+                  }
                   onClick={() => setMessagesOpen(true)}
                 >
                   <Bell />
                   {messageQuery.data?.unread_count ? (
-                    <span className="absolute -right-0.5 -top-0.5 size-2 rounded-full bg-destructive" />
+                    <span
+                      className="absolute -right-0.5 -top-0.5 size-2 rounded-full bg-destructive"
+                      aria-hidden="true"
+                    />
                   ) : null}
                 </Button>
               </TooltipTrigger>

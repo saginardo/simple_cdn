@@ -740,13 +740,12 @@ function PolicyDialogShell({
                 onChange={(event) => setPriority(Number(event.target.value))}
               />
             </Field>
-            <div className="grid gap-2">
-              <Label>动作</Label>
+            <Field label="动作" id="policy-action">
               <Select
                 value={action}
                 onValueChange={(value) => setAction(value as "block" | "ban")}
               >
-                <SelectTrigger className="w-full">
+                <SelectTrigger id="policy-action" className="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -754,15 +753,14 @@ function PolicyDialogShell({
                   <SelectItem value="block">仅拦截请求</SelectItem>
                 </SelectContent>
               </Select>
-            </div>
+            </Field>
             {action === "ban" ? (
-              <div className="grid gap-2">
-                <Label>封禁时间</Label>
+              <Field label="封禁时间" id="policy-ban-duration">
                 <Select
                   value={String(duration)}
                   onValueChange={(value) => setDuration(Number(value))}
                 >
-                  <SelectTrigger className="w-full">
+                  <SelectTrigger id="policy-ban-duration" className="w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -774,7 +772,7 @@ function PolicyDialogShell({
                     <SelectItem value="604800">7 天</SelectItem>
                   </SelectContent>
                 </Select>
-              </div>
+              </Field>
             ) : null}
             <div className="flex items-center justify-between rounded-lg border px-3 py-2 sm:col-span-2">
               <Label htmlFor="policy-enabled">启用策略</Label>
@@ -1017,13 +1015,12 @@ function RateDialogShell({
                     }
                   />
                 </Field>
-                <div className="grid gap-2">
-                  <Label>封禁时间</Label>
+                <Field label="封禁时间" id="rate-ban-duration">
                   <Select
                     value={String(banDuration)}
                     onValueChange={(value) => setBanDuration(Number(value))}
                   >
-                    <SelectTrigger className="w-full">
+                    <SelectTrigger id="rate-ban-duration" className="w-full">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -1035,7 +1032,7 @@ function RateDialogShell({
                       <SelectItem value="604800">7 天</SelectItem>
                     </SelectContent>
                   </Select>
-                </div>
+                </Field>
               </>
             ) : null}
           </div>

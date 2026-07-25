@@ -12,7 +12,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useId, useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 
@@ -1412,11 +1412,13 @@ function SelectField({
   onChange: (value: string) => void;
   options: string[][];
 }) {
+  const id = useId();
+
   return (
     <div className="grid gap-2">
-      <Label>{label}</Label>
+      <Label htmlFor={id}>{label}</Label>
       <Select value={value} onValueChange={onChange}>
-        <SelectTrigger className="w-full">
+        <SelectTrigger id={id} className="w-full">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
@@ -1439,10 +1441,12 @@ function Toggle({
   checked: boolean;
   onChange: (checked: boolean) => void;
 }) {
+  const id = useId();
+
   return (
     <div className="flex items-center justify-between rounded-lg border px-3 py-2">
-      <Label>{label}</Label>
-      <Switch checked={checked} onCheckedChange={onChange} />
+      <Label htmlFor={id}>{label}</Label>
+      <Switch id={id} checked={checked} onCheckedChange={onChange} />
     </div>
   );
 }

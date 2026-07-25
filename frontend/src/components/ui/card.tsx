@@ -33,9 +33,17 @@ function CardHeader({ className, ...props }: React.ComponentProps<"div">) {
   );
 }
 
-function CardTitle({ className, ...props }: React.ComponentProps<"div">) {
+/**
+ * Renders a real heading so screen readers can navigate card sections. Pages
+ * own the `h1`, so cards default to `h2` and nest deeper via `as`.
+ */
+function CardTitle({
+  className,
+  as: Component = "h2",
+  ...props
+}: React.HTMLAttributes<HTMLElement> & { as?: "h2" | "h3" | "h4" | "div" }) {
   return (
-    <div
+    <Component
       data-slot="card-title"
       className={cn(
         "font-heading text-base leading-snug font-medium group-data-[size=sm]/card:text-sm",

@@ -72,11 +72,13 @@ export function Panel({
 
 export function PageLoading({ rows = 4 }: { rows?: number }) {
   return (
-    <div className="space-y-3" aria-label="正在加载">
+    <div className="space-y-3" role="status" aria-live="polite" aria-busy>
+      <span className="sr-only">正在加载</span>
       {Array.from({ length: rows }).map((_, index) => (
         <Skeleton
           key={index}
           className={cn("h-16 w-full", index === 0 && "h-28")}
+          aria-hidden="true"
         />
       ))}
     </div>
@@ -111,7 +113,7 @@ export function EmptyState({
   return (
     <div className="flex min-h-44 flex-col items-center justify-center rounded-xl border border-dashed bg-muted/20 px-6 py-10 text-center">
       <Inbox className="mb-3 size-8 text-muted-foreground" aria-hidden="true" />
-      <h2 className="text-sm font-medium">{title}</h2>
+      <h3 className="text-sm font-medium">{title}</h3>
       {description ? (
         <p className="mt-1 max-w-md text-sm text-muted-foreground">
           {description}
