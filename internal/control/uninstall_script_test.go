@@ -28,6 +28,7 @@ func TestUninstallEdgeScriptRemovesOnlyPlatformFiles(t *testing.T) {
 		"etc/systemd/system/cdn-edge-agent.service",
 		"etc/systemd/system/cdn-edge-updater@.service",
 		"usr/local/bin/cdn-edge-agent",
+		"usr/local/lib/sysctl.d/40-simple-cdn-edge.conf",
 		"opt/cdn-edge",
 		"etc/cdn-platform",
 		"var/lib/cdn-platform",
@@ -41,10 +42,17 @@ func TestUninstallEdgeScriptRemovesOnlyPlatformFiles(t *testing.T) {
 	if _, statErr := os.Stat(filepath.Join(root, "etc/nginx/nginx.conf")); statErr != nil {
 		t.Fatalf("unrelated Nginx configuration was removed: %v", statErr)
 	}
-	for _, expected := range []string{"uninstall/start", "uninstall/complete", "nginx -t", "systemctl reload nginx", "systemctl daemon-reload", "nft delete table inet simple_cdn", "nft delete table inet cdn_platform"} {
+	operatorSysctl, readErr := os.ReadFile(filepath.Join(root, "etc/sysctl.d/90-operator.conf"))
+	if readErr != nil || string(operatorSysctl) != "net.ipv4.tcp_congestion_control = cubic\n" {
+		t.Fatalf("operator sysctl configuration was changed: %q, %v", operatorSysctl, readErr)
+	}
+	for _, expected := range []string{"uninstall/start", "uninstall/complete", "nginx -t", "systemctl reload nginx", "systemctl daemon-reload", "nft delete table inet simple_cdn", "nft delete table inet cdn_platform", "sysctl -q -p", "sysctl --system"} {
 		if !strings.Contains(log, expected) {
 			t.Fatalf("mock log does not contain %q:\n%s", expected, log)
 		}
+	}
+	if baselineIndex, systemIndex := strings.Index(log, "sysctl -q -p"), strings.Index(log, "sysctl --system"); baselineIndex < 0 || systemIndex < 0 || baselineIndex > systemIndex {
+		t.Fatalf("uninstall did not restore the baseline before loading remaining sysctl files:\n%s", log)
 	}
 	if strings.Contains(log, "uninstall/fail") {
 		t.Fatalf("successful uninstall reported failure:\n%s", log)
@@ -116,6 +124,7 @@ func TestUninstallEdgeScriptRestoresConfigurationWhenNginxValidationFails(t *tes
 	for _, path := range []string{
 		"etc/systemd/system/cdn-edge-agent.service",
 		"usr/local/bin/cdn-edge-agent",
+		"usr/local/lib/sysctl.d/40-simple-cdn-edge.conf",
 		"etc/cdn-platform/state",
 		"var/lib/cdn-platform/state",
 		"var/log/cdn-platform/state",
@@ -219,6 +228,7 @@ func runUninstallEdgeScript(t *testing.T, failureMode string) (string, string, s
 	root := t.TempDir()
 	for _, directory := range []string{
 		"run", "tmp", "mock-bin", "etc/nginx/conf.d", "etc/nginx/modules-enabled", "etc/logrotate.d", "etc/systemd/system", "usr/local/bin",
+		"etc/sysctl.d", "usr/local/lib/sysctl.d",
 		"opt/cdn-edge/bin", "opt/cdn-edge/config", "opt/cdn-edge/data", "opt/cdn-edge/logs", "opt/cdn-edge/cache",
 		"etc/cdn-platform", "var/lib/cdn-platform", "var/log/cdn-platform", "var/cache/cdn-platform",
 	} {
@@ -234,9 +244,12 @@ func runUninstallEdgeScript(t *testing.T, failureMode string) (string, string, s
 		"etc/systemd/system/cdn-edge-agent.service":             "service\n",
 		"etc/systemd/system/cdn-edge-updater@.service":          "updater service\n",
 		"usr/local/bin/cdn-edge-agent":                          "binary\n",
+		"usr/local/lib/sysctl.d/40-simple-cdn-edge.conf":        "-net.ipv4.tcp_congestion_control = bbr\n",
+		"etc/sysctl.d/90-operator.conf":                         "net.ipv4.tcp_congestion_control = cubic\n",
 		"opt/cdn-edge/.layout-version":                          "1\n",
 		"opt/cdn-edge/bin/cdn-edge-agent":                       "new binary\n",
 		"opt/cdn-edge/data/state":                               "new state\n",
+		"opt/cdn-edge/data/sysctl-baseline.conf":                "net.ipv4.tcp_congestion_control = cubic\n",
 		"etc/cdn-platform/state":                                "state\n",
 		"var/lib/cdn-platform/state":                            "state\n",
 		"var/log/cdn-platform/state":                            "state\n",
@@ -284,6 +297,10 @@ exit 0
 `,
 		"nft": `#!/usr/bin/env bash
 printf 'nft %s\n' "$*" >> "$MOCK_LOG"
+exit 0
+`,
+		"sysctl": `#!/usr/bin/env bash
+printf 'sysctl %s\n' "$*" >> "$MOCK_LOG"
 exit 0
 `,
 	}

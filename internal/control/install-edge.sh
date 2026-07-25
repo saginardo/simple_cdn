@@ -203,6 +203,150 @@ configure_nginx_capacity_includes() {
   mv "$temporary" "$source"
 }
 
+normalize_sysctl_value() {
+  awk '{$1=$1; print}' <<<"$1"
+}
+
+sysctl_baseline_has_key() {
+  local file="$1" wanted="$2"
+  awk -F= -v wanted="$wanted" '
+    {
+      key = $1
+      sub(/^-/, "", key)
+      gsub(/[[:space:]]/, "", key)
+      if (key == wanted) found = 1
+    }
+    END { exit found ? 0 : 1 }
+  ' "$file"
+}
+
+add_managed_sysctl() {
+  local key="$1" value="$2"
+  printf -- '-%s = %s\n' "$key" "$value" >>"$temporary_sysctl_config"
+  managed_sysctl_keys+=("$key")
+  managed_sysctl_values+=("$value")
+}
+
+try_sysctl_setting() {
+  local key="$1" value="$2"
+  [[ -n "${sysctl_before[$key]+present}" ]] || return 1
+  sysctl -q -w "$key=$value" >/dev/null 2>&1
+}
+
+configure_default_sysctl() {
+  local meminfo mem_total_kib buffer_max key value index actual desired
+  local buffer_supported=1 baseline_staged config_staged
+  local -a candidate_keys=(
+    net.core.default_qdisc
+    net.ipv4.tcp_congestion_control
+    net.ipv4.tcp_mtu_probing
+    net.core.rmem_max
+    net.core.wmem_max
+    net.ipv4.tcp_rmem
+    net.ipv4.tcp_wmem
+  )
+
+  buffer_max=16777216
+  meminfo=$(root_path /proc/meminfo)
+  mem_total_kib=""
+  if [[ -r "$meminfo" ]]; then
+    mem_total_kib=$(awk '$1 == "MemTotal:" { print $2; exit }' "$meminfo")
+  fi
+  if [[ "$mem_total_kib" =~ ^[0-9]+$ ]]; then
+    if ((mem_total_kib > 4194304)); then buffer_max=33554432; fi
+  else
+    echo "warning: could not read total memory; using the conservative 16 MiB TCP buffer limit" >&2
+  fi
+
+  sysctl_transaction_started=1
+  : >"$sysctl_runtime_backup"
+  for key in "${candidate_keys[@]}"; do
+    if value=$(sysctl -n "$key" 2>/dev/null); then
+      value=$(normalize_sysctl_value "$value")
+      sysctl_before["$key"]="$value"
+      printf '%s = %s\n' "$key" "$value" >>"$sysctl_runtime_backup"
+    fi
+  done
+
+  cat >"$temporary_sysctl_config" <<EOF
+# Managed by simple_cdn. Local administrators may override these defaults in /etc/sysctl.d.
+# TCP buffer ceiling selected from MemTotal: ${buffer_max} bytes.
+EOF
+
+  modprobe sch_fq >/dev/null 2>&1 || true
+  if try_sysctl_setting net.core.default_qdisc fq; then
+    add_managed_sysctl net.core.default_qdisc fq
+  else
+    echo "warning: fq is unavailable; leaving net.core.default_qdisc unchanged" >&2
+  fi
+
+  modprobe tcp_bbr >/dev/null 2>&1 || true
+  if try_sysctl_setting net.ipv4.tcp_congestion_control bbr; then
+    add_managed_sysctl net.ipv4.tcp_congestion_control bbr
+  else
+    echo "warning: BBR is unavailable; leaving net.ipv4.tcp_congestion_control unchanged" >&2
+  fi
+
+  if try_sysctl_setting net.ipv4.tcp_mtu_probing 1; then
+    add_managed_sysctl net.ipv4.tcp_mtu_probing 1
+  else
+    echo "warning: TCP MTU probing is unavailable; leaving it unchanged" >&2
+  fi
+
+  try_sysctl_setting net.core.rmem_max "$buffer_max" || buffer_supported=0
+  try_sysctl_setting net.core.wmem_max "$buffer_max" || buffer_supported=0
+  try_sysctl_setting net.ipv4.tcp_rmem "4096 131072 $buffer_max" || buffer_supported=0
+  try_sysctl_setting net.ipv4.tcp_wmem "4096 16384 $buffer_max" || buffer_supported=0
+  if ((buffer_supported == 1)); then
+    add_managed_sysctl net.core.rmem_max "$buffer_max"
+    add_managed_sysctl net.core.wmem_max "$buffer_max"
+    add_managed_sysctl net.ipv4.tcp_rmem "4096 131072 $buffer_max"
+    add_managed_sysctl net.ipv4.tcp_wmem "4096 16384 $buffer_max"
+  else
+    echo "warning: TCP buffer tuning is not fully supported; leaving the buffer group unchanged" >&2
+  fi
+
+  if [[ -s "$sysctl_runtime_backup" ]] && ! sysctl -q -p "$sysctl_runtime_backup" >/dev/null 2>&1; then
+    echo "warning: could not completely restore sysctl values after capability probing" >&2
+  fi
+
+  if path_exists "$sysctl_baseline"; then
+    cp -a "$sysctl_baseline" "$temporary_sysctl_baseline"
+  else
+    printf '%s\n' '# Values that preceded simple_cdn sysctl management. Used during uninstall.' >"$temporary_sysctl_baseline"
+  fi
+  for key in "${managed_sysctl_keys[@]}"; do
+    if ! sysctl_baseline_has_key "$temporary_sysctl_baseline" "$key"; then
+      printf '%s = %s\n' "$key" "${sysctl_before[$key]}" >>"$temporary_sysctl_baseline"
+    fi
+  done
+
+  install -d -m 0755 "$(dirname "$sysctl_config")"
+  config_staged=$(mktemp "${sysctl_config}.XXXXXX")
+  install -m 0644 "$temporary_sysctl_config" "$config_staged"
+  mv "$config_staged" "$sysctl_config"
+
+  baseline_staged=$(mktemp "${sysctl_baseline}.XXXXXX")
+  install -m 0600 "$temporary_sysctl_baseline" "$baseline_staged"
+  mv "$baseline_staged" "$sysctl_baseline"
+
+  if ! sysctl --system >/dev/null; then
+    echo "warning: one or more system sysctl files could not be applied" >&2
+  fi
+  for index in "${!managed_sysctl_keys[@]}"; do
+    key="${managed_sysctl_keys[$index]}"
+    desired=$(normalize_sysctl_value "${managed_sysctl_values[$index]}")
+    if actual=$(sysctl -n "$key" 2>/dev/null); then
+      actual=$(normalize_sysctl_value "$actual")
+    else
+      actual="unavailable"
+    fi
+    if [[ "$actual" != "$desired" ]]; then
+      echo "warning: effective sysctl $key=$actual differs from the simple_cdn default $desired; a later administrator setting may override it" >&2
+    fi
+  done
+}
+
 edge_root=$(root_path /opt/cdn-edge)
 marker="$edge_root/.layout-version"
 agent_unit=$(root_path /etc/systemd/system/cdn-edge-agent.service)
@@ -218,6 +362,8 @@ new_nginx_stream_config="$edge_root/config/nginx/cdn-platform-stream.conf"
 new_nginx_main_config="$edge_root/config/nginx/cdn-platform-main.conf"
 new_nginx_events_config="$edge_root/config/nginx/cdn-platform-events.conf"
 logrotate_config=$(root_path /etc/logrotate.d/cdn-edge-platform)
+sysctl_config=$(root_path /usr/local/lib/sysctl.d/40-simple-cdn-edge.conf)
+sysctl_baseline="$edge_root/data/sysctl-baseline.conf"
 old_binary=$(root_path /usr/local/bin/cdn-edge-agent)
 old_config_dir=$(root_path /etc/cdn-platform)
 old_state_dir=$(root_path /var/lib/cdn-platform)
@@ -271,7 +417,7 @@ if systemctl is-active --quiet nginx.service 2>/dev/null; then old_nginx_active=
 if [[ -z "$ROOT_PREFIX" ]]; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
-  apt-get install -y --no-install-recommends nginx libnginx-mod-stream libnginx-mod-http-lua ca-certificates curl iproute2 nftables logrotate lz4
+  apt-get install -y --no-install-recommends nginx libnginx-mod-stream libnginx-mod-http-lua ca-certificates curl iproute2 nftables logrotate lz4 procps kmod
 fi
 ensure_nginx_temp_directories
 
@@ -280,6 +426,9 @@ trap 'rm -rf "$transaction_dir"' EXIT
 temporary_binary="$transaction_dir/cdn-edge-agent"
 temporary_unit="$transaction_dir/cdn-edge-agent.service"
 temporary_updater_unit="$transaction_dir/cdn-edge-updater@.service"
+temporary_sysctl_config="$transaction_dir/40-simple-cdn-edge.conf"
+temporary_sysctl_baseline="$transaction_dir/sysctl-baseline.next"
+sysctl_runtime_backup="$transaction_dir/sysctl-runtime.backup"
 if [[ -n "$BINARY_FILE" ]]; then
   cp "$BINARY_FILE" "$temporary_binary"
 else
@@ -328,6 +477,8 @@ for item in unit updater-unit nginx stream-entry stream-config main-config event
   esac
   if path_exists "$source"; then cp -a "$source" "$transaction_dir/$item.backup"; fi
 done
+if path_exists "$sysctl_config"; then cp -a "$sysctl_config" "$transaction_dir/sysctl-config.backup"; fi
+if path_exists "$sysctl_baseline"; then cp -a "$sysctl_baseline" "$transaction_dir/sysctl-baseline.backup"; fi
 if ((new_layout == 1)); then
   for item in bin/cdn-edge-agent config/edge.env config/nginx/cdn-platform-main.conf config/nginx/cdn-platform-events.conf systemd/cdn-edge-agent.service systemd/cdn-edge-updater@.service; do
     if path_exists "$edge_root/$item"; then
@@ -339,6 +490,10 @@ fi
 
 log_moved=0
 committed=0
+sysctl_transaction_started=0
+declare -A sysctl_before=()
+managed_sysctl_keys=()
+managed_sysctl_values=()
 rollback() {
   local code=$?
   trap - ERR
@@ -371,6 +526,23 @@ rollback() {
       cp -a "$transaction_dir/logrotate.backup" "$logrotate_config"
     else
       rm -f "$logrotate_config"
+    fi
+    if ((sysctl_transaction_started == 1)); then
+      if path_exists "$transaction_dir/sysctl-config.backup"; then
+        mkdir -p "$(dirname "$sysctl_config")"
+        cp -a "$transaction_dir/sysctl-config.backup" "$sysctl_config"
+      else
+        rm -f "$sysctl_config"
+      fi
+      if path_exists "$transaction_dir/sysctl-baseline.backup"; then
+        mkdir -p "$(dirname "$sysctl_baseline")"
+        cp -a "$transaction_dir/sysctl-baseline.backup" "$sysctl_baseline"
+      else
+        rm -f "$sysctl_baseline"
+      fi
+      if [[ -s "$sysctl_runtime_backup" ]]; then
+        sysctl -q -p "$sysctl_runtime_backup" >/dev/null 2>&1 || true
+      fi
     fi
     if path_exists "$transaction_dir/default-site.backup"; then cp -a "$transaction_dir/default-site.backup" "$nginx_default"; fi
     if ((log_moved == 1)) && path_exists "$edge_root/logs/access.json"; then
@@ -430,6 +602,8 @@ elif ((new_layout == 1)); then
     poll_seconds="$value"
   fi
 fi
+
+configure_default_sysctl
 
 install -m 0755 "$temporary_binary" "$edge_root/bin/cdn-edge-agent"
 install -m 0644 "$temporary_unit" "$new_unit"

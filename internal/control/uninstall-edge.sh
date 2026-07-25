@@ -212,6 +212,19 @@ cleanup_committed=1
 rm -f "$service_unit" "$updater_unit"
 rm -f "$(root_path /etc/logrotate.d/cdn-edge-platform)"
 rm -f "$(root_path /usr/local/bin/cdn-edge-agent)"
+sysctl_config=$(root_path /usr/local/lib/sysctl.d/40-simple-cdn-edge.conf)
+sysctl_baseline=$(root_path /opt/cdn-edge/data/sysctl-baseline.conf)
+rm -f "$sysctl_config"
+if command -v sysctl >/dev/null 2>&1; then
+  if [[ -s "$sysctl_baseline" ]] && ! sysctl -q -p "$sysctl_baseline" >/dev/null; then
+    echo "warning: could not completely restore the pre-install sysctl baseline" >&2
+  fi
+  if ! sysctl --system >/dev/null; then
+    echo "warning: one or more remaining system sysctl files could not be applied" >&2
+  fi
+else
+  echo "warning: sysctl is unavailable; removed the platform profile but runtime values will remain until reboot" >&2
+fi
 rm -rf "$(root_path /opt/cdn-edge)" \
   "$(root_path /etc/cdn-platform)" "$(root_path /var/lib/cdn-platform)" \
   "$(root_path /var/log/cdn-platform)" "$(root_path /var/cache/cdn-platform)"

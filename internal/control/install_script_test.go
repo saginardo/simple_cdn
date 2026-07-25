@@ -19,6 +19,9 @@ func TestInstallEdgeScriptSyntax(t *testing.T) {
 	if !strings.Contains(bootstrapEdgeScript, "iproute2 nftables") {
 		t.Fatal("edge installer does not install nftables")
 	}
+	if !strings.Contains(bootstrapEdgeScript, "lz4 procps kmod") {
+		t.Fatal("edge installer does not install sysctl and kernel module tooling")
+	}
 }
 
 func TestInstallEdgeScriptCreatesOptLayout(t *testing.T) {
@@ -42,6 +45,8 @@ func TestInstallEdgeScriptCreatesOptLayout(t *testing.T) {
 		"opt/cdn-edge/data/edge-ca.crt",
 		"opt/cdn-edge/systemd/cdn-edge-agent.service",
 		"opt/cdn-edge/systemd/cdn-edge-updater@.service",
+		"opt/cdn-edge/data/sysctl-baseline.conf",
+		"usr/local/lib/sysctl.d/40-simple-cdn-edge.conf",
 	} {
 		harness.requirePath(t, path)
 	}
@@ -87,6 +92,121 @@ func TestInstallEdgeScriptCreatesOptLayout(t *testing.T) {
 	if !strings.Contains(bootstrapEdgeScript, "libnginx-mod-http-lua") {
 		t.Fatal("edge installer does not install the Nginx Lua rate limit module")
 	}
+	sysctlConfiguration := harness.read(t, "usr/local/lib/sysctl.d/40-simple-cdn-edge.conf")
+	for _, expected := range []string{
+		"-net.core.default_qdisc = fq",
+		"-net.ipv4.tcp_congestion_control = bbr",
+		"-net.ipv4.tcp_mtu_probing = 1",
+		"-net.core.rmem_max = 16777216",
+		"-net.core.wmem_max = 16777216",
+		"-net.ipv4.tcp_rmem = 4096 131072 16777216",
+		"-net.ipv4.tcp_wmem = 4096 16384 16777216",
+	} {
+		if !strings.Contains(sysctlConfiguration, expected) {
+			t.Fatalf("sysctl profile does not contain %q:\n%s", expected, sysctlConfiguration)
+		}
+	}
+	for _, unexpected := range []string{"tcp_tw_reuse", "tcp_fin_timeout", "ip_local_port_range", "disable_ipv6", "somaxconn"} {
+		if strings.Contains(sysctlConfiguration, unexpected) {
+			t.Fatalf("sysctl profile contains unmanaged tuning %q:\n%s", unexpected, sysctlConfiguration)
+		}
+	}
+	baseline := harness.read(t, "opt/cdn-edge/data/sysctl-baseline.conf")
+	for _, expected := range []string{
+		"net.core.default_qdisc = pfifo_fast",
+		"net.ipv4.tcp_congestion_control = cubic",
+		"net.ipv4.tcp_mtu_probing = 0",
+		"net.core.rmem_max = 4194304",
+		"net.core.wmem_max = 4194304",
+		"net.ipv4.tcp_rmem = 4096 131072 6291456",
+		"net.ipv4.tcp_wmem = 4096 16384 4194304",
+	} {
+		if !strings.Contains(baseline, expected) {
+			t.Fatalf("sysctl baseline does not contain %q:\n%s", expected, baseline)
+		}
+	}
+	log := harness.read(t, "mock.log")
+	for _, expected := range []string{"modprobe sch_fq", "modprobe tcp_bbr", "sysctl --system"} {
+		if !strings.Contains(log, expected) {
+			t.Fatalf("installer did not invoke %q:\n%s", expected, log)
+		}
+	}
+}
+
+func TestInstallEdgeScriptUsesLargeTCPBuffersAboveFourGiB(t *testing.T) {
+	harness := newInstallHarness(t)
+	harness.write("proc/meminfo", "MemTotal:        8388608 kB\n")
+
+	output, err := harness.run(t, "first-token", "edge-binary-v1", "")
+	if err != nil {
+		t.Fatalf("install failed: %v\n%s", err, output)
+	}
+	configuration := harness.read(t, "usr/local/lib/sysctl.d/40-simple-cdn-edge.conf")
+	for _, expected := range []string{
+		"-net.core.rmem_max = 33554432",
+		"-net.core.wmem_max = 33554432",
+		"-net.ipv4.tcp_rmem = 4096 131072 33554432",
+		"-net.ipv4.tcp_wmem = 4096 16384 33554432",
+	} {
+		if !strings.Contains(configuration, expected) {
+			t.Fatalf("large-memory sysctl profile does not contain %q:\n%s", expected, configuration)
+		}
+	}
+}
+
+func TestInstallEdgeScriptSkipsUnsupportedBBR(t *testing.T) {
+	harness := newInstallHarness(t)
+
+	output, err := harness.run(t, "first-token", "edge-binary-v1", "sysctl-bbr")
+	if err != nil {
+		t.Fatalf("install failed instead of degrading: %v\n%s", err, output)
+	}
+	if !strings.Contains(output, "BBR is unavailable") {
+		t.Fatalf("install did not report the BBR downgrade:\n%s", output)
+	}
+	configuration := harness.read(t, "usr/local/lib/sysctl.d/40-simple-cdn-edge.conf")
+	if strings.Contains(configuration, "tcp_congestion_control") {
+		t.Fatalf("unsupported BBR setting was persisted:\n%s", configuration)
+	}
+	harness.requireContents(t, "run/mock-sysctl/net.ipv4.tcp_congestion_control", "cubic\n")
+}
+
+func TestInstallEdgeScriptSkipsIncompleteTCPBufferGroup(t *testing.T) {
+	harness := newInstallHarness(t)
+
+	output, err := harness.run(t, "first-token", "edge-binary-v1", "sysctl-buffer")
+	if err != nil {
+		t.Fatalf("install failed instead of degrading: %v\n%s", err, output)
+	}
+	if !strings.Contains(output, "TCP buffer tuning is not fully supported") {
+		t.Fatalf("install did not report the TCP buffer downgrade:\n%s", output)
+	}
+	configuration := harness.read(t, "usr/local/lib/sysctl.d/40-simple-cdn-edge.conf")
+	for _, key := range []string{"net.core.rmem_max", "net.core.wmem_max", "net.ipv4.tcp_rmem", "net.ipv4.tcp_wmem"} {
+		if strings.Contains(configuration, key) {
+			t.Fatalf("partial TCP buffer group persisted %s:\n%s", key, configuration)
+		}
+	}
+	harness.requireContents(t, "run/mock-sysctl/net.core.rmem_max", "4194304\n")
+	harness.requireContents(t, "run/mock-sysctl/net.ipv4.tcp_wmem", "4096 16384 4194304\n")
+}
+
+func TestInstallEdgeScriptHonorsLaterAdministratorSysctl(t *testing.T) {
+	harness := newInstallHarness(t)
+	harness.write("etc/sysctl.d/99-admin.conf", "net.ipv4.tcp_congestion_control = cubic\n")
+
+	output, err := harness.run(t, "first-token", "edge-binary-v1", "")
+	if err != nil {
+		t.Fatalf("install failed: %v\n%s", err, output)
+	}
+	if !strings.Contains(output, "later administrator setting may override it") {
+		t.Fatalf("install did not report the administrator override:\n%s", output)
+	}
+	configuration := harness.read(t, "usr/local/lib/sysctl.d/40-simple-cdn-edge.conf")
+	if !strings.Contains(configuration, "-net.ipv4.tcp_congestion_control = bbr") {
+		t.Fatalf("platform default was not persisted:\n%s", configuration)
+	}
+	harness.requireContents(t, "run/mock-sysctl/net.ipv4.tcp_congestion_control", "cubic\n")
 }
 
 func TestInstallEdgeScriptRequiresTokenForFreshHost(t *testing.T) {
@@ -197,9 +317,11 @@ func TestInstallEdgeScriptUpgradesNewLayoutIdempotently(t *testing.T) {
 	if output, err := harness.run(t, "first-token", "edge-binary-v1", ""); err != nil {
 		t.Fatalf("first install failed: %v\n%s", err, output)
 	}
+	baseline := harness.read(t, "opt/cdn-edge/data/sysctl-baseline.conf")
 	harness.write("opt/cdn-edge/data/pending-state", "keep data\n")
 	harness.write("opt/cdn-edge/cache/cache-object", "keep new cache\n")
 	harness.write("opt/cdn-edge/config/nginx/cdn-platform-stream.conf", "# existing stream config\n")
+	harness.write("proc/meminfo", "MemTotal:        8388608 kB\n")
 	environmentPath := filepath.Join(harness.root, "opt/cdn-edge/config/edge.env")
 	environment := strings.ReplaceAll(harness.read(t, "opt/cdn-edge/config/edge.env"), "EDGE_POLL_SECONDS=30", "EDGE_POLL_SECONDS=75")
 	if err := os.WriteFile(environmentPath, []byte(environment), 0o600); err != nil {
@@ -214,6 +336,10 @@ func TestInstallEdgeScriptUpgradesNewLayoutIdempotently(t *testing.T) {
 	harness.requireContents(t, "opt/cdn-edge/data/pending-state", "keep data\n")
 	harness.requireContents(t, "opt/cdn-edge/cache/cache-object", "keep new cache\n")
 	harness.requireContents(t, "opt/cdn-edge/config/nginx/cdn-platform-stream.conf", "# existing stream config\n")
+	harness.requireContents(t, "opt/cdn-edge/data/sysctl-baseline.conf", baseline)
+	if configuration := harness.read(t, "usr/local/lib/sysctl.d/40-simple-cdn-edge.conf"); !strings.Contains(configuration, "33554432") {
+		t.Fatalf("upgrade did not recalculate the TCP buffer ceiling:\n%s", configuration)
+	}
 	environment = harness.read(t, "opt/cdn-edge/config/edge.env")
 	if !strings.Contains(environment, "EDGE_POLL_SECONDS=75") || !strings.Contains(environment, "ENROLLMENT_TOKEN=\n") {
 		t.Fatalf("upgrade did not update environment safely:\n%s", environment)
@@ -242,12 +368,19 @@ func TestInstallEdgeScriptOnlineUpgradeRollsBackWithoutReadiness(t *testing.T) {
 	if output, err := harness.run(t, "first-token", "edge-binary-v1", ""); err != nil {
 		t.Fatalf("first install failed: %v\n%s", err, output)
 	}
+	previousSysctl := harness.read(t, "usr/local/lib/sysctl.d/40-simple-cdn-edge.conf")
+	previousBaseline := harness.read(t, "opt/cdn-edge/data/sysctl-baseline.conf")
+	harness.write("proc/meminfo", "MemTotal:        8388608 kB\n")
 	output, err := harness.runOnline(t, "edge-binary-v2", "readiness")
 	if err == nil || !strings.Contains(output, "did not confirm a control-plane heartbeat") {
 		t.Fatalf("online upgrade without readiness was not rejected: %v\n%s", err, output)
 	}
 	harness.requireContents(t, "opt/cdn-edge/bin/cdn-edge-agent", "edge-binary-v1")
 	harness.requireLink(t, "etc/systemd/system/cdn-edge-agent.service", "opt/cdn-edge/systemd/cdn-edge-agent.service")
+	harness.requireContents(t, "usr/local/lib/sysctl.d/40-simple-cdn-edge.conf", previousSysctl)
+	harness.requireContents(t, "opt/cdn-edge/data/sysctl-baseline.conf", previousBaseline)
+	harness.requireContents(t, "run/mock-sysctl/net.core.rmem_max", "16777216\n")
+	harness.requireContents(t, "run/mock-sysctl/net.ipv4.tcp_wmem", "4096 16384 16777216\n")
 }
 
 func TestInstallEdgeScriptRestoresLegacyNginxAfterRestartFailure(t *testing.T) {
@@ -289,6 +422,9 @@ func TestInstallEdgeScriptRollsBackLegacyMigration(t *testing.T) {
 	if !strings.Contains(harness.read(t, "mock.log"), "systemctl start cdn-edge-agent.service") {
 		t.Fatalf("rollback did not restore the legacy service state:\n%s", harness.read(t, "mock.log"))
 	}
+	harness.requireAbsent(t, "usr/local/lib/sysctl.d/40-simple-cdn-edge.conf")
+	harness.requireContents(t, "run/mock-sysctl/net.core.default_qdisc", "pfifo_fast\n")
+	harness.requireContents(t, "run/mock-sysctl/net.ipv4.tcp_congestion_control", "cubic\n")
 	matches, globErr := filepath.Glob(filepath.Join(harness.root, "tmp/cdn-edge-install.*"))
 	if globErr != nil || len(matches) != 0 {
 		t.Fatalf("installer left transaction directories after rollback: %#v, %v", matches, globErr)
@@ -337,12 +473,24 @@ func newInstallHarness(t *testing.T) *installHarness {
 		servicePath:        filepath.Join(root, "download-service"),
 		updaterServicePath: filepath.Join(root, "download-updater-service"),
 	}
-	for _, directory := range []string{"tmp", "run", "mock-bin", "etc/nginx/conf.d", "etc/nginx/sites-enabled", "etc/logrotate.d", "etc/systemd/system"} {
+	for _, directory := range []string{"tmp", "run", "mock-bin", "proc", "etc/nginx/conf.d", "etc/nginx/sites-enabled", "etc/logrotate.d", "etc/systemd/system", "etc/sysctl.d", "usr/local/lib/sysctl.d"} {
 		if err := os.MkdirAll(filepath.Join(root, directory), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
 	harness.write("etc/nginx/nginx.conf", "worker_processes auto;\nevents {\n    worker_connections 768;\n}\nhttp {\n    include /etc/nginx/conf.d/*.conf;\n}\n")
+	harness.write("proc/meminfo", "MemTotal:        4194304 kB\n")
+	for key, value := range map[string]string{
+		"net.core.default_qdisc":          "pfifo_fast\n",
+		"net.ipv4.tcp_congestion_control": "cubic\n",
+		"net.ipv4.tcp_mtu_probing":        "0\n",
+		"net.core.rmem_max":               "4194304\n",
+		"net.core.wmem_max":               "4194304\n",
+		"net.ipv4.tcp_rmem":               "4096 131072 6291456\n",
+		"net.ipv4.tcp_wmem":               "4096 16384 4194304\n",
+	} {
+		harness.write(filepath.Join("run/mock-sysctl", key), value)
+	}
 	if err := os.WriteFile(harness.servicePath, []byte(bootstrapEdgeService), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -385,6 +533,72 @@ actual=$(shasum -a 256 "$path" | awk '{print $1}')
 [[ "$expected" == "$actual" ]]
 `)
 	harness.writeMock(t, "sleep", "#!/usr/bin/env bash\nexit 0\n")
+	harness.writeMock(t, "modprobe", `#!/usr/bin/env bash
+printf 'modprobe %s\n' "$*" >>"$MOCK_LOG"
+exit 0
+`)
+	harness.writeMock(t, "sysctl", `#!/usr/bin/env bash
+set -euo pipefail
+printf 'sysctl %s\n' "$*" >>"$MOCK_LOG"
+root="$CDN_EDGE_INSTALL_ROOT"
+state_dir="$root/run/mock-sysctl"
+
+trim() {
+  awk '{$1=$1; print}' <<<"$1"
+}
+
+write_setting() {
+  local key="$1" value
+  value=$(trim "$2")
+  if [[ "${MOCK_FAILURE:-}" == "sysctl-bbr" && "$key" == "net.ipv4.tcp_congestion_control" && "$value" == "bbr" ]]; then
+    return 1
+  fi
+  if [[ "${MOCK_FAILURE:-}" == "sysctl-buffer" && "$key" == "net.ipv4.tcp_wmem" && "$value" == *"16777216" ]]; then
+    return 1
+  fi
+  mkdir -p "$state_dir"
+  printf '%s\n' "$value" >"$state_dir/$key"
+}
+
+apply_file() {
+  local file="$1" line key value
+  [[ -f "$file" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line=$(trim "$line")
+    [[ -z "$line" || "$line" == \#* || "$line" == \;* ]] && continue
+    line="${line#-}"
+    key=$(trim "${line%%=*}")
+    value=$(trim "${line#*=}")
+    write_setting "$key" "$value"
+  done <"$file"
+}
+
+while [[ "${1:-}" == "-q" ]]; do shift; done
+case "${1:-}" in
+  -n)
+    cat "$state_dir/$2"
+    ;;
+  -w)
+    assignment="$2"
+    write_setting "${assignment%%=*}" "${assignment#*=}"
+    ;;
+  -p)
+    apply_file "$2"
+    ;;
+  --system)
+    for file in "$root/usr/local/lib/sysctl.d/"*.conf; do
+      [[ -e "$file" ]] && apply_file "$file"
+    done
+    for file in "$root/etc/sysctl.d/"*.conf; do
+      [[ -e "$file" ]] && apply_file "$file"
+    done
+    ;;
+  *)
+    echo "unexpected sysctl arguments: $*" >&2
+    exit 1
+    ;;
+esac
+`)
 	harness.writeMock(t, "systemctl", `#!/usr/bin/env bash
 set -euo pipefail
 printf 'systemctl %s\n' "$*" >>"$MOCK_LOG"
