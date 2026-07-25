@@ -10,7 +10,6 @@ import {
 import { useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
-
 import {
   EmptyState,
   PageBody,
@@ -44,12 +43,12 @@ import { api, errorMessage } from "@/lib/api";
 import { formatDateTime, formatNumber } from "@/lib/format";
 import type { Node, NodeUpgradeTask } from "@/lib/types";
 import { useListPagination } from "@/hooks/use-list-pagination";
-
+import { t, useI18n } from "@/lib/i18n";
 interface BulkUpgradeResult {
   created: number;
 }
-
 export function NodesPage() {
+  useI18n();
   const queryClient = useQueryClient();
   const [createOpen, setCreateOpen] = useState(false);
   const nodes = useQuery({
@@ -63,21 +62,28 @@ export function NodesPage() {
   const pagination = useListPagination(nodes.data ?? []);
   const bulkUpgrade = useMutation({
     mutationFn: () =>
-      api<BulkUpgradeResult>("/api/nodes/upgrade-all", { method: "POST" }),
+      api<BulkUpgradeResult>("/api/nodes/upgrade-all", {
+        method: "POST",
+      }),
     onSuccess: (result) => {
-      void queryClient.invalidateQueries({ queryKey: ["nodes"] });
-      toast.success(`已创建 ${result.created} 个升级任务`);
+      void queryClient.invalidateQueries({
+        queryKey: ["nodes"],
+      });
+      toast.success(
+        t("已创建 {value0} 个升级任务", {
+          value0: result.created,
+        }),
+      );
     },
     onError: (error) => toast.error(errorMessage(error)),
   });
   const upgradeable =
     nodes.data?.filter((node) => node.can_upgrade).length ?? 0;
-
   return (
     <>
       <PageHeader
-        title="节点"
-        description="边缘节点、版本与在线运维"
+        title={t("节点")}
+        description={t("边缘节点、版本与在线运维")}
         actions={
           <>
             <Button
@@ -90,11 +96,12 @@ export function NodesPage() {
               ) : (
                 <Rocket />
               )}
-              全部升级{upgradeable ? ` (${upgradeable})` : ""}
+              {t("全部升级")}
+              {upgradeable ? ` (${upgradeable})` : ""}
             </Button>
             <Button onClick={() => setCreateOpen(true)}>
               <CirclePlus />
-              添加节点
+              {t("添加节点")}
             </Button>
           </>
         }
@@ -108,14 +115,14 @@ export function NodesPage() {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="pl-5">节点</TableHead>
-                    <TableHead>状态</TableHead>
-                    <TableHead>公网 IPv4</TableHead>
-                    <TableHead>心跳</TableHead>
-                    <TableHead>代理版本</TableHead>
-                    <TableHead>升级</TableHead>
+                    <TableHead className="pl-5">{t("节点")}</TableHead>
+                    <TableHead>{t("状态")}</TableHead>
+                    <TableHead>{t("公网 IPv4")}</TableHead>
+                    <TableHead>{t("心跳")}</TableHead>
+                    <TableHead>{t("代理版本")}</TableHead>
+                    <TableHead>{t("升级")}</TableHead>
                     <TableHead className="w-12 pr-5">
-                      <span className="sr-only">管理</span>
+                      <span className="sr-only">{t("管理")}</span>
                     </TableHead>
                   </TableRow>
                 </TableHeader>
@@ -137,16 +144,17 @@ export function NodesPage() {
                       <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
                         {node.last_heartbeat_at
                           ? formatDateTime(node.last_heartbeat_at)
-                          : "尚未注册"}
+                          : t("尚未注册")}
                       </TableCell>
                       <TableCell>
                         <div className="text-sm font-medium">
                           {node.agent_version
                             ? `v${node.agent_version}`
-                            : "版本未知"}
+                            : t("版本未知")}
                         </div>
                         <div className="text-xs text-muted-foreground">
-                          配置 v{formatNumber(node.applied_version)}
+                          {t("配置 v")}
+                          {formatNumber(node.applied_version)}
                         </div>
                       </TableCell>
                       <TableCell>
@@ -154,12 +162,12 @@ export function NodesPage() {
                         activeUpgrade(node.upgrade_task) ? (
                           <StatusBadge status={node.upgrade_task.status} />
                         ) : node.upgrade_up_to_date ? (
-                          <StatusBadge status="succeeded" label="最新" />
+                          <StatusBadge status="succeeded" label={t("最新")} />
                         ) : node.can_upgrade ? (
-                          <StatusBadge status="ready" label="可升级" />
+                          <StatusBadge status="ready" label={t("可升级")} />
                         ) : (
                           <span className="text-xs text-muted-foreground">
-                            {node.upgrade_blocker || "不可升级"}
+                            {node.upgrade_blocker || t("不可升级")}
                           </span>
                         )}
                       </TableCell>
@@ -167,7 +175,9 @@ export function NodesPage() {
                         <Button asChild variant="ghost" size="icon-sm">
                           <Link
                             to={`/nodes/${encodeURIComponent(node.id)}`}
-                            aria-label={`管理 ${node.name}`}
+                            aria-label={t("管理 {value0}", {
+                              value0: node.name,
+                            })}
                           >
                             <ArrowRight />
                           </Link>
@@ -179,12 +189,12 @@ export function NodesPage() {
               </Table>
               <ListPagination
                 pagination={pagination}
-                itemLabel="个节点"
+                itemLabel={t("个节点")}
                 action={
                   <Button
                     variant="ghost"
                     size="icon-xs"
-                    aria-label="刷新节点"
+                    aria-label={t("刷新节点")}
                     onClick={() => void nodes.refetch()}
                   >
                     <RefreshCw
@@ -196,8 +206,8 @@ export function NodesPage() {
             </Panel>
           ) : (
             <EmptyState
-              title="暂无边缘节点"
-              description="添加节点后生成安全的部署命令"
+              title={t("暂无边缘节点")}
+              description={t("添加节点后生成安全的部署命令")}
             />
           )
         ) : null}
@@ -206,7 +216,6 @@ export function NodesPage() {
     </>
   );
 }
-
 function CreateNodeDialog({
   open,
   onOpenChange,
@@ -221,11 +230,16 @@ function CreateNodeDialog({
     mutationFn: () =>
       api<Node>("/api/nodes", {
         method: "POST",
-        body: JSON.stringify({ name, public_ipv4: ip }),
+        body: JSON.stringify({
+          name,
+          public_ipv4: ip,
+        }),
       }),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["nodes"] });
-      toast.success("节点已添加");
+      void queryClient.invalidateQueries({
+        queryKey: ["nodes"],
+      });
+      toast.success(t("节点已添加"));
       setName("");
       setIP("");
       onOpenChange(false);
@@ -241,14 +255,14 @@ function CreateNodeDialog({
       <DialogContent>
         <form onSubmit={submit}>
           <DialogHeader>
-            <DialogTitle>添加边缘节点</DialogTitle>
+            <DialogTitle>{t("添加边缘节点")}</DialogTitle>
             <DialogDescription>
-              创建节点记录后，在详情页生成部署命令
+              {t("创建节点记录后，在详情页生成部署命令")}
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-5">
             <div className="grid gap-2">
-              <Label htmlFor="node-name">节点名称</Label>
+              <Label htmlFor="node-name">{t("节点名称")}</Label>
               <Input
                 id="node-name"
                 required
@@ -259,7 +273,7 @@ function CreateNodeDialog({
               />
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="node-ip">公网 IPv4</Label>
+              <Label htmlFor="node-ip">{t("公网 IPv4")}</Label>
               <Input
                 id="node-ip"
                 required
@@ -275,7 +289,7 @@ function CreateNodeDialog({
               variant="outline"
               onClick={() => onOpenChange(false)}
             >
-              取消
+              {t("取消")}
             </Button>
             <Button type="submit" disabled={mutation.isPending}>
               {mutation.isPending ? (
@@ -283,7 +297,7 @@ function CreateNodeDialog({
               ) : (
                 <Server />
               )}
-              创建节点
+              {t("创建节点")}
             </Button>
           </DialogFooter>
         </form>
@@ -291,7 +305,6 @@ function CreateNodeDialog({
     </Dialog>
   );
 }
-
 function activeUpgrade(task?: NodeUpgradeTask) {
   return task?.status === "queued" || task?.status === "applying";
 }

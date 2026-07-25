@@ -15,7 +15,6 @@ import {
 import { useEffect, useId, useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
-
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { CopyButton } from "@/components/copy-button";
 import { ListPagination } from "@/components/list-pagination";
@@ -70,7 +69,7 @@ import type {
   Site,
   TCPForward,
 } from "@/lib/types";
-
+import { t, useI18n } from "@/lib/i18n";
 interface SiteDraft {
   name: string;
   domains: string;
@@ -92,7 +91,6 @@ interface SiteDraft {
   tcp_forwards: TCPForward[];
   enabled: boolean;
 }
-
 interface TLSStatus {
   certificate_task: DeploymentTask | null;
   published_after_certificate: boolean;
@@ -108,8 +106,8 @@ interface Allowlist {
   }>;
   note: string;
 }
-
 export function SiteDetailPage() {
+  useI18n();
   const { siteId } = useParams();
   const isNew = !siteId;
   const queryClient = useQueryClient();
@@ -138,7 +136,6 @@ export function SiteDetailPage() {
   const globalTTL = settings.data?.dns.default_ttl_seconds ?? 60;
   const dirty = Boolean(baseline && JSON.stringify(draft) !== baseline);
   const encodedID = encodeURIComponent(siteId ?? "");
-
   useEffect(() => {
     if (!settings.isFetched) return;
     const key = isNew ? "new" : site?.id;
@@ -148,14 +145,12 @@ export function SiteDetailPage() {
     setBaseline(JSON.stringify(next));
     setLoadedKey(key);
   }, [globalTTL, isNew, loadedKey, settings.isFetched, site]);
-
   useEffect(() => {
     if (!dirty) return;
     const warn = (event: BeforeUnloadEvent) => event.preventDefault();
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
-
   const tls = useQuery({
     queryKey: ["site-tls", siteId],
     queryFn: () => api<TLSStatus>(`/api/sites/${encodedID}/tls-status`),
@@ -182,14 +177,16 @@ export function SiteDetailPage() {
     queryFn: () => api<Allowlist>(`/api/sites/${encodedID}/origin-allowlist`),
     enabled: allowlistOpen && !isNew,
   });
-
   useEffect(() => {
     if (deletion.data?.task?.status !== "succeeded") return;
-    toast.success("站点已安全删除");
-    void queryClient.invalidateQueries({ queryKey: ["sites"] });
-    navigate("/sites", { replace: true });
+    toast.success(t("站点已安全删除"));
+    void queryClient.invalidateQueries({
+      queryKey: ["sites"],
+    });
+    navigate("/sites", {
+      replace: true,
+    });
   }, [deletion.data?.task?.status, navigate, queryClient]);
-
   const save = useMutation({
     mutationFn: () =>
       api<Site>(isNew ? "/api/sites" : `/api/sites/${encodedID}`, {
@@ -208,7 +205,9 @@ export function SiteDetailPage() {
         }
         return current.map((item) => (item.id === saved.id ? saved : item));
       });
-      void queryClient.invalidateQueries({ queryKey: ["sites"] });
+      void queryClient.invalidateQueries({
+        queryKey: ["sites"],
+      });
       void queryClient.invalidateQueries({
         queryKey: ["site-tls", saved.id],
       });
@@ -220,32 +219,40 @@ export function SiteDetailPage() {
       });
       toast.success(
         isNew && siteNeedsCertificate(saved)
-          ? "站点已创建，TLS 证书正在自动申请"
+          ? t("站点已创建，TLS 证书正在自动申请")
           : isNew
-            ? "站点已创建"
-            : "站点配置已保存",
+            ? t("站点已创建")
+            : t("站点配置已保存"),
       );
       if (isNew)
-        navigate(`/sites/${encodeURIComponent(saved.id)}`, { replace: true });
+        navigate(`/sites/${encodeURIComponent(saved.id)}`, {
+          replace: true,
+        });
     },
     onError: (error) => toast.error(errorMessage(error)),
   });
   const operation = useMutation({
     mutationFn: ({ path }: { path: string }) =>
-      api<DeploymentTask>(path, { method: "POST" }),
+      api<DeploymentTask>(path, {
+        method: "POST",
+      }),
     onSuccess: (_, input) => {
       toast.success(
         input.path.endsWith("certificate")
-          ? "TLS 签发已排队"
+          ? t("TLS 签发已排队")
           : input.path.endsWith("invalidate-cache")
-            ? "缓存失效已发布"
-            : "站点发布已启动",
+            ? t("缓存失效已发布")
+            : t("站点发布已启动"),
       );
-      void queryClient.invalidateQueries({ queryKey: ["site-tls", siteId] });
+      void queryClient.invalidateQueries({
+        queryKey: ["site-tls", siteId],
+      });
       void queryClient.invalidateQueries({
         queryKey: ["site-publish", siteId],
       });
-      void queryClient.invalidateQueries({ queryKey: ["sites"] });
+      void queryClient.invalidateQueries({
+        queryKey: ["sites"],
+      });
     },
     onError: (error, input) => {
       if (
@@ -256,8 +263,11 @@ export function SiteDetailPage() {
         typeof error.data === "object" &&
         "certificate_task" in error.data
       ) {
-        const task = (error.data as { certificate_task?: DeploymentTask })
-          .certificate_task;
+        const task = (
+          error.data as {
+            certificate_task?: DeploymentTask;
+          }
+        ).certificate_task;
         if (task) {
           queryClient.setQueryData<TLSStatus>(["site-tls", siteId], {
             certificate_task: task,
@@ -274,17 +284,20 @@ export function SiteDetailPage() {
     mutationFn: () =>
       api<PublishStatus>(`/api/sites/${encodedID}`, {
         method: "DELETE",
-        body: JSON.stringify({ confirmation: site?.name }),
+        body: JSON.stringify({
+          confirmation: site?.name,
+        }),
       }),
     onSuccess: (status) => {
       queryClient.setQueryData(["site-deletion", siteId], status);
-      void queryClient.invalidateQueries({ queryKey: ["sites"] });
-      toast.success("安全删除已启动");
+      void queryClient.invalidateQueries({
+        queryKey: ["sites"],
+      });
+      toast.success(t("安全删除已启动"));
       setDeleteOpen(false);
     },
     onError: (error) => toast.error(errorMessage(error)),
   });
-
   function submit(event: FormEvent) {
     event.preventDefault();
     save.mutate();
@@ -296,22 +309,27 @@ export function SiteDetailPage() {
   async function publishSite() {
     if (!site) return;
     if (!site.enabled || !siteNeedsCertificate(site)) {
-      operation.mutate({ path: `/api/sites/${encodedID}/publish` });
+      operation.mutate({
+        path: `/api/sites/${encodedID}/publish`,
+      });
       return;
     }
-
     setCheckingTLS(true);
     try {
       let status = await api<TLSStatus>(`/api/sites/${encodedID}/tls-status`);
       queryClient.setQueryData(["site-tls", siteId], status);
       if (status.certificate_task?.status === "succeeded") {
-        operation.mutate({ path: `/api/sites/${encodedID}/publish` });
+        operation.mutate({
+          path: `/api/sites/${encodedID}/publish`,
+        });
         return;
       }
       if (!activeTask(status.certificate_task)) {
         const task = await api<DeploymentTask>(
           `/api/sites/${encodedID}/certificate`,
-          { method: "POST" },
+          {
+            method: "POST",
+          },
         );
         status = {
           certificate_task: task,
@@ -328,20 +346,19 @@ export function SiteDetailPage() {
   }
   const loading =
     sites.isLoading || nodes.isLoading || settings.isLoading || !loadedKey;
-
   return (
     <>
       <PageHeader
-        title={isNew ? "添加站点" : (site?.name ?? "站点配置")}
+        title={isNew ? t("添加站点") : (site?.name ?? t("站点配置"))}
         description={
           site
-            ? `${site.domains.join(", ") || "无 HTTP 域名"} · ${site.id}`
-            : "创建新的边缘站点配置"
+            ? `${site.domains.join(", ") || t("无 HTTP 域名")} · ${site.id}`
+            : t("创建新的边缘站点配置")
         }
         actions={
           <Button variant="outline" onClick={goBack}>
             <ArrowLeft />
-            返回站点
+            {t("返回站点")}
           </Button>
         }
       />
@@ -351,7 +368,10 @@ export function SiteDetailPage() {
           <PageError error={sites.error || nodes.error || settings.error} />
         ) : null}
         {!isNew && sites.data && !site ? (
-          <EmptyState title="未找到站点" description="该站点可能已被删除" />
+          <EmptyState
+            title={t("未找到站点")}
+            description={t("该站点可能已被删除")}
+          />
         ) : null}
         {!loading && (isNew || site) ? (
           <form
@@ -361,10 +381,10 @@ export function SiteDetailPage() {
             <div className="space-y-5">
               {site?.deleting ? (
                 <Alert variant="destructive">
-                  <AlertTitle>站点正在删除</AlertTitle>
+                  <AlertTitle>{t("站点正在删除")}</AlertTitle>
                   <AlertDescription>
                     {deletion.data?.task?.detail ||
-                      "配置已锁定，正在撤销 DNS 并等待边缘节点确认。"}
+                      t("配置已锁定，正在撤销 DNS 并等待边缘节点确认。")}
                   </AlertDescription>
                 </Alert>
               ) : null}
@@ -373,49 +393,60 @@ export function SiteDetailPage() {
               <NodeSelector
                 nodes={nodes.data ?? []}
                 selected={draft.node_ids}
-                onChange={(node_ids) => setDraft({ ...draft, node_ids })}
+                onChange={(node_ids) =>
+                  setDraft({
+                    ...draft,
+                    node_ids,
+                  })
+                }
               />
               <TCPForwards draft={draft} setDraft={setDraft} />
             </div>
             <aside className="space-y-4 xl:sticky xl:top-16 xl:self-start">
               <Card>
                 <CardHeader>
-                  <CardTitle>配置摘要</CardTitle>
+                  <CardTitle>{t("配置摘要")}</CardTitle>
                   <CardDescription>
-                    {dirty ? "有未保存的更改" : "配置已同步"}
+                    {dirty ? t("有未保存的更改") : t("配置已同步")}
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="grid gap-3 text-sm">
                   <Fact
-                    label="流量模式"
+                    label={t("流量模式")}
                     value={
                       draft.tcp_only
-                        ? "仅 TCP / TLS"
+                        ? t("仅 TCP / TLS")
                         : draft.tcp_forwards.length
                           ? "HTTP + TCP"
                           : "HTTP / gRPC / WS"
                     }
                   />
                   <Fact
-                    label="边缘节点"
-                    value={`${draft.node_ids.length} 个`}
+                    label={t("边缘节点")}
+                    value={t("{value0} 个", {
+                      value0: draft.node_ids.length,
+                    })}
                   />
                   <Fact
                     label="DNS TTL"
                     value={
                       draft.inherit_dns_ttl
-                        ? `${globalTTL} 秒（全局）`
-                        : `${draft.dns_ttl_seconds} 秒`
+                        ? t("{value0} 秒（全局）", {
+                            value0: globalTTL,
+                          })
+                        : t("{value0} 秒", {
+                            value0: draft.dns_ttl_seconds,
+                          })
                     }
                   />
                   <Fact
-                    label="TCP 端口"
+                    label={t("TCP 端口")}
                     value={
                       draft.tcp_forwards.length
                         ? draft.tcp_forwards
                             .map((item) => item.listen_port || "--")
                             .join(", ")
-                        : "未配置"
+                        : t("未配置")
                     }
                   />
                   <Button
@@ -427,7 +458,7 @@ export function SiteDetailPage() {
                     ) : (
                       <Save />
                     )}
-                    {isNew ? "创建站点" : "保存更改"}
+                    {isNew ? t("创建站点") : t("保存更改")}
                   </Button>
                 </CardContent>
               </Card>
@@ -461,19 +492,21 @@ export function SiteDetailPage() {
       <ConfirmDialog
         open={discardOpen}
         onOpenChange={setDiscardOpen}
-        title="放弃未保存的更改？"
-        description="当前站点表单包含未保存内容。"
-        confirmLabel="放弃更改"
+        title={t("放弃未保存的更改？")}
+        description={t("当前站点表单包含未保存内容。")}
+        confirmLabel={t("放弃更改")}
         destructive
         onConfirm={() => navigate("/sites")}
       />
       <ConfirmDialog
         open={deleteOpen}
         onOpenChange={setDeleteOpen}
-        title={site?.deleting ? "重试安全删除" : "安全删除站点"}
-        description="控制面会撤销托管 DNS、从所有边缘节点移除配置，并清理证书材料。"
+        title={site?.deleting ? t("重试安全删除") : t("安全删除站点")}
+        description={t(
+          "控制面会撤销托管 DNS、从所有边缘节点移除配置，并清理证书材料。",
+        )}
         confirmation={site?.name}
-        confirmLabel={site?.deleting ? "重试删除" : "开始删除"}
+        confirmLabel={site?.deleting ? t("重试删除") : t("开始删除")}
         destructive
         busy={deleteSite.isPending}
         onConfirm={async () => {
@@ -483,15 +516,16 @@ export function SiteDetailPage() {
       <Dialog open={tlsPendingOpen} onOpenChange={setTlsPendingOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>正在申请 TLS 证书</DialogTitle>
+            <DialogTitle>{t("正在申请 TLS 证书")}</DialogTitle>
             <DialogDescription>
-              TLS 证书申请成功后才能发布站点。系统正在后台完成 DNS-01
-              验证，请稍后再次发布。
+              {t(
+                "TLS 证书申请成功后才能发布站点。系统正在后台完成 DNS-01 验证，请稍后再次发布。",
+              )}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button type="button" onClick={() => setTlsPendingOpen(false)}>
-              知道了
+              {t("知道了")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -505,7 +539,6 @@ export function SiteDetailPage() {
     </>
   );
 }
-
 function BasicSettings({
   draft,
   setDraft,
@@ -516,54 +549,66 @@ function BasicSettings({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>基本配置</CardTitle>
-        <CardDescription>站点名称与入口域名</CardDescription>
+        <CardTitle>{t("基本配置")}</CardTitle>
+        <CardDescription>{t("站点名称与入口域名")}</CardDescription>
       </CardHeader>
       <CardContent className="grid gap-4 sm:grid-cols-2">
         <div className="sm:col-span-2 sm:max-w-xl">
-          <Field label="站点名称" id="site-name">
+          <Field label={t("站点名称")} id="site-name">
             <Input
               id="site-name"
               required
               maxLength={100}
               value={draft.name}
               onChange={(event) =>
-                setDraft({ ...draft, name: event.target.value })
+                setDraft({
+                  ...draft,
+                  name: event.target.value,
+                })
               }
             />
           </Field>
         </div>
         <div className="grid gap-2 sm:col-span-2">
-          <Label htmlFor="site-domains">域名</Label>
+          <Label htmlFor="site-domains">{t("域名")}</Label>
           <Textarea
             id="site-domains"
             rows={3}
             value={draft.domains}
             onChange={(event) =>
-              setDraft({ ...draft, domains: event.target.value })
+              setDraft({
+                ...draft,
+                domains: event.target.value,
+              })
             }
             placeholder="cdn.example.com, static.example.com"
           />
-          <p className="text-xs text-muted-foreground">使用逗号或换行分隔</p>
+          <p className="text-xs text-muted-foreground">
+            {t("使用逗号或换行分隔")}
+          </p>
         </div>
         <div className="flex items-center justify-between sm:col-span-2">
           <div>
-            <Label htmlFor="site-enabled">启用站点</Label>
+            <Label htmlFor="site-enabled">{t("启用站点")}</Label>
             <p className="text-xs text-muted-foreground">
-              停用后下次发布会撤销入口服务
+              {t("停用后下次发布会撤销入口服务")}
             </p>
           </div>
           <Switch
             id="site-enabled"
             checked={draft.enabled}
-            onCheckedChange={(enabled) => setDraft({ ...draft, enabled })}
+            onCheckedChange={(enabled) =>
+              setDraft({
+                ...draft,
+                enabled,
+              })
+            }
           />
         </div>
       </CardContent>
     </Card>
   );
 }
-
 function TrafficSettings({
   draft,
   setDraft,
@@ -574,23 +619,26 @@ function TrafficSettings({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>流量与源站</CardTitle>
-        <CardDescription>HTTP 系列协议或纯 TCP/TLS 转发</CardDescription>
+        <CardTitle>{t("流量与源站")}</CardTitle>
+        <CardDescription>{t("HTTP 系列协议或纯 TCP/TLS 转发")}</CardDescription>
       </CardHeader>
       <CardContent>
         <Tabs
           value={draft.tcp_only ? "tcp" : "http"}
           onValueChange={(value) =>
-            setDraft({ ...draft, tcp_only: value === "tcp" })
+            setDraft({
+              ...draft,
+              tcp_only: value === "tcp",
+            })
           }
         >
           <TabsList>
             <TabsTrigger value="http">HTTP / gRPC / WS</TabsTrigger>
-            <TabsTrigger value="tcp">仅 TCP / TLS</TabsTrigger>
+            <TabsTrigger value="tcp">{t("仅 TCP / TLS")}</TabsTrigger>
           </TabsList>
           <TabsContent value="http" className="mt-5 space-y-5">
             <OriginFields
-              title="主源站"
+              title={t("主源站")}
               required
               url={draft.primary_url}
               host={draft.primary_host}
@@ -607,22 +655,25 @@ function TrafficSettings({
             <Separator />
             <div className="flex items-center justify-between">
               <div>
-                <Label htmlFor="backup-origin">备用源站</Label>
+                <Label htmlFor="backup-origin">{t("备用源站")}</Label>
                 <p className="text-xs text-muted-foreground">
-                  主源站不可用时回退
+                  {t("主源站不可用时回退")}
                 </p>
               </div>
               <Switch
                 id="backup-origin"
                 checked={draft.backup_enabled}
                 onCheckedChange={(backup_enabled) =>
-                  setDraft({ ...draft, backup_enabled })
+                  setDraft({
+                    ...draft,
+                    backup_enabled,
+                  })
                 }
               />
             </div>
             {draft.backup_enabled ? (
               <OriginFields
-                title="备用源站"
+                title={t("备用源站")}
                 url={draft.backup_url}
                 host={draft.backup_host}
                 sni={draft.backup_sni}
@@ -638,7 +689,7 @@ function TrafficSettings({
             ) : null}
             <Separator />
             <div className="grid gap-4 sm:grid-cols-3">
-              <Field label="最大请求体（MiB）" id="body-size">
+              <Field label={t("最大请求体（MiB）")} id="body-size">
                 <Input
                   id="body-size"
                   type="number"
@@ -654,7 +705,10 @@ function TrafficSettings({
                   }
                 />
               </Field>
-              <Field label="客户端保活（秒）" id="client-keepalive-timeout">
+              <Field
+                label={t("客户端保活（秒）")}
+                id="client-keepalive-timeout"
+              >
                 <Input
                   id="client-keepalive-timeout"
                   type="number"
@@ -672,7 +726,7 @@ function TrafficSettings({
                   }
                 />
               </Field>
-              <Field label="读写超时（秒）" id="rw-timeout">
+              <Field label={t("读写超时（秒）")} id="rw-timeout">
                 <Input
                   id="rw-timeout"
                   type="number"
@@ -690,32 +744,38 @@ function TrafficSettings({
             </div>
             <div className="flex items-center justify-between">
               <div>
-                <Label htmlFor="passthrough">回源直通</Label>
+                <Label htmlFor="passthrough">{t("回源直通")}</Label>
                 <p className="text-xs text-muted-foreground">
-                  关闭缓存并直接代理到源站
+                  {t("关闭缓存并直接代理到源站")}
                 </p>
               </div>
               <Switch
                 id="passthrough"
                 checked={draft.passthrough}
                 onCheckedChange={(passthrough) =>
-                  setDraft({ ...draft, passthrough })
+                  setDraft({
+                    ...draft,
+                    passthrough,
+                  })
                 }
               />
             </div>
             <div className="grid gap-4 sm:grid-cols-[1fr_10rem]">
               <div className="flex items-center justify-between">
                 <div>
-                  <Label htmlFor="inherit-ttl">继承全局 DNS TTL</Label>
+                  <Label htmlFor="inherit-ttl">{t("继承全局 DNS TTL")}</Label>
                   <p className="text-xs text-muted-foreground">
-                    范围 60–300 秒
+                    {t("范围 60–300 秒")}
                   </p>
                 </div>
                 <Switch
                   id="inherit-ttl"
                   checked={draft.inherit_dns_ttl}
                   onCheckedChange={(inherit_dns_ttl) =>
-                    setDraft({ ...draft, inherit_dns_ttl })
+                    setDraft({
+                      ...draft,
+                      inherit_dns_ttl,
+                    })
                   }
                 />
               </div>
@@ -731,16 +791,18 @@ function TrafficSettings({
                     dns_ttl_seconds: Number(event.target.value),
                   })
                 }
-                aria-label="站点 DNS TTL"
+                aria-label={t("站点 DNS TTL")}
               />
             </div>
           </TabsContent>
           <TabsContent value="tcp" className="mt-5">
             <Alert>
               <Network />
-              <AlertTitle>纯 TCP/TLS 模式</AlertTitle>
+              <AlertTitle>{t("纯 TCP/TLS 模式")}</AlertTitle>
               <AlertDescription>
-                此模式不创建 HTTP 入口，请至少在下方配置一个 TCP 转发端口。
+                {t(
+                  "此模式不创建 HTTP 入口，请至少在下方配置一个 TCP 转发端口。",
+                )}
               </AlertDescription>
             </Alert>
           </TabsContent>
@@ -749,7 +811,6 @@ function TrafficSettings({
     </Card>
   );
 }
-
 function OriginFields({
   title,
   required = false,
@@ -769,12 +830,18 @@ function OriginFields({
   return (
     <div className="grid gap-4 sm:grid-cols-2">
       <div className="sm:col-span-2 text-sm font-medium">{title}</div>
-      <Field label="源站 URL" id={`${title}-url`}>
+      <Field label={t("源站 URL")} id={`${title}-url`}>
         <Input
           id={`${title}-url`}
           required={required}
           value={url}
-          onChange={(event) => onChange({ url: event.target.value, host, sni })}
+          onChange={(event) =>
+            onChange({
+              url: event.target.value,
+              host,
+              sni,
+            })
+          }
           placeholder="https://origin.example.com:443"
         />
       </Field>
@@ -782,18 +849,28 @@ function OriginFields({
         <Input
           id={`${title}-host`}
           value={host}
-          onChange={(event) => onChange({ url, host: event.target.value, sni })}
+          onChange={(event) =>
+            onChange({
+              url,
+              host: event.target.value,
+              sni,
+            })
+          }
           placeholder="origin.example.com"
         />
       </Field>
       {tls ? (
         <div className="grid gap-2 sm:col-span-2">
-          <Label htmlFor={`${title}-sni`}>回源 TLS SNI</Label>
+          <Label htmlFor={`${title}-sni`}>{t("回源 TLS SNI")}</Label>
           <Input
             id={`${title}-sni`}
             value={sni}
             onChange={(event) =>
-              onChange({ url, host, sni: event.target.value })
+              onChange({
+                url,
+                host,
+                sni: event.target.value,
+              })
             }
             placeholder="origin.example.com"
           />
@@ -802,7 +879,6 @@ function OriginFields({
     </div>
   );
 }
-
 function NodeSelector({
   nodes,
   selected,
@@ -819,8 +895,8 @@ function NodeSelector({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>边缘节点</CardTitle>
-        <CardDescription>选择承载此站点的节点</CardDescription>
+        <CardTitle>{t("边缘节点")}</CardTitle>
+        <CardDescription>{t("选择承载此站点的节点")}</CardDescription>
       </CardHeader>
       <CardContent>
         {available.length ? (
@@ -858,21 +934,20 @@ function NodeSelector({
             </div>
             <ListPagination
               pagination={pagination}
-              itemLabel="个节点"
+              itemLabel={t("个节点")}
               className="mt-3 rounded-lg border"
             />
           </>
         ) : (
           <EmptyState
-            title="没有可用节点"
-            description="先添加边缘节点或恢复节点授权"
+            title={t("没有可用节点")}
+            description={t("先添加边缘节点或恢复节点授权")}
           />
         )}
       </CardContent>
     </Card>
   );
 }
-
 function TCPForwards({
   draft,
   setDraft,
@@ -885,16 +960,21 @@ function TCPForwards({
     setDraft({
       ...draft,
       tcp_forwards: draft.tcp_forwards.map((item, current) =>
-        current === index ? { ...item, ...values } : item,
+        current === index
+          ? {
+              ...item,
+              ...values,
+            }
+          : item,
       ),
     });
   return (
     <Card>
       <CardHeader className="flex-row items-start justify-between gap-4">
         <div>
-          <CardTitle>TCP / TLS 转发</CardTitle>
+          <CardTitle>{t("TCP / TLS 转发")}</CardTitle>
           <CardDescription>
-            可与 HTTP 入口同时使用，最多 32 个端口
+            {t("可与 HTTP 入口同时使用，最多 32 个端口")}
           </CardDescription>
         </div>
         <Button
@@ -910,7 +990,7 @@ function TCPForwards({
           }
         >
           <Plus />
-          添加端口
+          {t("添加端口")}
         </Button>
       </CardHeader>
       <CardContent className="space-y-3">
@@ -921,19 +1001,21 @@ function TCPForwards({
               return (
                 <div key={index} className="relative rounded-lg border p-4">
                   <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                    <Field label="名称" id={`tcp-name-${index}`}>
+                    <Field label={t("名称")} id={`tcp-name-${index}`}>
                       <Input
                         id={`tcp-name-${index}`}
                         required
                         maxLength={100}
                         value={forward.name}
                         onChange={(event) =>
-                          update(index, { name: event.target.value })
+                          update(index, {
+                            name: event.target.value,
+                          })
                         }
                         placeholder="IMAPS"
                       />
                     </Field>
-                    <Field label="监听端口" id={`tcp-listen-${index}`}>
+                    <Field label={t("监听端口")} id={`tcp-listen-${index}`}>
                       <Input
                         id={`tcp-listen-${index}`}
                         required
@@ -948,17 +1030,19 @@ function TCPForwards({
                         }
                       />
                     </Field>
-                    <Field label="上游主机" id={`tcp-host-${index}`}>
+                    <Field label={t("上游主机")} id={`tcp-host-${index}`}>
                       <Input
                         id={`tcp-host-${index}`}
                         required
                         value={forward.upstream_host}
                         onChange={(event) =>
-                          update(index, { upstream_host: event.target.value })
+                          update(index, {
+                            upstream_host: event.target.value,
+                          })
                         }
                       />
                     </Field>
-                    <Field label="上游端口" id={`tcp-upstream-${index}`}>
+                    <Field label={t("上游端口")} id={`tcp-upstream-${index}`}>
                       <Input
                         id={`tcp-upstream-${index}`}
                         required
@@ -974,7 +1058,7 @@ function TCPForwards({
                       />
                     </Field>
                     <SelectField
-                      label="连接超时"
+                      label={t("连接超时")}
                       value={String(forward.connect_timeout_seconds)}
                       onChange={(value) =>
                         update(index, {
@@ -982,40 +1066,50 @@ function TCPForwards({
                         })
                       }
                       options={[
-                        ["5", "5 秒"],
-                        ["10", "10 秒"],
-                        ["30", "30 秒"],
-                        ["60", "60 秒"],
+                        ["5", t("5 秒")],
+                        ["10", t("10 秒")],
+                        ["30", t("30 秒")],
+                        ["60", t("60 秒")],
                       ]}
                     />
                     <SelectField
-                      label="空闲超时"
+                      label={t("空闲超时")}
                       value={String(forward.idle_timeout_seconds)}
                       onChange={(value) =>
-                        update(index, { idle_timeout_seconds: Number(value) })
+                        update(index, {
+                          idle_timeout_seconds: Number(value),
+                        })
                       }
                       options={[
-                        ["300", "5 分钟"],
-                        ["900", "15 分钟"],
-                        ["1800", "30 分钟"],
-                        ["3600", "60 分钟"],
+                        ["300", t("5 分钟")],
+                        ["900", t("15 分钟")],
+                        ["1800", t("30 分钟")],
+                        ["3600", t("60 分钟")],
                       ]}
                     />
                     <Toggle
-                      label="入口 TLS"
+                      label={t("入口 TLS")}
                       checked={forward.listen_tls}
-                      onChange={(listen_tls) => update(index, { listen_tls })}
+                      onChange={(listen_tls) =>
+                        update(index, {
+                          listen_tls,
+                        })
+                      }
                     />
                     <Toggle
-                      label="上游 TLS"
+                      label={t("上游 TLS")}
                       checked={forward.upstream_tls}
                       onChange={(upstream_tls) =>
-                        update(index, { upstream_tls })
+                        update(index, {
+                          upstream_tls,
+                        })
                       }
                     />
                     {forward.upstream_tls ? (
                       <div className="grid gap-2 sm:col-span-2 xl:col-span-4">
-                        <Label htmlFor={`tcp-sni-${index}`}>上游 TLS SNI</Label>
+                        <Label htmlFor={`tcp-sni-${index}`}>
+                          {t("上游 TLS SNI")}
+                        </Label>
                         <Input
                           id={`tcp-sni-${index}`}
                           value={forward.upstream_tls_server_name || ""}
@@ -1033,7 +1127,7 @@ function TCPForwards({
                     variant="ghost"
                     size="icon-sm"
                     className="absolute right-2 top-2"
-                    aria-label="删除 TCP 转发"
+                    aria-label={t("删除 TCP 转发")}
                     onClick={() =>
                       setDraft({
                         ...draft,
@@ -1050,17 +1144,17 @@ function TCPForwards({
             })}
             <ListPagination
               pagination={pagination}
-              itemLabel="个转发端口"
+              itemLabel={t("个转发端口")}
               className="rounded-lg border"
             />
           </>
         ) : (
           <EmptyState
-            title="未配置 TCP 转发"
+            title={t("未配置 TCP 转发")}
             description={
               draft.tcp_only
-                ? "纯 TCP 模式至少需要一个监听端口"
-                : "可选：为站点增加四层转发端口"
+                ? t("纯 TCP 模式至少需要一个监听端口")
+                : t("可选：为站点增加四层转发端口")
             }
           />
         )}
@@ -1068,7 +1162,6 @@ function TCPForwards({
     </Card>
   );
 }
-
 function SiteOperations({
   site,
   nodes,
@@ -1126,21 +1219,25 @@ function SiteOperations({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>发布与运维</CardTitle>
-        <CardDescription>配置保存后需发布到边缘节点</CardDescription>
+        <CardTitle>{t("发布与运维")}</CardTitle>
+        <CardDescription>{t("配置保存后需发布到边缘节点")}</CardDescription>
       </CardHeader>
       <CardContent className="grid gap-3">
         <OperationState
-          label="发布"
+          label={t("发布")}
           task={visiblePublishTask}
           fallback={
             site.published
-              ? "已发布"
-              : `有未发布更改，目标 ${site.node_ids.length} 个节点`
+              ? t("已发布")
+              : t("有未发布更改，目标 {value0} 个节点", {
+                  value0: site.node_ids.length,
+                })
           }
           detail={
             site.published && visiblePublishTask?.status === "succeeded"
-              ? `当前配置已发布到 ${site.node_ids.length} 个边缘节点`
+              ? t("当前配置已发布到 {value0} 个边缘节点", {
+                  value0: site.node_ids.length,
+                })
               : undefined
           }
         />
@@ -1148,22 +1245,23 @@ function SiteOperations({
           <OperationState
             label="TLS"
             task={tls?.certificate_task}
-            fallback="尚未签发"
-            extra={tls?.published_after_certificate ? "已部署" : undefined}
+            fallback={t("尚未签发")}
+            extra={tls?.published_after_certificate ? t("已部署") : undefined}
           />
         ) : null}
         <div className="rounded-lg border px-3 py-2">
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
-              <div className="text-sm">节点分配</div>
+              <div className="text-sm">{t("节点分配")}</div>
               <div className="text-xs text-muted-foreground">
-                {site.published ? "当前承载节点" : "待发布节点"} ·{" "}
-                {site.node_ids.length} 个
+                {site.published ? t("当前承载节点") : t("待发布节点")} ·{" "}
+                {site.node_ids.length}
+                {t(" 个")}
               </div>
             </div>
             <StatusBadge
               status={site.published ? "succeeded" : "pending"}
-              label={site.published ? "已发布" : "待发布"}
+              label={site.published ? t("已发布") : t("待发布")}
             />
           </div>
           {assignedNodes.length ? (
@@ -1186,7 +1284,7 @@ function SiteOperations({
                             <StatusBadge status={node.status} />
                           ) : (
                             <span className="text-xs text-muted-foreground">
-                              信息缺失
+                              {t("信息缺失")}
                             </span>
                           )}
                         </TableCell>
@@ -1198,14 +1296,14 @@ function SiteOperations({
               {assignedNodes.length > 20 ? (
                 <ListPagination
                   pagination={assignedPagination}
-                  itemLabel="个节点"
+                  itemLabel={t("个节点")}
                   className="border-x border-b"
                 />
               ) : null}
             </>
           ) : (
             <p className="mt-3 text-xs text-muted-foreground">
-              当前配置未分配边缘节点
+              {t("当前配置未分配边缘节点")}
             </p>
           )}
         </div>
@@ -1215,7 +1313,7 @@ function SiteOperations({
           onClick={onPublish}
         >
           <Rocket />
-          {site.published ? "重新发布" : "发布站点"}
+          {site.published ? t("重新发布") : t("发布站点")}
         </Button>
         {needsTLS && tls && !certActive ? (
           <Button
@@ -1225,13 +1323,13 @@ function SiteOperations({
             onClick={onCertificate}
           >
             <KeyRound />
-            {tls.certificate_task ? "重新申请 TLS" : "申请 TLS"}
+            {tls.certificate_task ? t("重新申请 TLS") : t("申请 TLS")}
           </Button>
         ) : null}
         {cacheable ? (
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border px-3 py-2">
             <div className="min-w-0">
-              <div className="text-sm">缓存版本</div>
+              <div className="text-sm">{t("缓存版本")}</div>
               <div className="text-xs text-muted-foreground">
                 Cache Version V{formatNumber(site.cache_generation)}
               </div>
@@ -1244,7 +1342,7 @@ function SiteOperations({
               onClick={onInvalidate}
             >
               <RefreshCw />
-              全量缓存失效
+              {t("全量缓存失效")}
             </Button>
           </div>
         ) : null}
@@ -1255,12 +1353,12 @@ function SiteOperations({
           onClick={onAllowlist}
         >
           <ShieldCheck />
-          源站白名单
+          {t("源站白名单")}
         </Button>
         {showPublishTargets ? (
           <div className="overflow-hidden rounded-lg border">
             <div className="border-b px-3 py-2 text-xs text-muted-foreground">
-              {site.deleting ? "本次删除涉及节点" : "本次发布涉及节点"}
+              {site.deleting ? t("本次删除涉及节点") : t("本次发布涉及节点")}
             </div>
             <div className="max-h-44 overflow-auto">
               <Table>
@@ -1278,7 +1376,10 @@ function SiteOperations({
                 </TableBody>
               </Table>
             </div>
-            <ListPagination pagination={publishPagination} itemLabel="个节点" />
+            <ListPagination
+              pagination={publishPagination}
+              itemLabel={t("个节点")}
+            />
           </div>
         ) : null}
         <Separator />
@@ -1289,13 +1390,12 @@ function SiteOperations({
           onClick={onDelete}
         >
           <Trash2 />
-          {site.deleting ? "查看/重试删除" : "删除站点"}
+          {site.deleting ? t("查看/重试删除") : t("删除站点")}
         </Button>
       </CardContent>
     </Card>
   );
 }
-
 function AllowlistDialog({
   open,
   onOpenChange,
@@ -1311,7 +1411,7 @@ function AllowlistDialog({
     ? data.nodes
     : (data?.ipv4_cidrs ?? []).map((cidr, index) => ({
         node_id: `legacy-${index}`,
-        node_name: "边缘节点",
+        node_name: t("边缘节点"),
         ipv4_cidr: cidr,
         assignment: "current" as const,
       }));
@@ -1323,47 +1423,48 @@ function AllowlistDialog({
   );
   const currentPagination = useListPagination(currentNodes);
   const pendingRemovalPagination = useListPagination(pendingRemovalNodes);
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>源站防火墙白名单</DialogTitle>
-          <DialogDescription>当前配置与发布过渡期的节点地址</DialogDescription>
+          <DialogTitle>{t("源站防火墙白名单")}</DialogTitle>
+          <DialogDescription>
+            {t("当前配置与发布过渡期的节点地址")}
+          </DialogDescription>
         </DialogHeader>
         {loading ? (
           <div className="py-8 text-center text-sm text-muted-foreground">
-            正在加载...
+            {t("正在加载...")}
           </div>
         ) : (
           <div className="space-y-3">
             {entries.length ? (
               <>
                 <AllowlistNodeGroup
-                  title="当前配置节点"
+                  title={t("当前配置节点")}
                   nodes={currentPagination.items}
-                  assignmentLabel="当前配置"
+                  assignmentLabel={t("当前配置")}
                   assignmentStatus="succeeded"
                 />
                 {currentNodes.length > 20 ? (
                   <ListPagination
                     pagination={currentPagination}
-                    itemLabel="个节点"
+                    itemLabel={t("个节点")}
                     className="rounded-lg border"
                   />
                 ) : null}
                 {pendingRemovalNodes.length ? (
                   <>
                     <AllowlistNodeGroup
-                      title="发布后移除"
+                      title={t("发布后移除")}
                       nodes={pendingRemovalPagination.items}
-                      assignmentLabel="过渡期保留"
+                      assignmentLabel={t("过渡期保留")}
                       assignmentStatus="pending"
                     />
                     {pendingRemovalNodes.length > 20 ? (
                       <ListPagination
                         pagination={pendingRemovalPagination}
-                        itemLabel="个节点"
+                        itemLabel={t("个节点")}
                         className="rounded-lg border"
                       />
                     ) : null}
@@ -1371,7 +1472,7 @@ function AllowlistDialog({
                 ) : null}
               </>
             ) : (
-              <EmptyState title="暂无可用地址" />
+              <EmptyState title={t("暂无可用地址")} />
             )}
             <p className="text-xs leading-5 text-muted-foreground">
               {data?.note}
@@ -1379,13 +1480,12 @@ function AllowlistDialog({
           </div>
         )}
         <DialogFooter>
-          <Button onClick={() => onOpenChange(false)}>完成</Button>
+          <Button onClick={() => onOpenChange(false)}>{t("完成")}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
   );
 }
-
 function AllowlistNodeGroup({
   title,
   nodes,
@@ -1419,7 +1519,6 @@ function AllowlistNodeGroup({
     </div>
   );
 }
-
 function OperationState({
   label,
   task,
@@ -1488,7 +1587,6 @@ function SelectField({
   options: string[][];
 }) {
   const id = useId();
-
   return (
     <div className="grid gap-2">
       <Label htmlFor={id}>{label}</Label>
@@ -1517,7 +1615,6 @@ function Toggle({
   onChange: (checked: boolean) => void;
 }) {
   const id = useId();
-
   return (
     <div className="flex items-center justify-between rounded-lg border px-3 py-2">
       <Label htmlFor={id}>{label}</Label>
@@ -1530,13 +1627,11 @@ function activeTask(task?: DeploymentTask | null) {
     task && ["queued", "dispatching", "applying"].includes(task.status),
   );
 }
-
 function siteNeedsCertificate(site: Site) {
   return (
     !site.tcp_only || site.tcp_forwards.some((forward) => forward.listen_tls)
   );
 }
-
 function taskMatchesCurrentSite(
   task: DeploymentTask | null | undefined,
   site: Site,
@@ -1551,45 +1646,56 @@ function taskMatchesCurrentSite(
     taskCreatedAt >= siteUpdatedAt
   );
 }
-
 function localizeTaskDetail(detail?: string) {
   if (!detail) return undefined;
   const exact: Record<string, string> = {
-    "building node configurations": "正在生成边缘节点配置",
-    "preparing edge configuration confirmation": "正在等待边缘节点确认配置",
-    "configuration staged; no active assigned edge nodes to confirm":
+    "building node configurations": t("正在生成边缘节点配置"),
+    "preparing edge configuration confirmation": t("正在等待边缘节点确认配置"),
+    "configuration staged; no active assigned edge nodes to confirm": t(
       "配置已暂存，当前没有需要确认的在线分配节点",
-    "publish task did not create edge confirmation targets; retry Publish":
+    ),
+    "publish task did not create edge confirmation targets; retry Publish": t(
       "发布任务未生成边缘确认目标，请重试发布",
-    "queued for DNS-01 certificate issuance": "TLS 证书签发已排队",
-    "queued for certificate renewal": "TLS 证书续期已排队",
-    "preparing DNS-01 certificate issuance": "正在准备 DNS-01 证书签发",
-    "waiting for DNS-01 validation": "正在等待 DNS-01 验证",
-    "certificate renewed": "TLS 证书已续期",
-    "certificate stored; publish the site to deploy it":
+    ),
+    "queued for DNS-01 certificate issuance": t("TLS 证书签发已排队"),
+    "queued for certificate renewal": t("TLS 证书续期已排队"),
+    "preparing DNS-01 certificate issuance": t("正在准备 DNS-01 证书签发"),
+    "waiting for DNS-01 validation": t("正在等待 DNS-01 验证"),
+    "certificate renewed": t("TLS 证书已续期"),
+    "certificate stored; publish the site to deploy it": t(
       "TLS 证书已保存，请发布站点以部署到边缘节点",
-    "certificate queue is full; retry Issue TLS":
+    ),
+    "certificate queue is full; retry Issue TLS": t(
       "证书任务队列已满，请重试 TLS 签发",
+    ),
     "certificate issuance interrupted by control-plane shutdown; retry Issue TLS":
-      "控制面停止导致证书签发中断，请重试 TLS 签发",
+      t("控制面停止导致证书签发中断，请重试 TLS 签发"),
   };
   if (exact[detail]) return exact[detail];
   let match = detail.match(
     /^configuration applied by (\d+) active edge node\(s\)$/,
   );
-  if (match) return `配置变更已由 ${match[1]} 个受影响的在线边缘节点应用`;
+  if (match)
+    return t("配置变更已由 {value0} 个受影响的在线边缘节点应用", {
+      value0: match[1],
+    });
   match = detail.match(
     /^configuration applied by (\d+) of (\d+) active edge node\(s\)$/,
   );
   if (match)
-    return `配置变更已由 ${match[1]}/${match[2]} 个受影响的在线边缘节点应用`;
+    return t("配置变更已由 {value0}/{value1} 个受影响的在线边缘节点应用", {
+      value0: match[1],
+      value1: match[2],
+    });
   match = detail.match(
     /^(\d+) edge node\(s\) did not apply the configuration$/,
   );
-  if (match) return `${match[1]} 个受影响的边缘节点未能应用配置`;
+  if (match)
+    return t("{value0} 个受影响的边缘节点未能应用配置", {
+      value0: match[1],
+    });
   return detail;
 }
-
 function emptyDraft(ttl: number): SiteDraft {
   return {
     name: "",
@@ -1646,7 +1752,9 @@ function draftFromSite(site: Site, ttl: number): SiteDraft {
     inherit_dns_ttl: site.dns_ttl_seconds == null,
     dns_ttl_seconds: site.dns_ttl_seconds ?? ttl,
     tcp_only: site.tcp_only,
-    tcp_forwards: site.tcp_forwards.map((forward) => ({ ...forward })),
+    tcp_forwards: site.tcp_forwards.map((forward) => ({
+      ...forward,
+    })),
     enabled: site.enabled,
   };
 }

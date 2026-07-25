@@ -4,6 +4,7 @@ import { Suspense, useEffect, useState } from "react";
 import { Link, Outlet, useLocation } from "react-router-dom";
 
 import { AppSidebar } from "@/components/app-sidebar";
+import { LanguageToggle } from "@/components/language-toggle";
 import { MessageCenter, useMessages } from "@/components/message-center";
 import { PageBody, PageLoading } from "@/components/page";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -22,6 +23,7 @@ import {
 import { useAuth } from "@/features/auth/auth-provider";
 import { cacheBranding, useCachedBranding } from "@/hooks/use-branding";
 import { api } from "@/lib/api";
+import { t, useI18n } from "@/lib/i18n";
 import type { Settings, SystemInfo } from "@/lib/types";
 
 const pageNames: Record<string, string> = {
@@ -29,12 +31,15 @@ const pageNames: Record<string, string> = {
   logs: "日志",
   security: "安全",
   monitoring: "监测",
+  scheduling: "调度",
   nodes: "节点",
   sites: "站点",
+  certificates: "证书",
   settings: "设置",
 };
 
 export function AppShell() {
+  useI18n();
   const [messagesOpen, setMessagesOpen] = useState(false);
   const { logout } = useAuth();
   const messageQuery = useMessages();
@@ -74,26 +79,27 @@ export function AppShell() {
       />
       <SidebarInset className="min-w-0">
         <header className="sticky top-0 z-20 flex h-12 shrink-0 items-center gap-2 border-b bg-background/95 px-3 backdrop-blur supports-[backdrop-filter]:bg-background/80 sm:px-5">
-          <SidebarTrigger aria-label="切换侧边栏" />
+          <SidebarTrigger aria-label={t("切换侧边栏")} />
           <Separator orientation="vertical" className="mx-1 h-4" />
           <nav
             className="flex min-w-0 items-center gap-1 text-sm"
-            aria-label="面包屑"
+            aria-label={t("面包屑")}
           >
             <Link
               to={`/${section}`}
               className="truncate text-muted-foreground hover:text-foreground"
             >
-              {pageNames[section] ?? "概览"}
+              {t(pageNames[section] ?? "概览")}
             </Link>
             {detail ? (
               <>
                 <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
-                <span className="truncate">详情</span>
+                <span className="truncate">{t("详情")}</span>
               </>
             ) : null}
           </nav>
           <div className="ml-auto flex items-center gap-1">
+            <LanguageToggle />
             <ThemeToggle />
             <Tooltip>
               <TooltipTrigger asChild>
@@ -103,8 +109,10 @@ export function AppShell() {
                   className="relative"
                   aria-label={
                     messageQuery.data?.unread_count
-                      ? `打开消息中心，${messageQuery.data.unread_count} 条未读`
-                      : "打开消息中心"
+                      ? t("打开消息中心，{count} 条未读", {
+                          count: messageQuery.data.unread_count,
+                        })
+                      : t("打开消息中心")
                   }
                   onClick={() => setMessagesOpen(true)}
                 >
@@ -117,7 +125,7 @@ export function AppShell() {
                   ) : null}
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>消息中心</TooltipContent>
+              <TooltipContent>{t("消息中心")}</TooltipContent>
             </Tooltip>
           </div>
         </header>

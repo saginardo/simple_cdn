@@ -1,9 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCheck, Circle, Inbox, Trash2 } from "lucide-react";
-import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-
 import { ListPagination } from "@/components/list-pagination";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -22,11 +20,12 @@ import {
 } from "@/components/ui/tooltip";
 import { api, errorMessage } from "@/lib/api";
 import { useListPagination } from "@/hooks/use-list-pagination";
+import { usePersistentEnum } from "@/hooks/use-persistent-state";
 import { formatDateTime } from "@/lib/format";
 import { toneText, type Tone } from "@/lib/tones";
 import type { Message, MessagePage } from "@/lib/types";
 import { cn } from "@/lib/utils";
-
+import { t } from "@/lib/i18n";
 export function useMessages() {
   return useQuery({
     queryKey: ["messages"],
@@ -34,7 +33,6 @@ export function useMessages() {
     refetchInterval: 10_000,
   });
 }
-
 export function MessageCenter({
   open,
   onOpenChange,
@@ -44,11 +42,17 @@ export function MessageCenter({
   onOpenChange: (open: boolean) => void;
   page?: MessagePage;
 }) {
-  const [filter, setFilter] = useState("all");
+  const [filter, setFilter] = usePersistentEnum(
+    "simple-cdn.messages.filter",
+    ["all", "unread"] as const,
+    "all",
+  );
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const invalidate = () =>
-    queryClient.invalidateQueries({ queryKey: ["messages"] });
+    queryClient.invalidateQueries({
+      queryKey: ["messages"],
+    });
   const markRead = useMutation({
     mutationFn: (id: string) =>
       api(`/api/messages/${encodeURIComponent(id)}/read`, {
@@ -60,13 +64,18 @@ export function MessageCenter({
   });
   const markAll = useMutation({
     mutationFn: () =>
-      api("/api/messages/read-all", { method: "POST", body: "{}" }),
+      api("/api/messages/read-all", {
+        method: "POST",
+        body: "{}",
+      }),
     onSuccess: invalidate,
     onError: (error) => toast.error(errorMessage(error)),
   });
   const remove = useMutation({
     mutationFn: (id: string) =>
-      api(`/api/messages/${encodeURIComponent(id)}`, { method: "DELETE" }),
+      api(`/api/messages/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      }),
     onSuccess: invalidate,
     onError: (error) => toast.error(errorMessage(error)),
   });
@@ -74,7 +83,6 @@ export function MessageCenter({
     (message) => filter === "all" || !message.read_at,
   );
   const pagination = useListPagination(messages);
-
   function openMessage(message: Message) {
     if (!message.read_at) markRead.mutate(message.id);
     if (message.resource_type === "site" && message.resource_id)
@@ -86,7 +94,6 @@ export function MessageCenter({
     else return;
     onOpenChange(false);
   }
-
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
@@ -96,9 +103,10 @@ export function MessageCenter({
         <SheetHeader className="border-b px-5 py-4 text-left">
           <div className="flex items-start justify-between gap-3 pr-8">
             <div>
-              <SheetTitle>消息中心</SheetTitle>
+              <SheetTitle>{t("消息中心")}</SheetTitle>
               <SheetDescription>
-                {page?.unread_count ?? 0} 条未读
+                {page?.unread_count ?? 0}
+                {t(" 条未读")}
               </SheetDescription>
             </div>
             <Tooltip>
@@ -108,25 +116,25 @@ export function MessageCenter({
                   size="icon-sm"
                   disabled={!page?.unread_count || markAll.isPending}
                   onClick={() => markAll.mutate()}
-                  aria-label="全部标为已读"
+                  aria-label={t("全部标为已读")}
                 >
                   <CheckCheck />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>全部标为已读</TooltipContent>
+              <TooltipContent>{t("全部标为已读")}</TooltipContent>
             </Tooltip>
           </div>
           <Tabs
             value={filter}
             onValueChange={(value) => {
-              setFilter(value);
+              setFilter(value as typeof filter);
               pagination.setPage(1);
             }}
             className="mt-3"
           >
             <TabsList>
-              <TabsTrigger value="all">全部</TabsTrigger>
-              <TabsTrigger value="unread">未读</TabsTrigger>
+              <TabsTrigger value="all">{t("全部")}</TabsTrigger>
+              <TabsTrigger value="unread">{t("未读")}</TabsTrigger>
             </TabsList>
           </Tabs>
         </SheetHeader>
@@ -173,7 +181,7 @@ export function MessageCenter({
                     variant="ghost"
                     size="icon-sm"
                     className="absolute right-4 top-10 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
-                    aria-label="删除消息"
+                    aria-label={t("删除消息")}
                     onClick={() => remove.mutate(message.id)}
                   >
                     <Trash2 />
@@ -185,7 +193,7 @@ export function MessageCenter({
             <div className="grid min-h-72 place-items-center px-6 text-center text-sm text-muted-foreground">
               <div>
                 <Inbox className="mx-auto mb-3 size-8" />
-                <p>暂无消息</p>
+                <p>{t("暂无消息")}</p>
               </div>
             </div>
           )}
@@ -193,7 +201,7 @@ export function MessageCenter({
         {messages.length ? (
           <ListPagination
             pagination={pagination}
-            itemLabel="条消息"
+            itemLabel={t("条消息")}
             className="shrink-0"
           />
         ) : null}
@@ -201,20 +209,20 @@ export function MessageCenter({
     </Sheet>
   );
 }
-
 function severityLabel(severity: Message["severity"]) {
-  return { info: "信息", success: "成功", warning: "注意", error: "失败" }[
-    severity
-  ];
+  return {
+    info: t("信息"),
+    success: t("成功"),
+    warning: t("注意"),
+    error: t("失败"),
+  }[severity];
 }
-
 const severityTones: Record<Message["severity"], Tone> = {
   info: "info",
   success: "success",
   warning: "warning",
   error: "danger",
 };
-
 function severityTone(severity: Message["severity"]) {
   return toneText[severityTones[severity]];
 }

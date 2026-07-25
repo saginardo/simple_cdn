@@ -2,7 +2,6 @@ import { useQuery } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, RotateCcw, Search } from "lucide-react";
 import { useId, useMemo, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
-
 import { HTTPStatusBadge } from "@/components/http-status-badge";
 import {
   EmptyState,
@@ -34,7 +33,7 @@ import {
 import { api } from "@/lib/api";
 import { formatBytes, formatDateTime, formatNumber } from "@/lib/format";
 import type { LogPage, Node, Site } from "@/lib/types";
-
+import { t, useI18n } from "@/lib/i18n";
 interface LogFilters {
   range: string;
   site_id: string;
@@ -45,7 +44,6 @@ interface LogFilters {
   client_ip: string;
   cache_status: string;
 }
-
 const defaults: LogFilters = {
   range: "1",
   site_id: "",
@@ -56,8 +54,8 @@ const defaults: LogFilters = {
   client_ip: "",
   cache_status: "",
 };
-
 export function LogsPage() {
+  useI18n();
   const navigate = useNavigate();
   const [draft, setDraft] = useState<LogFilters>(defaults);
   const [search, setSearch] = useState(() => appliedSearch(defaults));
@@ -75,26 +73,25 @@ export function LogsPage() {
     queryKey: ["logs", url],
     queryFn: () => api<LogPage>(url),
   });
-
   function submit(event: FormEvent) {
     event.preventDefault();
     setOffset(0);
     setSearch(appliedSearch(draft));
   }
-
   function reset() {
     setDraft(defaults);
     setOffset(0);
     setSearch(appliedSearch(defaults));
   }
-
   return (
     <>
       <PageHeader
-        title="日志"
-        description="检索最近 7 天的边缘访问日志"
+        title={t("日志")}
+        description={t("检索最近 7 天的边缘访问日志")}
         actions={
-          <span className="text-xs text-muted-foreground">每页 20 条</span>
+          <span className="text-xs text-muted-foreground">
+            {t("每页 20 条")}
+          </span>
         }
       />
       <PageBody>
@@ -103,18 +100,23 @@ export function LogsPage() {
             <form className="grid gap-4" onSubmit={submit}>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6">
                 <FilterSelect
-                  label="时间范围"
+                  label={t("时间范围")}
                   value={draft.range}
-                  onChange={(range) => setDraft({ ...draft, range })}
+                  onChange={(range) =>
+                    setDraft({
+                      ...draft,
+                      range,
+                    })
+                  }
                   options={[
-                    ["1", "最近 1 小时"],
-                    ["6", "最近 6 小时"],
-                    ["24", "最近 24 小时"],
-                    ["168", "最近 7 天"],
+                    ["1", t("最近 1 小时")],
+                    ["6", t("最近 6 小时")],
+                    ["24", t("最近 24 小时")],
+                    ["168", t("最近 7 天")],
                   ]}
                 />
                 <FilterSelect
-                  label="站点"
+                  label={t("站点")}
                   value={draft.site_id || "all"}
                   onChange={(value) =>
                     setDraft({
@@ -123,12 +125,12 @@ export function LogsPage() {
                     })
                   }
                   options={[
-                    ["all", "全部站点"],
+                    ["all", t("全部站点")],
                     ...(sites.data ?? []).map((site) => [site.id, site.name]),
                   ]}
                 />
                 <FilterSelect
-                  label="节点"
+                  label={t("节点")}
                   value={draft.node_id || "all"}
                   onChange={(value) =>
                     setDraft({
@@ -137,18 +139,21 @@ export function LogsPage() {
                     })
                   }
                   options={[
-                    ["all", "全部节点"],
+                    ["all", t("全部节点")],
                     ...(nodes.data ?? []).map((node) => [node.id, node.name]),
                   ]}
                 />
                 <FilterSelect
-                  label="方法"
+                  label={t("方法")}
                   value={draft.method || "all"}
                   onChange={(value) =>
-                    setDraft({ ...draft, method: value === "all" ? "" : value })
+                    setDraft({
+                      ...draft,
+                      method: value === "all" ? "" : value,
+                    })
                   }
                   options={[
-                    ["all", "全部方法"],
+                    ["all", t("全部方法")],
                     ["GET", "GET"],
                     ["POST", "POST"],
                     ["PUT", "PUT"],
@@ -157,13 +162,16 @@ export function LogsPage() {
                   ]}
                 />
                 <FilterSelect
-                  label="状态"
+                  label={t("状态")}
                   value={draft.status || "all"}
                   onChange={(value) =>
-                    setDraft({ ...draft, status: value === "all" ? "" : value })
+                    setDraft({
+                      ...draft,
+                      status: value === "all" ? "" : value,
+                    })
                   }
                   options={[
-                    ["all", "全部状态"],
+                    ["all", t("全部状态")],
                     ["2xx", "2xx"],
                     ["3xx", "3xx"],
                     ["4xx", "4xx"],
@@ -171,7 +179,7 @@ export function LogsPage() {
                   ]}
                 />
                 <FilterSelect
-                  label="缓存"
+                  label={t("缓存")}
                   value={draft.cache_status || "all"}
                   onChange={(value) =>
                     setDraft({
@@ -180,7 +188,7 @@ export function LogsPage() {
                     })
                   }
                   options={[
-                    ["all", "全部状态"],
+                    ["all", t("全部状态")],
                     ["HIT", "HIT"],
                     ["MISS", "MISS"],
                     ["BYPASS", "BYPASS"],
@@ -193,38 +201,44 @@ export function LogsPage() {
               </div>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,2fr)_minmax(12rem,1fr)_auto]">
                 <div className="grid gap-1.5">
-                  <Label htmlFor="log-path">路径包含</Label>
+                  <Label htmlFor="log-path">{t("路径包含")}</Label>
                   <Input
                     id="log-path"
                     maxLength={512}
                     placeholder="/api/"
                     value={draft.path}
                     onChange={(event) =>
-                      setDraft({ ...draft, path: event.target.value })
+                      setDraft({
+                        ...draft,
+                        path: event.target.value,
+                      })
                     }
                   />
                 </div>
                 <div className="grid gap-1.5">
-                  <Label htmlFor="log-ip">客户端 IP</Label>
+                  <Label htmlFor="log-ip">{t("客户端 IP")}</Label>
                   <Input
                     id="log-ip"
                     placeholder="203.0.113.10"
                     value={draft.client_ip}
                     onChange={(event) =>
-                      setDraft({ ...draft, client_ip: event.target.value })
+                      setDraft({
+                        ...draft,
+                        client_ip: event.target.value,
+                      })
                     }
                   />
                 </div>
                 <div className="flex items-end gap-2">
                   <Button type="submit">
                     <Search />
-                    搜索
+                    {t("搜索")}
                   </Button>
                   <Button
                     type="button"
                     variant="outline"
                     size="icon"
-                    aria-label="重置筛选"
+                    aria-label={t("重置筛选")}
                     onClick={reset}
                   >
                     <RotateCcw />
@@ -237,7 +251,7 @@ export function LogsPage() {
 
         {logs.isLoading ? <PageLoading rows={3} /> : null}
         {logs.error ? (
-          <PageError title="日志检索失败" error={logs.error} />
+          <PageError title={t("日志检索失败")} error={logs.error} />
         ) : null}
         {logs.data ? (
           <Card>
@@ -246,14 +260,14 @@ export function LogsPage() {
                 <Table className="table-fixed min-w-[1120px]">
                   <TableHeader>
                     <TableRow>
-                      <TableHead className="w-40 pl-5">时间</TableHead>
-                      <TableHead className="w-[26rem]">请求</TableHead>
-                      <TableHead className="w-20">状态</TableHead>
-                      <TableHead className="w-40">客户端</TableHead>
-                      <TableHead className="w-48">站点 / 节点</TableHead>
-                      <TableHead className="w-24">缓存</TableHead>
+                      <TableHead className="w-40 pl-5">{t("时间")}</TableHead>
+                      <TableHead className="w-[26rem]">{t("请求")}</TableHead>
+                      <TableHead className="w-20">{t("状态")}</TableHead>
+                      <TableHead className="w-40">{t("客户端")}</TableHead>
+                      <TableHead className="w-48">{t("站点 / 节点")}</TableHead>
+                      <TableHead className="w-24">{t("缓存")}</TableHead>
                       <TableHead className="w-32 pr-5 text-right">
-                        耗时 / 大小
+                        {t("耗时 / 大小")}
                       </TableHead>
                     </TableRow>
                   </TableHeader>
@@ -272,7 +286,10 @@ export function LogsPage() {
                         tabIndex={entry.id ? 0 : undefined}
                         aria-label={
                           entry.id
-                            ? `查看请求 ${entry.method} ${entry.path}`
+                            ? t("查看请求 {value0} {value1}", {
+                                value0: entry.method,
+                                value1: entry.path,
+                              })
                             : undefined
                         }
                         onClick={() => {
@@ -335,15 +352,18 @@ export function LogsPage() {
               ) : (
                 <div className="p-6">
                   <EmptyState
-                    title="没有匹配的日志"
-                    description="调整筛选条件后重新搜索"
+                    title={t("没有匹配的日志")}
+                    description={t("调整筛选条件后重新搜索")}
                   />
                 </div>
               )}
               <div className="flex items-center justify-between border-t px-5 py-3">
                 <span className="text-xs text-muted-foreground">
-                  第 {Math.floor(logs.data.offset / logs.data.page_size) + 1} 页
-                  · 当前 {logs.data.logs.length} 条
+                  {t("第 ")}
+                  {Math.floor(logs.data.offset / logs.data.page_size) + 1}
+                  {t(" 页 · 当前 ")}
+                  {logs.data.logs.length}
+                  {t(" 条")}
                 </span>
                 <div className="flex gap-2">
                   <Button
@@ -355,7 +375,7 @@ export function LogsPage() {
                     }
                   >
                     <ChevronLeft />
-                    上一页
+                    {t("上一页")}
                   </Button>
                   <Button
                     variant="outline"
@@ -363,7 +383,7 @@ export function LogsPage() {
                     disabled={!logs.data.has_more || logs.isFetching}
                     onClick={() => setOffset(offset + logs.data.page_size)}
                   >
-                    下一页
+                    {t("下一页")}
                     <ChevronRight />
                   </Button>
                 </div>
@@ -375,7 +395,6 @@ export function LogsPage() {
     </>
   );
 }
-
 function FilterSelect({
   label,
   value,
@@ -388,7 +407,6 @@ function FilterSelect({
   options: string[][];
 }) {
   const id = useId();
-
   return (
     <div className="grid min-w-0 gap-1.5">
       <Label htmlFor={id}>{label}</Label>
@@ -407,13 +425,15 @@ function FilterSelect({
     </div>
   );
 }
-
 function appliedSearch(filters: LogFilters) {
   const to = new Date();
   const from = new Date(to.getTime() - Number(filters.range) * 60 * 60 * 1000);
-  return { ...filters, from: from.toISOString(), to: to.toISOString() };
+  return {
+    ...filters,
+    from: from.toISOString(),
+    to: to.toISOString(),
+  };
 }
-
 function logSearchURL(
   search: ReturnType<typeof appliedSearch>,
   offset: number,
@@ -435,7 +455,6 @@ function logSearchURL(
     if (search[key]) params.set(key, search[key]);
   return `/api/logs?${params.toString()}`;
 }
-
 function siteName(sites: Site[] | undefined, id: string) {
   return sites?.find((site) => site.id === id)?.name ?? id;
 }

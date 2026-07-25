@@ -18,7 +18,6 @@ import {
 import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
-
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { CopyButton } from "@/components/copy-button";
 import { ListPagination } from "@/components/list-pagination";
@@ -79,14 +78,14 @@ import type {
   NodeStatus,
   NodeUninstallStatus,
 } from "@/lib/types";
-
+import { t, useI18n } from "@/lib/i18n";
 interface CommandResult {
   install_command: string;
   enrollment_required: boolean;
   expires_at?: string;
 }
-
 export function NodeDetailPage() {
+  useI18n();
   const { nodeId = "" } = useParams();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -119,30 +118,37 @@ export function NodeDetailPage() {
     retry: false,
   });
   const refresh = () => {
-    void queryClient.invalidateQueries({ queryKey: ["node", nodeId] });
-    void queryClient.invalidateQueries({ queryKey: ["nodes"] });
+    void queryClient.invalidateQueries({
+      queryKey: ["node", nodeId],
+    });
+    void queryClient.invalidateQueries({
+      queryKey: ["nodes"],
+    });
     void queryClient.invalidateQueries({
       queryKey: ["node-uninstall", nodeId],
     });
   };
   const node = detail.data?.node;
-
   const statusMutation = useMutation({
     mutationFn: (status: NodeStatus) =>
-      api<{ ok: boolean; smart_routing_disabled: boolean }>(
-        `/api/nodes/${encodeURIComponent(nodeId)}/status`,
-        {
-          method: "POST",
-          body: JSON.stringify({ status }),
-        },
-      ),
+      api<{
+        ok: boolean;
+        smart_routing_disabled: boolean;
+      }>(`/api/nodes/${encodeURIComponent(nodeId)}/status`, {
+        method: "POST",
+        body: JSON.stringify({
+          status,
+        }),
+      }),
     onSuccess: (result) => {
       toast.success(
         result.smart_routing_disabled
-          ? "节点状态已更新，智能路由已关闭"
-          : "节点状态已更新",
+          ? t("节点状态已更新，智能路由已关闭")
+          : t("节点状态已更新"),
       );
-      void queryClient.invalidateQueries({ queryKey: ["monitoring"] });
+      void queryClient.invalidateQueries({
+        queryKey: ["monitoring"],
+      });
       refresh();
     },
     onError: (error) => toast.error(errorMessage(error)),
@@ -151,7 +157,9 @@ export function NodeDetailPage() {
     mutationFn: () =>
       api<CommandResult>(
         `/api/nodes/${encodeURIComponent(nodeId)}/enrollment-token`,
-        { method: "POST" },
+        {
+          method: "POST",
+        },
       ),
     onSuccess: (result) => setCommand(result.install_command),
     onError: (error) => toast.error(errorMessage(error)),
@@ -162,7 +170,7 @@ export function NodeDetailPage() {
         method: "POST",
       }),
     onSuccess: () => {
-      toast.success("在线升级已启动");
+      toast.success(t("在线升级已启动"));
       refresh();
     },
     onError: (error) => toast.error(errorMessage(error)),
@@ -176,10 +184,14 @@ export function NodeDetailPage() {
       path: string;
       method?: string;
       body?: string;
-    }) => api<NodeUninstallStatus>(path, { method, body }),
+    }) =>
+      api<NodeUninstallStatus>(path, {
+        method,
+        body,
+      }),
     onSuccess: (result) => {
       if (result.uninstall_command) setCommand(result.uninstall_command);
-      toast.success("卸载流程已更新");
+      toast.success(t("卸载流程已更新"));
       refresh();
     },
     onError: (error) => toast.error(errorMessage(error)),
@@ -188,35 +200,40 @@ export function NodeDetailPage() {
     mutationFn: () =>
       api(`/api/nodes/${encodeURIComponent(nodeId)}`, {
         method: "DELETE",
-        body: JSON.stringify({ confirmation: node?.name }),
+        body: JSON.stringify({
+          confirmation: node?.name,
+        }),
       }),
     onSuccess: () => {
-      toast.success("节点记录已删除");
-      void queryClient.invalidateQueries({ queryKey: ["nodes"] });
+      toast.success(t("节点记录已删除"));
+      void queryClient.invalidateQueries({
+        queryKey: ["nodes"],
+      });
       navigate("/nodes");
     },
     onError: (error) => toast.error(errorMessage(error)),
   });
-
   return (
     <>
       <PageHeader
-        title={node?.name ?? "节点详情"}
+        title={node?.name ?? t("节点详情")}
         description={
-          node ? `${node.public_ipv4} · ${node.id}` : "节点运行状态与运维操作"
+          node
+            ? `${node.public_ipv4} · ${node.id}`
+            : t("节点运行状态与运维操作")
         }
         actions={
           <>
             <Button asChild variant="outline">
               <Link to="/nodes">
                 <ArrowLeft />
-                返回节点
+                {t("返回节点")}
               </Link>
             </Button>
             <Button
               variant="outline"
               size="icon"
-              aria-label="刷新节点"
+              aria-label={t("刷新节点")}
               onClick={refresh}
             >
               <RefreshCw />
@@ -227,7 +244,7 @@ export function NodeDetailPage() {
       <PageBody>
         {detail.isLoading ? <PageLoading /> : null}
         {detail.error ? (
-          <PageError title="节点加载失败" error={detail.error} />
+          <PageError title={t("节点加载失败")} error={detail.error} />
         ) : null}
         {node && detail.data ? (
           <>
@@ -254,8 +271,10 @@ export function NodeDetailPage() {
                 />
                 <Card>
                   <CardHeader>
-                    <CardTitle>节点操作</CardTitle>
-                    <CardDescription>状态、部署与在线升级</CardDescription>
+                    <CardTitle>{t("节点操作")}</CardTitle>
+                    <CardDescription>
+                      {t("状态、部署与在线升级")}
+                    </CardDescription>
                   </CardHeader>
                   <CardContent className="grid gap-2">
                     {node.status === "active" ? (
@@ -265,7 +284,7 @@ export function NodeDetailPage() {
                         onClick={() => statusMutation.mutate("draining")}
                       >
                         <CirclePause />
-                        暂停调度
+                        {t("暂停调度")}
                       </Button>
                     ) : null}
                     {node.status === "draining" ? (
@@ -275,7 +294,7 @@ export function NodeDetailPage() {
                         onClick={() => statusMutation.mutate("active")}
                       >
                         <CirclePlay />
-                        恢复运行
+                        {t("恢复运行")}
                       </Button>
                     ) : null}
                     {["pending", "active", "draining"].includes(node.status) ? (
@@ -285,7 +304,7 @@ export function NodeDetailPage() {
                         onClick={() => statusMutation.mutate("revoked")}
                       >
                         <ShieldOff />
-                        撤销授权
+                        {t("撤销授权")}
                       </Button>
                     ) : null}
                     {node.status === "revoked" ? (
@@ -295,7 +314,7 @@ export function NodeDetailPage() {
                         onClick={() => statusMutation.mutate("active")}
                       >
                         <CirclePlay />
-                        恢复授权
+                        {t("恢复授权")}
                       </Button>
                     ) : null}
                     <Separator className="my-1" />
@@ -309,7 +328,7 @@ export function NodeDetailPage() {
                       ) : (
                         <KeyRound />
                       )}
-                      生成部署命令
+                      {t("生成部署命令")}
                     </Button>
                     <Button
                       disabled={!node.can_upgrade || upgrade.isPending}
@@ -321,7 +340,7 @@ export function NodeDetailPage() {
                       ) : (
                         <Rocket />
                       )}
-                      在线升级
+                      {t("在线升级")}
                     </Button>
                     {node.upgrade_blocker ? (
                       <p className="text-xs leading-5 text-muted-foreground">
@@ -335,7 +354,11 @@ export function NodeDetailPage() {
                   status={uninstall.data}
                   pending={uninstallAction.isPending}
                   onAction={(path, method, body) =>
-                    uninstallAction.mutate({ path, method, body })
+                    uninstallAction.mutate({
+                      path,
+                      method,
+                      body,
+                    })
                   }
                   onForce={() => setConfirm("force")}
                   onDelete={() => setConfirm("delete")}
@@ -356,16 +379,20 @@ export function NodeDetailPage() {
         onOpenChange={(open) => {
           if (!open) setConfirm(null);
         }}
-        title="强制完成卸载"
-        description="仅在远端清理已人工核验完成时使用。控制面不会验证远端清理结果。"
+        title={t("强制完成卸载")}
+        description={t(
+          "仅在远端清理已人工核验完成时使用。控制面不会验证远端清理结果。",
+        )}
         confirmation={node?.name}
-        confirmLabel="强制完成"
+        confirmLabel={t("强制完成")}
         destructive
         busy={uninstallAction.isPending}
         onConfirm={async () => {
           await uninstallAction.mutateAsync({
             path: `/api/nodes/${encodeURIComponent(nodeId)}/uninstall/force-complete`,
-            body: JSON.stringify({ confirmation: node?.name }),
+            body: JSON.stringify({
+              confirmation: node?.name,
+            }),
           });
           setConfirm(null);
         }}
@@ -375,10 +402,10 @@ export function NodeDetailPage() {
         onOpenChange={(open) => {
           if (!open) setConfirm(null);
         }}
-        title="删除节点记录"
-        description="此操作会永久删除控制面中的节点记录，且无法撤销。"
+        title={t("删除节点记录")}
+        description={t("此操作会永久删除控制面中的节点记录，且无法撤销。")}
         confirmation={node?.name}
-        confirmLabel="永久删除"
+        confirmLabel={t("永久删除")}
         destructive
         busy={deleteNode.isPending}
         onConfirm={async () => {
@@ -389,7 +416,6 @@ export function NodeDetailPage() {
     </>
   );
 }
-
 function CacheQuotaSettings({
   nodeId,
   settings,
@@ -413,19 +439,25 @@ function CacheQuotaSettings({
         }),
       }),
     onSuccess: () => {
-      toast.success("节点缓存配额已保存");
-      void queryClient.invalidateQueries({ queryKey: ["node", nodeId] });
-      void queryClient.invalidateQueries({ queryKey: ["nodes"] });
+      toast.success(t("节点缓存配额已保存"));
+      void queryClient.invalidateQueries({
+        queryKey: ["node", nodeId],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["nodes"],
+      });
     },
     onError: (error) => toast.error(errorMessage(error)),
   });
   const effectiveSize = overrideEnabled ? size : settings.default_size_gb;
-
   return (
     <Card>
       <CardHeader>
-        <CardTitle>磁盘缓存配额</CardTitle>
-        <CardDescription>当前配置 {effectiveSize} GB</CardDescription>
+        <CardTitle>{t("磁盘缓存配额")}</CardTitle>
+        <CardDescription>
+          {t("当前配置 ")}
+          {effectiveSize} GB
+        </CardDescription>
       </CardHeader>
       <CardContent>
         <form
@@ -437,9 +469,12 @@ function CacheQuotaSettings({
         >
           <div className="flex items-center justify-between gap-4">
             <div>
-              <Label htmlFor="override-node-cache">覆写全局缓存配额</Label>
+              <Label htmlFor="override-node-cache">
+                {t("覆写全局缓存配额")}
+              </Label>
               <p className="text-xs text-muted-foreground">
-                全局默认 {settings.default_size_gb} GB
+                {t("全局默认 ")}
+                {settings.default_size_gb} GB
               </p>
             </div>
             <Switch
@@ -449,7 +484,7 @@ function CacheQuotaSettings({
             />
           </div>
           <div className="grid gap-2">
-            <Label htmlFor="node-cache-size">节点缓存总上限（GB）</Label>
+            <Label htmlFor="node-cache-size">{t("节点缓存总上限（GB）")}</Label>
             <Input
               id="node-cache-size"
               type="number"
@@ -462,7 +497,7 @@ function CacheQuotaSettings({
             />
           </div>
           <p className="text-xs text-muted-foreground">
-            保存后立即下发到该节点。
+            {t("保存后立即下发到该节点。")}
           </p>
           <Button type="submit" disabled={mutation.isPending}>
             {mutation.isPending ? (
@@ -470,14 +505,13 @@ function CacheQuotaSettings({
             ) : (
               <Save />
             )}
-            保存缓存配置
+            {t("保存缓存配置")}
           </Button>
         </form>
       </CardContent>
     </Card>
   );
 }
-
 function NginxCapacitySettings({
   nodeId,
   capacity,
@@ -498,23 +532,26 @@ function NginxCapacitySettings({
     onSuccess: () => {
       toast.success(
         capacitySupported
-          ? "Nginx 容量配置已下发"
-          : "Nginx 容量配置已保存，重新部署边缘节点后生效",
+          ? t("Nginx 容量配置已下发")
+          : t("Nginx 容量配置已保存，重新部署边缘节点后生效"),
       );
-      void queryClient.invalidateQueries({ queryKey: ["node", nodeId] });
-      void queryClient.invalidateQueries({ queryKey: ["nodes"] });
+      void queryClient.invalidateQueries({
+        queryKey: ["node", nodeId],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["nodes"],
+      });
     },
     onError: (error) => toast.error(errorMessage(error)),
   });
-
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Nginx 容量</CardTitle>
+        <CardTitle>{t("Nginx 容量")}</CardTitle>
         <CardDescription>
           {capacitySupported
-            ? "默认：自动进程、4096 连接、65536 文件句柄"
-            : "当前节点完成容量配置升级后应用此配置"}
+            ? t("默认：自动进程、4096 连接、65536 文件句柄")
+            : t("当前节点完成容量配置升级后应用此配置")}
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -526,7 +563,9 @@ function NginxCapacitySettings({
           }}
         >
           <div className="grid gap-2">
-            <Label htmlFor="nginx-worker-processes">工作进程（0 为自动）</Label>
+            <Label htmlFor="nginx-worker-processes">
+              {t("工作进程（0 为自动）")}
+            </Label>
             <Input
               id="nginx-worker-processes"
               type="number"
@@ -543,7 +582,9 @@ function NginxCapacitySettings({
             />
           </div>
           <div className="grid gap-2">
-            <Label htmlFor="nginx-worker-connections">每进程连接数</Label>
+            <Label htmlFor="nginx-worker-connections">
+              {t("每进程连接数")}
+            </Label>
             <Input
               id="nginx-worker-connections"
               type="number"
@@ -560,7 +601,7 @@ function NginxCapacitySettings({
             />
           </div>
           <div className="grid gap-2">
-            <Label htmlFor="nginx-worker-nofile">每进程文件句柄</Label>
+            <Label htmlFor="nginx-worker-nofile">{t("每进程文件句柄")}</Label>
             <Input
               id="nginx-worker-nofile"
               type="number"
@@ -582,49 +623,57 @@ function NginxCapacitySettings({
             ) : (
               <Save />
             )}
-            保存容量配置
+            {t("保存容量配置")}
           </Button>
         </form>
       </CardContent>
     </Card>
   );
 }
-
 function NodeSummary({ detail }: { detail: NodeDetail }) {
   const node = detail.node;
   return (
     <Card>
       <CardHeader className="flex-row items-start justify-between">
         <div>
-          <CardTitle>运行摘要</CardTitle>
-          <CardDescription>代理与配置状态</CardDescription>
+          <CardTitle>{t("运行摘要")}</CardTitle>
+          <CardDescription>{t("代理与配置状态")}</CardDescription>
         </div>
         <StatusBadge status={node.status} />
       </CardHeader>
       <CardContent className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Datum
-          label="最近心跳"
+          label={t("最近心跳")}
           value={formatDateTime(node.last_heartbeat_at)}
         />
         <Datum
-          label="应用配置"
+          label={t("应用配置")}
           value={`v${formatNumber(node.applied_version)}`}
         />
         <Datum
-          label="代理版本"
+          label={t("代理版本")}
           value={node.agent_version ? `v${node.agent_version}` : "--"}
         />
         <Datum
-          label="目标版本"
+          label={t("目标版本")}
           value={
             node.target_agent_version ? `v${node.target_agent_version}` : "--"
           }
         />
-        <Datum label="代理摘要" value={shortHash(node.agent_sha256)} mono />
-        <Datum label="关联站点" value={`${detail.sites.length} 个`} />
+        <Datum
+          label={t("代理摘要")}
+          value={shortHash(node.agent_sha256)}
+          mono
+        />
+        <Datum
+          label={t("关联站点")}
+          value={t("{value0} 个", {
+            value0: detail.sites.length,
+          })}
+        />
         {node.last_error ? (
           <Alert variant="destructive" className="sm:col-span-2 lg:col-span-4">
-            <AlertTitle>节点报告错误</AlertTitle>
+            <AlertTitle>{t("节点报告错误")}</AlertTitle>
             <AlertDescription>{node.last_error}</AlertDescription>
           </Alert>
         ) : null}
@@ -632,16 +681,15 @@ function NodeSummary({ detail }: { detail: NodeDetail }) {
     </Card>
   );
 }
-
 function MachineStatus({ detail }: { detail: NodeDetail }) {
   const machine = detail.machine;
   if (!machine.available || !machine.report)
     return (
       <Card>
         <CardHeader>
-          <CardTitle>机器状态</CardTitle>
+          <CardTitle>{t("机器状态")}</CardTitle>
           <CardDescription>
-            {machine.unavailable_reason || "暂无机器指标"}
+            {machine.unavailable_reason || t("暂无机器指标")}
           </CardDescription>
         </CardHeader>
       </Card>
@@ -657,50 +705,61 @@ function MachineStatus({ detail }: { detail: NodeDetail }) {
     <Card>
       <CardHeader className="flex-row items-start justify-between">
         <div>
-          <CardTitle>机器状态</CardTitle>
+          <CardTitle>{t("机器状态")}</CardTitle>
           <CardDescription>
             {report.distribution} {report.version} · {report.cpu_logical_cores}{" "}
-            核 · 运行 {formatDuration(report.uptime_seconds)}
+            {t("核 · 运行 ")}
+            {formatDuration(report.uptime_seconds)}
           </CardDescription>
         </div>
         {machine.stale ? (
-          <StatusBadge status="failed" label="数据过期" />
+          <StatusBadge status="failed" label={t("数据过期")} />
         ) : (
-          <StatusBadge status="active" label="数据正常" />
+          <StatusBadge status="active" label={t("数据正常")} />
         )}
       </CardHeader>
       <CardContent className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
         <Usage
           label="CPU"
           value={report.cpu_usage_percent}
-          detail={`负载 ${report.load_1.toFixed(2)} / ${report.load_5.toFixed(2)} / ${report.load_15.toFixed(2)}`}
+          detail={t("负载 {value0} / {value1} / {value2}", {
+            value0: report.load_1.toFixed(2),
+            value1: report.load_5.toFixed(2),
+            value2: report.load_15.toFixed(2),
+          })}
         />
         <Usage
-          label="内存"
+          label={t("内存")}
           value={memory}
           detail={`${formatBytes(report.memory_used_bytes)} / ${formatBytes(report.memory_total_bytes)}`}
         />
         <Usage
-          label="磁盘"
+          label={t("磁盘")}
           value={disk}
           detail={`${formatBytes(report.disk_used_bytes)} / ${formatBytes(report.disk_total_bytes)}`}
         />
         <div className="sm:col-span-2 xl:col-span-3 flex flex-wrap gap-x-6 gap-y-2 border-t pt-4 text-sm">
           <span className="flex items-center gap-2">
             <Wifi className="size-4 text-muted-foreground" />
-            {report.network_interface || "默认接口"}
+            {report.network_interface || t("默认接口")}
           </span>
-          <span>接收 {formatBytes(report.network_rx_bytes_per_second)}/s</span>
-          <span>发送 {formatBytes(report.network_tx_bytes_per_second)}/s</span>
+          <span>
+            {t("接收 ")}
+            {formatBytes(report.network_rx_bytes_per_second)}/s
+          </span>
+          <span>
+            {t("发送 ")}
+            {formatBytes(report.network_tx_bytes_per_second)}/s
+          </span>
           <span className="ml-auto text-xs text-muted-foreground">
-            采集于 {formatDateTime(report.collected_at)}
+            {t("采集于 ")}
+            {formatDateTime(report.collected_at)}
           </span>
         </div>
       </CardContent>
     </Card>
   );
 }
-
 function CacheStatus({
   query,
 }: {
@@ -708,13 +767,13 @@ function CacheStatus({
 }) {
   const cache = query.data;
   if (query.error)
-    return <PageError title="缓存状态加载失败" error={query.error} />;
+    return <PageError title={t("缓存状态加载失败")} error={query.error} />;
   if (!cache)
     return (
       <Card>
         <CardHeader>
-          <CardTitle>缓存状态</CardTitle>
-          <CardDescription>正在加载</CardDescription>
+          <CardTitle>{t("缓存状态")}</CardTitle>
+          <CardDescription>{t("正在加载")}</CardDescription>
         </CardHeader>
       </Card>
     );
@@ -725,26 +784,34 @@ function CacheStatus({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>缓存状态</CardTitle>
+        <CardTitle>{t("缓存状态")}</CardTitle>
         <CardDescription>
           {cache.available
-            ? `最近 24 小时 · 最后访问 ${formatDateTime(cache.last_seen_at)}`
+            ? t("最近 24 小时 · 最后访问 {value0}", {
+                value0: formatDateTime(cache.last_seen_at),
+              })
             : cache.unavailable_reason}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <Datum label="缓存命中率" value={formatPercent(cache.hit_rate, 2)} />
-          <Datum label="缓存查询" value={formatNumber(cache.cache_lookups)} />
-          <Datum label="绕过" value={formatNumber(cache.bypasses)} />
-          <Datum label="未缓存" value={formatNumber(cache.uncached)} />
+          <Datum
+            label={t("缓存命中率")}
+            value={formatPercent(cache.hit_rate, 2)}
+          />
+          <Datum
+            label={t("缓存查询")}
+            value={formatNumber(cache.cache_lookups)}
+          />
+          <Datum label={t("绕过")} value={formatNumber(cache.bypasses)} />
+          <Datum label={t("未缓存")} value={formatNumber(cache.uncached)} />
         </div>
         {storage.available ? (
           <div>
             <div className="mb-2 flex items-center justify-between text-sm">
               <span className="flex items-center gap-2">
                 <HardDrive className="size-4 text-muted-foreground" />
-                缓存空间
+                {t("缓存空间")}
               </span>
               <span className="tabular-nums text-muted-foreground">
                 {formatBytes(storage.used_bytes)} /{" "}
@@ -753,8 +820,8 @@ function CacheStatus({
             </div>
             <Progress value={used} />
             <p className="mt-2 text-xs text-muted-foreground">
-              {storage.stale ? "数据已过期 · " : ""}采集于{" "}
-              {formatDateTime(storage.collected_at)}
+              {storage.stale ? t("数据已过期 · ") : ""}
+              {t("采集于")} {formatDateTime(storage.collected_at)}
             </p>
           </div>
         ) : (
@@ -781,15 +848,13 @@ function CacheStatus({
     </Card>
   );
 }
-
 function AssignedSites({ sites }: { sites: NodeDetail["sites"] }) {
   const pagination = useListPagination(sites);
-
   return (
     <Card>
       <CardHeader>
-        <CardTitle>关联站点</CardTitle>
-        <CardDescription>当前草稿配置中的节点分配</CardDescription>
+        <CardTitle>{t("关联站点")}</CardTitle>
+        <CardDescription>{t("当前草稿配置中的节点分配")}</CardDescription>
       </CardHeader>
       <CardContent className="px-0">
         {sites.length ? (
@@ -797,10 +862,10 @@ function AssignedSites({ sites }: { sites: NodeDetail["sites"] }) {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="pl-6">站点</TableHead>
-                  <TableHead>状态</TableHead>
-                  <TableHead>缓存</TableHead>
-                  <TableHead className="pr-6 text-right">管理</TableHead>
+                  <TableHead className="pl-6">{t("站点")}</TableHead>
+                  <TableHead>{t("状态")}</TableHead>
+                  <TableHead>{t("缓存")}</TableHead>
+                  <TableHead className="pr-6 text-right">{t("管理")}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -815,16 +880,16 @@ function AssignedSites({ sites }: { sites: NodeDetail["sites"] }) {
                     <TableCell>
                       <StatusBadge
                         status={site.published ? "succeeded" : "pending"}
-                        label={site.published ? "已发布" : "未发布"}
+                        label={site.published ? t("已发布") : t("未发布")}
                       />
                     </TableCell>
                     <TableCell>
-                      {site.cache_enabled ? "启用" : "关闭"}
+                      {site.cache_enabled ? t("启用") : t("关闭")}
                     </TableCell>
                     <TableCell className="pr-6 text-right">
                       <Button asChild variant="outline" size="sm">
                         <Link to={`/sites/${encodeURIComponent(site.id)}`}>
-                          查看
+                          {t("查看")}
                         </Link>
                       </Button>
                     </TableCell>
@@ -832,18 +897,17 @@ function AssignedSites({ sites }: { sites: NodeDetail["sites"] }) {
                 ))}
               </TableBody>
             </Table>
-            <ListPagination pagination={pagination} itemLabel="个站点" />
+            <ListPagination pagination={pagination} itemLabel={t("个站点")} />
           </>
         ) : (
           <div className="px-6 pb-6">
-            <EmptyState title="未关联站点" />
+            <EmptyState title={t("未关联站点")} />
           </div>
         )}
       </CardContent>
     </Card>
   );
 }
-
 function UninstallPanel({
   node,
   status,
@@ -871,19 +935,23 @@ function UninstallPanel({
   return (
     <Card className="border-destructive/30">
       <CardHeader>
-        <CardTitle>卸载与删除</CardTitle>
-        <CardDescription>先从调度和 DNS 中移除，再执行远端卸载</CardDescription>
+        <CardTitle>{t("卸载与删除")}</CardTitle>
+        <CardDescription>
+          {t("先从调度和 DNS 中移除，再执行远端卸载")}
+        </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-3">
         {job ? (
           <div className="space-y-2 rounded-lg border bg-muted/30 p-3 text-sm">
             <div className="flex items-center justify-between">
-              <span>卸载流程</span>
+              <span>{t("卸载流程")}</span>
               <StatusBadge status={job.status} />
             </div>
             {status?.ready_in_seconds ? (
               <p className="text-xs text-muted-foreground">
-                DNS 等待约 {status.ready_in_seconds} 秒
+                {t("DNS 等待约 ")}
+                {status.ready_in_seconds}
+                {t(" 秒")}
               </p>
             ) : null}
             {job.detail ? (
@@ -902,7 +970,7 @@ function UninstallPanel({
             {blockersPagination.totalPages > 1 ? (
               <ListPagination
                 pagination={blockersPagination}
-                itemLabel="项阻塞"
+                itemLabel={t("项阻塞")}
                 className="mt-3 px-0"
               />
             ) : null}
@@ -915,7 +983,7 @@ function UninstallPanel({
             onClick={() => onAction(base)}
           >
             <Unplug />
-            准备卸载
+            {t("准备卸载")}
           </Button>
         ) : null}
         {job && status?.can_generate_command ? (
@@ -925,7 +993,7 @@ function UninstallPanel({
             onClick={() => onAction(`${base}/command`)}
           >
             <Copy />
-            生成卸载命令
+            {t("生成卸载命令")}
           </Button>
         ) : null}
         {job && ["preparing", "ready", "failed"].includes(job.status) ? (
@@ -935,7 +1003,7 @@ function UninstallPanel({
             onClick={() => onAction(base, "DELETE")}
           >
             <RefreshCw />
-            取消卸载
+            {t("取消卸载")}
           </Button>
         ) : null}
         {job &&
@@ -945,7 +1013,7 @@ function UninstallPanel({
         ["preparing", "ready", "running", "failed"].includes(job.status) ? (
           <Button variant="destructive" disabled={pending} onClick={onForce}>
             <Unplug />
-            强制完成
+            {t("强制完成")}
           </Button>
         ) : null}
         <Separator />
@@ -955,18 +1023,17 @@ function UninstallPanel({
           onClick={onDelete}
         >
           <Trash2 />
-          删除节点记录
+          {t("删除节点记录")}
         </Button>
         {!canPrepare && !job && !deletable ? (
           <p className="text-xs leading-5 text-muted-foreground">
-            暂停调度或撤销授权后才能准备卸载。
+            {t("暂停调度或撤销授权后才能准备卸载。")}
           </p>
         ) : null}
       </CardContent>
     </Card>
   );
 }
-
 function CommandDialog({
   command,
   onOpenChange,
@@ -978,9 +1045,9 @@ function CommandDialog({
     <Dialog open={Boolean(command)} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>节点命令</DialogTitle>
+          <DialogTitle>{t("节点命令")}</DialogTitle>
           <DialogDescription>
-            在目标边缘服务器的 root shell 中执行
+            {t("在目标边缘服务器的 root shell 中执行")}
           </DialogDescription>
         </DialogHeader>
         <div className="relative">
@@ -988,17 +1055,16 @@ function CommandDialog({
             {command}
           </pre>
           <div className="absolute right-2 top-2">
-            <CopyButton value={command} label="复制命令" />
+            <CopyButton value={command} label={t("复制命令")} />
           </div>
         </div>
         <DialogFooter>
-          <Button onClick={() => onOpenChange(false)}>完成</Button>
+          <Button onClick={() => onOpenChange(false)}>{t("完成")}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
   );
 }
-
 function Datum({
   label,
   value,

@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-
 import {
   AlertDialog,
   AlertDialogAction,
@@ -12,13 +11,13 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-
+import { t } from "@/lib/i18n";
 export function ConfirmDialog({
   open,
   onOpenChange,
   title,
   description,
-  confirmLabel = "确认",
+  confirmLabel = t("确认"),
   confirmation,
   busy = false,
   destructive = false,
@@ -39,7 +38,6 @@ export function ConfirmDialog({
     if (!open) setValue("");
   }, [open]);
   const allowed = !confirmation || value === confirmation;
-
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent>
@@ -50,9 +48,9 @@ export function ConfirmDialog({
         {confirmation ? (
           <div className="grid gap-2">
             <Label htmlFor="confirmation-input">
-              输入{" "}
+              {t("输入")}{" "}
               <span className="font-mono text-foreground">{confirmation}</span>{" "}
-              以确认
+              {t("以确认")}
             </Label>
             <Input
               id="confirmation-input"
@@ -64,7 +62,7 @@ export function ConfirmDialog({
           </div>
         ) : null}
         <AlertDialogFooter>
-          <AlertDialogCancel disabled={busy}>取消</AlertDialogCancel>
+          <AlertDialogCancel disabled={busy}>{t("取消")}</AlertDialogCancel>
           <AlertDialogAction
             disabled={!allowed || busy}
             data-variant={destructive ? "destructive" : undefined}
@@ -78,7 +76,7 @@ export function ConfirmDialog({
               void Promise.resolve(onConfirm()).catch(() => undefined);
             }}
           >
-            {busy ? "处理中..." : confirmLabel}
+            {busy ? t("处理中...") : confirmLabel}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

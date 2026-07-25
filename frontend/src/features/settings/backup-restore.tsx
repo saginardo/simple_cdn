@@ -10,7 +10,6 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
-
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { ListPagination } from "@/components/list-pagination";
 import { EmptyState, PageError, Panel } from "@/components/page";
@@ -41,7 +40,7 @@ import { api, errorMessage } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
 import type { BackupRunStatus, RestoreJob, RestoreSnapshot } from "@/lib/types";
 import { useListPagination } from "@/hooks/use-list-pagination";
-
+import { t } from "@/lib/i18n";
 export function BackupRestore() {
   const queryClient = useQueryClient();
   const [selected, setSelected] = useState<RestoreSnapshot | null>(null);
@@ -71,7 +70,9 @@ export function BackupRestore() {
   };
   const updateJob = (next: RestoreJob) => {
     queryClient.setQueryData(["restore-job"], next);
-    void queryClient.invalidateQueries({ queryKey: ["messages"] });
+    void queryClient.invalidateQueries({
+      queryKey: ["messages"],
+    });
   };
   const start = useMutation({
     mutationFn: (snapshot: RestoreSnapshot) =>
@@ -85,7 +86,7 @@ export function BackupRestore() {
     onSuccess: (next) => {
       updateJob(next);
       setSelected(null);
-      toast.success("快照下载与隔离校验已开始");
+      toast.success(t("快照下载与隔离校验已开始"));
     },
     onError: (error) => toast.error(errorMessage(error)),
   });
@@ -93,12 +94,17 @@ export function BackupRestore() {
     mutationFn: () =>
       api<RestoreJob>(
         `/api/backups/restores/${encodeURIComponent(job.data?.id ?? "")}/commit`,
-        { method: "POST", body: JSON.stringify({ confirmation: "RESTORE" }) },
+        {
+          method: "POST",
+          body: JSON.stringify({
+            confirmation: "RESTORE",
+          }),
+        },
       ),
     onSuccess: (next) => {
       updateJob(next);
       setCommitOpen(false);
-      toast.success("恢复切换已提交，控制面将短暂重启");
+      toast.success(t("恢复切换已提交，控制面将短暂重启"));
     },
     onError: (error) => toast.error(errorMessage(error)),
   });
@@ -106,34 +112,43 @@ export function BackupRestore() {
     mutationFn: () =>
       api<RestoreJob>(
         `/api/backups/restores/${encodeURIComponent(job.data?.id ?? "")}`,
-        { method: "DELETE" },
+        {
+          method: "DELETE",
+        },
       ),
     onSuccess: (next) => {
       updateJob(next);
       setCancelOpen(false);
-      toast.success("在线恢复已取消");
+      toast.success(t("在线恢复已取消"));
     },
     onError: (error) => toast.error(errorMessage(error)),
   });
   const deleteSnapshot = useMutation({
     mutationFn: (snapshot: RestoreSnapshot) =>
-      api<{ deleted_snapshot_id: string }>(
-        `/api/backups/snapshots/${encodeURIComponent(snapshot.id)}`,
-        {
-          method: "DELETE",
-          body: JSON.stringify({ confirmation: snapshot.short_id }),
-        },
-      ),
+      api<{
+        deleted_snapshot_id: string;
+      }>(`/api/backups/snapshots/${encodeURIComponent(snapshot.id)}`, {
+        method: "DELETE",
+        body: JSON.stringify({
+          confirmation: snapshot.short_id,
+        }),
+      }),
     onSuccess: (_response, snapshot) => {
       queryClient.setQueryData<RestoreSnapshot[]>(
         ["backup-snapshots"],
         (currentSnapshots) =>
           currentSnapshots?.filter((item) => item.id !== snapshot.id),
       );
-      void queryClient.invalidateQueries({ queryKey: ["backup-snapshots"] });
+      void queryClient.invalidateQueries({
+        queryKey: ["backup-snapshots"],
+      });
       setDeleting(null);
       if (selected?.id === snapshot.id) setSelected(null);
-      toast.success(`备份快照 ${snapshot.short_id} 已永久删除`);
+      toast.success(
+        t("备份快照 {value0} 已永久删除", {
+          value0: snapshot.short_id,
+        }),
+      );
     },
     onError: (error) => toast.error(errorMessage(error)),
   });
@@ -143,21 +158,20 @@ export function BackupRestore() {
     commit.isPending ||
     cancel.isPending ||
     deleteSnapshot.isPending;
-
   return (
     <>
       <Card>
         <CardHeader className="flex-row items-start justify-between gap-4">
           <div>
-            <CardTitle>S3 在线恢复</CardTitle>
+            <CardTitle>{t("S3 在线恢复")}</CardTitle>
             <CardDescription>
-              下载到隔离环境校验，通过后再切换控制面数据
+              {t("下载到隔离环境校验，通过后再切换控制面数据")}
             </CardDescription>
           </div>
           <Button
             variant="outline"
             size="icon-sm"
-            aria-label="刷新备份与快照"
+            aria-label={t("刷新备份与快照")}
             disabled={
               status.isFetching || snapshots.isFetching || job.isFetching
             }
@@ -174,7 +188,7 @@ export function BackupRestore() {
         </CardHeader>
         <CardContent className="space-y-5">
           {status.error ? (
-            <PageError title="备份状态加载失败" error={status.error} />
+            <PageError title={t("备份状态加载失败")} error={status.error} />
           ) : null}
           {status.data ? (
             <div className="flex flex-col gap-2 rounded-lg border px-4 py-3 sm:flex-row sm:items-center">
@@ -183,10 +197,12 @@ export function BackupRestore() {
                 label={backupLabel(status.data.state)}
               />
               <span className="text-sm">
-                最近备份：{formatDateTime(status.data.updated_at)}
+                {t("最近备份：")}
+                {formatDateTime(status.data.updated_at)}
               </span>
               <span className="sm:ml-auto text-xs text-muted-foreground">
-                尝试 {status.data.attempt} / {status.data.max_attempts}
+                {t("尝试 ")}
+                {status.data.attempt} / {status.data.max_attempts}
               </span>
               {status.data.error ? (
                 <span className="text-xs text-destructive">
@@ -196,7 +212,7 @@ export function BackupRestore() {
             </div>
           ) : (
             <div className="rounded-lg border px-4 py-3 text-sm text-muted-foreground">
-              尚无备份运行状态
+              {t("尚无备份运行状态")}
             </div>
           )}
           {current ? (
@@ -208,22 +224,22 @@ export function BackupRestore() {
             />
           ) : null}
           {snapshots.error ? (
-            <PageError title="快照加载失败" error={snapshots.error} />
+            <PageError title={t("快照加载失败")} error={snapshots.error} />
           ) : null}
           {snapshots.isLoading ? (
             <div className="py-8 text-center text-sm text-muted-foreground">
               <LoaderCircle className="mx-auto mb-2 size-4 animate-spin" />
-              正在读取快照
+              {t("正在读取快照")}
             </div>
           ) : snapshots.data?.length ? (
             <Panel>
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>备份时间</TableHead>
-                    <TableHead>快照</TableHead>
-                    <TableHead>主机</TableHead>
-                    <TableHead className="text-right">操作</TableHead>
+                    <TableHead>{t("备份时间")}</TableHead>
+                    <TableHead>{t("快照")}</TableHead>
+                    <TableHead>{t("主机")}</TableHead>
+                    <TableHead className="text-right">{t("操作")}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -245,21 +261,23 @@ export function BackupRestore() {
                             onClick={() => setSelected(snapshot)}
                           >
                             <ShieldCheck />
-                            准备恢复
+                            {t("准备恢复")}
                           </Button>
                           <Tooltip>
                             <TooltipTrigger asChild>
                               <Button
                                 variant="destructive"
                                 size="icon-sm"
-                                aria-label={`删除快照 ${snapshot.short_id}`}
+                                aria-label={t("删除快照 {value0}", {
+                                  value0: snapshot.short_id,
+                                })}
                                 disabled={busy || activeRestore(current?.state)}
                                 onClick={() => setDeleting(snapshot)}
                               >
                                 <Trash2 />
                               </Button>
                             </TooltipTrigger>
-                            <TooltipContent>删除备份快照</TooltipContent>
+                            <TooltipContent>{t("删除备份快照")}</TooltipContent>
                           </Tooltip>
                         </div>
                       </TableCell>
@@ -269,13 +287,13 @@ export function BackupRestore() {
               </Table>
               <ListPagination
                 pagination={snapshotsPagination}
-                itemLabel="个快照"
+                itemLabel={t("个快照")}
               />
             </Panel>
           ) : (
             <EmptyState
-              title="没有可用快照"
-              description="完成一次 S3 备份后可在此准备在线恢复"
+              title={t("没有可用快照")}
+              description={t("完成一次 S3 备份后可在此准备在线恢复")}
             />
           )}
         </CardContent>
@@ -285,10 +303,15 @@ export function BackupRestore() {
         onOpenChange={(open) => {
           if (!open) setSelected(null);
         }}
-        title="准备在线恢复"
-        description={`将下载并在隔离环境校验快照 ${selected?.short_id ?? ""}，此阶段不会修改在线数据。`}
+        title={t("准备在线恢复")}
+        description={t(
+          "将下载并在隔离环境校验快照 {value0}，此阶段不会修改在线数据。",
+          {
+            value0: selected?.short_id ?? "",
+          },
+        )}
         confirmation={selected?.short_id}
-        confirmLabel="下载并校验"
+        confirmLabel={t("下载并校验")}
         busy={start.isPending}
         onConfirm={async () => {
           if (selected) await start.mutateAsync(selected);
@@ -299,10 +322,15 @@ export function BackupRestore() {
         onOpenChange={(open) => {
           if (!open) setDeleting(null);
         }}
-        title="删除备份快照"
-        description={`将从 S3 备份仓库永久删除快照 ${deleting?.short_id ?? ""}，并清理无引用数据。此操作不可撤销。`}
+        title={t("删除备份快照")}
+        description={t(
+          "将从 S3 备份仓库永久删除快照 {value0}，并清理无引用数据。此操作不可撤销。",
+          {
+            value0: deleting?.short_id ?? "",
+          },
+        )}
         confirmation={deleting?.short_id}
-        confirmLabel="永久删除"
+        confirmLabel={t("永久删除")}
         destructive
         busy={deleteSnapshot.isPending}
         onConfirm={async () => {
@@ -312,10 +340,10 @@ export function BackupRestore() {
       <ConfirmDialog
         open={commitOpen}
         onOpenChange={setCommitOpen}
-        title="切换恢复快照"
-        description="控制面将暂停相关操作、切换已校验的数据并短暂重启。"
+        title={t("切换恢复快照")}
+        description={t("控制面将暂停相关操作、切换已校验的数据并短暂重启。")}
         confirmation="RESTORE"
-        confirmLabel="确认切换"
+        confirmLabel={t("确认切换")}
         destructive
         busy={commit.isPending}
         onConfirm={async () => {
@@ -325,9 +353,9 @@ export function BackupRestore() {
       <ConfirmDialog
         open={cancelOpen}
         onOpenChange={setCancelOpen}
-        title="取消在线恢复"
-        description="取消准备流程并删除隔离数据，不会修改当前在线数据。"
-        confirmLabel="取消恢复"
+        title={t("取消在线恢复")}
+        description={t("取消准备流程并删除隔离数据，不会修改当前在线数据。")}
+        confirmLabel={t("取消恢复")}
         destructive
         busy={cancel.isPending}
         onConfirm={async () => {
@@ -337,7 +365,6 @@ export function BackupRestore() {
     </>
   );
 }
-
 function RestoreJobPanel({
   job,
   onCommit,
@@ -354,19 +381,22 @@ function RestoreJobPanel({
     <Alert variant={job.state === "failed" ? "destructive" : "default"}>
       <DatabaseBackup />
       <AlertTitle className="flex items-center gap-2">
-        恢复任务{" "}
+        {t("恢复任务")}{" "}
         <StatusBadge status={job.state} label={restoreLabel(job.state)} />
       </AlertTitle>
       <AlertDescription className="mt-2 space-y-2">
-        <p>{job.error || job.detail || "等待状态更新"}</p>
+        <p>{job.error || job.detail || t("等待状态更新")}</p>
         <div className="text-xs">
-          快照 {job.snapshot_short_id} · 更新于 {formatDateTime(job.updated_at)}
+          {t("快照 ")}
+          {job.snapshot_short_id}
+          {t(" · 更新于 ")}
+          {formatDateTime(job.updated_at)}
         </div>
         <div className="flex flex-wrap gap-2 pt-2">
           {job.state === "ready" ? (
             <Button size="sm" disabled={busy} onClick={onCommit}>
               <RotateCcw />
-              切换数据
+              {t("切换数据")}
             </Button>
           ) : null}
           {active && job.state !== "committing" ? (
@@ -377,7 +407,7 @@ function RestoreJobPanel({
               onClick={onCancel}
             >
               <X />
-              取消恢复
+              {t("取消恢复")}
             </Button>
           ) : null}
         </div>
@@ -385,7 +415,6 @@ function RestoreJobPanel({
     </Alert>
   );
 }
-
 function activeRestore(state?: string) {
   return Boolean(
     state &&
@@ -398,14 +427,14 @@ function restoreLabel(state: string) {
   return (
     (
       {
-        queued: "排队中",
-        downloading: "下载中",
-        validating: "隔离校验中",
-        ready: "校验通过",
-        committing: "正在切换",
-        completed: "已完成",
-        failed: "失败",
-        cancelled: "已取消",
+        queued: t("排队中"),
+        downloading: t("下载中"),
+        validating: t("隔离校验中"),
+        ready: t("校验通过"),
+        committing: t("正在切换"),
+        completed: t("已完成"),
+        failed: t("失败"),
+        cancelled: t("已取消"),
       } as Record<string, string>
     )[state] ?? state
   );
@@ -414,11 +443,11 @@ function backupLabel(state: string) {
   return (
     (
       {
-        running: "执行中",
-        retrying: "重试中",
-        succeeded: "成功",
-        failed: "失败",
-        skipped: "已跳过",
+        running: t("执行中"),
+        retrying: t("重试中"),
+        succeeded: t("成功"),
+        failed: t("失败"),
+        skipped: t("已跳过"),
       } as Record<string, string>
     )[state] ?? state
   );

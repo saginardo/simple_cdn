@@ -9,10 +9,9 @@ import {
   RefreshCw,
   TriangleAlert,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Link } from "react-router-dom";
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
-
 import {
   EmptyState,
   PageBody,
@@ -56,46 +55,69 @@ import { httpStatusTone, toneFill, toneText, type Tone } from "@/lib/tones";
 import type { Overview, OverviewPoint, OverviewSite } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { useListPagination } from "@/hooks/use-list-pagination";
-
+import {
+  usePersistentEnum,
+  usePersistentState,
+} from "@/hooks/use-persistent-state";
+import { getLocale, t, useI18n } from "@/lib/i18n";
 type Metric = "requests" | "bytes" | "error_requests";
 type SiteSortKey = "name" | "requests" | "bytes";
 type SortDirection = "asc" | "desc";
-
 interface SiteSort {
   key: SiteSortKey;
   direction: SortDirection;
 }
-
-const siteNameCollator = new Intl.Collator("zh-CN", {
-  numeric: true,
-  sensitivity: "base",
-});
-
 const metricConfig: Record<
   Metric,
-  { label: string; color: string; format: (value: number) => string }
+  {
+    label: string;
+    color: string;
+    format: (value: number) => string;
+  }
 > = {
-  requests: { label: "请求数", color: "var(--chart-1)", format: formatCompact },
-  bytes: { label: "传输量", color: "var(--chart-2)", format: formatBytes },
+  requests: {
+    label: "请求数",
+    color: "var(--chart-1)",
+    format: formatCompact,
+  },
+  bytes: {
+    label: "传输量",
+    color: "var(--chart-2)",
+    format: formatBytes,
+  },
   error_requests: {
     label: "错误请求",
     color: "var(--chart-5)",
     format: formatCompact,
   },
 };
-
 export function OverviewPage() {
-  const [metric, setMetric] = useState<Metric>("requests");
-  const [siteSort, setSiteSort] = useState<SiteSort>({
-    key: "requests",
-    direction: "desc",
-  });
+  useI18n();
+  const [metric, setMetric] = usePersistentEnum<Metric>(
+    "simple-cdn.overview.metric",
+    ["requests", "bytes", "error_requests"] as const,
+    "requests",
+  );
+  const [siteSort, setSiteSort] = usePersistentState<SiteSort>(
+    "simple-cdn.overview.site-sort",
+    {
+      key: "requests",
+      direction: "desc",
+    },
+    (value): value is SiteSort => {
+      if (!value || typeof value !== "object") return false;
+      const candidate = value as Partial<SiteSort>;
+      return (
+        ["name", "requests", "bytes"].includes(candidate.key ?? "") &&
+        ["asc", "desc"].includes(candidate.direction ?? "")
+      );
+    },
+  );
   const query = useQuery({
     queryKey: ["overview"],
     queryFn: () => api<Overview>("/api/overview"),
     refetchInterval: 30_000,
   });
-
   const chartData = useMemo(
     () => (query.data?.series ?? []).map(chartPoint),
     [query.data],
@@ -109,7 +131,6 @@ export function OverviewPage() {
     [query.data?.sites, siteSort],
   );
   const sitesPagination = useListPagination(sortedSites);
-
   const handleSiteSort = (key: SiteSortKey) => {
     setSiteSort((current) => ({
       key,
@@ -122,23 +143,24 @@ export function OverviewPage() {
     }));
     sitesPagination.setPage(1);
   };
-
   return (
     <>
       <PageHeader
-        title="概览"
-        description="最近 24 小时控制面流量与服务状态"
+        title={t("概览")}
+        description={t("最近 24 小时控制面流量与服务状态")}
         actions={
           <>
             <span className="hidden text-xs text-muted-foreground sm:inline">
               {query.data
-                ? `更新于 ${formatDateTime(query.data.to)}`
-                : "等待数据"}
+                ? t("更新于 {value0}", {
+                    value0: formatDateTime(query.data.to),
+                  })
+                : t("等待数据")}
             </span>
             <Button
               variant="outline"
               size="icon-sm"
-              aria-label="刷新概览"
+              aria-label={t("刷新概览")}
               disabled={query.isFetching}
               onClick={() => void query.refetch()}
             >
@@ -156,34 +178,36 @@ export function OverviewPage() {
           <>
             <section
               className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"
-              aria-label="关键指标"
+              aria-label={t("关键指标")}
             >
               <MetricCard
                 icon={Activity}
-                label="请求数"
+                label={t("请求数")}
                 value={formatNumber(totals?.requests)}
-                meta="最近 24 小时"
+                meta={t("最近 24 小时")}
                 tone="info"
               />
               <MetricCard
                 icon={DatabaseZap}
-                label="传输量"
+                label={t("传输量")}
                 value={formatBytes(totals?.bytes)}
-                meta="边缘下行流量"
+                meta={t("边缘下行流量")}
                 tone="success"
               />
               <MetricCard
                 icon={TriangleAlert}
-                label="错误请求"
+                label={t("错误请求")}
                 value={formatNumber(totals?.error_requests)}
-                meta="HTTP 4xx 与 5xx"
+                meta={t("HTTP 4xx 与 5xx")}
                 tone="warning"
               />
               <MetricCard
                 icon={TriangleAlert}
-                label="错误率"
+                label={t("错误率")}
                 value={formatPercent(errorRate, 2)}
-                meta={`${formatNumber(query.data.sites.length)} 个站点`}
+                meta={t("{value0} 个站点", {
+                  value0: formatNumber(query.data.sites.length),
+                })}
                 tone={errorRate > 0.05 ? "danger" : "success"}
               />
             </section>
@@ -192,9 +216,9 @@ export function OverviewPage() {
               <Card>
                 <CardHeader className="flex-row items-start justify-between gap-4">
                   <div>
-                    <CardTitle>流量趋势</CardTitle>
+                    <CardTitle>{t("流量趋势")}</CardTitle>
                     <CardDescription>
-                      按小时聚合，时间为本地时区
+                      {t("按小时聚合，时间为本地时区")}
                     </CardDescription>
                   </div>
                   <Tabs
@@ -202,9 +226,11 @@ export function OverviewPage() {
                     onValueChange={(value) => setMetric(value as Metric)}
                   >
                     <TabsList>
-                      <TabsTrigger value="requests">请求</TabsTrigger>
-                      <TabsTrigger value="bytes">流量</TabsTrigger>
-                      <TabsTrigger value="error_requests">错误</TabsTrigger>
+                      <TabsTrigger value="requests">{t("请求")}</TabsTrigger>
+                      <TabsTrigger value="bytes">{t("流量")}</TabsTrigger>
+                      <TabsTrigger value="error_requests">
+                        {t("错误")}
+                      </TabsTrigger>
                     </TabsList>
                   </Tabs>
                 </CardHeader>
@@ -215,9 +241,10 @@ export function OverviewPage() {
 
               <Card>
                 <CardHeader>
-                  <CardTitle>状态码分布</CardTitle>
+                  <CardTitle>{t("状态码分布")}</CardTitle>
                   <CardDescription>
-                    {formatNumber(totals?.requests)} 次请求
+                    {formatNumber(totals?.requests)}
+                    {t(" 次请求")}
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -254,7 +281,7 @@ export function OverviewPage() {
                       })}
                     </div>
                   ) : (
-                    <EmptyState title="暂无状态码数据" />
+                    <EmptyState title={t("暂无状态码数据")} />
                   )}
                 </CardContent>
               </Card>
@@ -262,9 +289,9 @@ export function OverviewPage() {
 
             <Card>
               <CardHeader>
-                <CardTitle>站点流量</CardTitle>
+                <CardTitle>{t("站点流量")}</CardTitle>
                 <CardDescription>
-                  最近 24 小时聚合，可进入站点分析详情
+                  {t("最近 24 小时聚合，可进入站点分析详情")}
                 </CardDescription>
               </CardHeader>
               <CardContent className="px-0">
@@ -275,26 +302,26 @@ export function OverviewPage() {
                         <TableRow>
                           <SortableSiteTableHead
                             className="pl-6"
-                            label="站点"
+                            label={t("站点")}
                             sortKey="name"
                             sort={siteSort}
                             onSort={handleSiteSort}
                           />
                           <SortableSiteTableHead
-                            label="请求数"
+                            label={t("请求数")}
                             sortKey="requests"
                             sort={siteSort}
                             onSort={handleSiteSort}
                           />
                           <SortableSiteTableHead
-                            label="传输量"
+                            label={t("传输量")}
                             sortKey="bytes"
                             sort={siteSort}
                             onSort={handleSiteSort}
                           />
-                          <TableHead>错误率</TableHead>
+                          <TableHead>{t("错误率")}</TableHead>
                           <TableHead className="w-12 pr-6">
-                            <span className="sr-only">详情</span>
+                            <span className="sr-only">{t("详情")}</span>
                           </TableHead>
                         </TableRow>
                       </TableHeader>
@@ -304,7 +331,7 @@ export function OverviewPage() {
                             <TableCell className="pl-6">
                               <div className="font-medium">{site.name}</div>
                               <div className="max-w-md truncate text-xs text-muted-foreground">
-                                {site.domains.join(", ") || "未配置域名"}
+                                {site.domains.join(", ") || t("未配置域名")}
                               </div>
                             </TableCell>
                             <TableCell className="tabular-nums">
@@ -325,7 +352,9 @@ export function OverviewPage() {
                               <Button asChild variant="ghost" size="icon-sm">
                                 <Link
                                   to={`/overview/sites/${encodeURIComponent(site.id)}`}
-                                  aria-label={`查看 ${site.name} 分析`}
+                                  aria-label={t("查看 {value0} 分析", {
+                                    value0: site.name,
+                                  })}
                                 >
                                   <ArrowRight />
                                 </Link>
@@ -337,14 +366,16 @@ export function OverviewPage() {
                     </Table>
                     <ListPagination
                       pagination={sitesPagination}
-                      itemLabel="个站点"
+                      itemLabel={t("个站点")}
                     />
                   </>
                 ) : (
                   <div className="px-6 pb-6">
                     <EmptyState
-                      title="暂无站点"
-                      description="添加站点并产生流量后，这里会显示聚合数据"
+                      title={t("暂无站点")}
+                      description={t(
+                        "添加站点并产生流量后，这里会显示聚合数据",
+                      )}
                     />
                   </div>
                 )}
@@ -356,7 +387,6 @@ export function OverviewPage() {
     </>
   );
 }
-
 function SortableSiteTableHead({
   className,
   label,
@@ -381,8 +411,10 @@ function SortableSiteTableHead({
       ? ArrowUp
       : ArrowDown
     : ArrowUpDown;
-  const actionLabel = `按${label}${nextDirection === "asc" ? "升序" : "降序"}排序`;
-
+  const actionLabel = t("按{value0}{value1}排序", {
+    value0: label,
+    value1: nextDirection === "asc" ? t("升序") : t("降序"),
+  });
   return (
     <TableHead
       className={className}
@@ -413,15 +445,17 @@ function SortableSiteTableHead({
     </TableHead>
   );
 }
-
 function defaultSiteSortDirection(key: SiteSortKey): SortDirection {
   return key === "name" ? "asc" : "desc";
 }
-
 function sortOverviewSites(
   sites: readonly OverviewSite[],
   sort: SiteSort,
 ): OverviewSite[] {
+  const siteNameCollator = new Intl.Collator(getLocale(), {
+    numeric: true,
+    sensitivity: "base",
+  });
   return [...sites].sort((left, right) => {
     const comparison =
       sort.key === "name"
@@ -430,7 +464,6 @@ function sortOverviewSites(
     if (comparison) {
       return sort.direction === "desc" ? -comparison : comparison;
     }
-
     const nameComparison = siteNameCollator.compare(
       siteName(left),
       siteName(right),
@@ -438,31 +471,47 @@ function sortOverviewSites(
     return nameComparison || siteNameCollator.compare(left.id, right.id);
   });
 }
-
 function siteName(site: OverviewSite) {
-  return site.name || site.id || "未命名站点";
+  return site.name || site.id || t("未命名站点");
 }
-
 export function OverviewLineChart({
   data,
   metric,
 }: {
-  data: Array<OverviewPoint & { label: string }>;
+  data: Array<
+    OverviewPoint & {
+      label: string;
+    }
+  >;
   metric: Metric;
 }) {
-  const selected = metricConfig[metric];
+  const selected = {
+    ...metricConfig[metric],
+    label: t(metricConfig[metric].label),
+  };
   const config = {
-    [metric]: { label: selected.label, color: selected.color },
+    [metric]: {
+      label: selected.label,
+      color: selected.color,
+    },
   } satisfies ChartConfig;
   return (
     <ChartContainer
       config={config}
       className="h-[280px] w-full aspect-auto"
-      initialDimension={{ width: 720, height: 280 }}
+      initialDimension={{
+        width: 720,
+        height: 280,
+      }}
     >
       <LineChart
         data={data}
-        margin={{ left: 4, right: 12, top: 8, bottom: 0 }}
+        margin={{
+          left: 4,
+          right: 12,
+          top: 8,
+          bottom: 0,
+        }}
         accessibilityLayer
       >
         <CartesianGrid vertical={false} strokeDasharray="3 3" />
@@ -504,20 +553,21 @@ export function OverviewLineChart({
           stroke={`var(--color-${metric})`}
           strokeWidth={2}
           dot={false}
-          activeDot={{ r: 4 }}
+          activeDot={{
+            r: 4,
+          }}
           isAnimationActive={false}
         />
       </LineChart>
     </ChartContainer>
   );
 }
-
-export function chartPoint(
-  point: OverviewPoint,
-): OverviewPoint & { label: string } {
+export function chartPoint(point: OverviewPoint): OverviewPoint & {
+  label: string;
+} {
   return {
     ...point,
-    label: new Date(point.time).toLocaleString("zh-CN", {
+    label: new Date(point.time).toLocaleString(getLocale(), {
       month: "2-digit",
       day: "2-digit",
       hour: "2-digit",
@@ -525,7 +575,6 @@ export function chartPoint(
     }),
   };
 }
-
 function MetricCard({
   icon: Icon,
   label,

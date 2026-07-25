@@ -1,10 +1,9 @@
 import type { ReactNode } from "react";
 import { AlertCircle, Inbox } from "lucide-react";
-
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
-
+import { t } from "@/lib/i18n";
 export function PageHeader({
   title,
   description,
@@ -30,7 +29,6 @@ export function PageHeader({
     </header>
   );
 }
-
 export function PageBody({
   className,
   children,
@@ -69,12 +67,13 @@ export function Panel({
     </div>
   );
 }
-
 export function PageLoading({ rows = 4 }: { rows?: number }) {
   return (
     <div className="space-y-3" role="status" aria-live="polite" aria-busy>
-      <span className="sr-only">正在加载</span>
-      {Array.from({ length: rows }).map((_, index) => (
+      <span className="sr-only">{t("正在加载")}</span>
+      {Array.from({
+        length: rows,
+      }).map((_, index) => (
         <Skeleton
           key={index}
           className={cn("h-16 w-full", index === 0 && "h-28")}
@@ -84,9 +83,8 @@ export function PageLoading({ rows = 4 }: { rows?: number }) {
     </div>
   );
 }
-
 export function PageError({
-  title = "加载失败",
+  title = t("加载失败"),
   error,
 }: {
   title?: string;
@@ -97,12 +95,11 @@ export function PageError({
       <AlertCircle />
       <AlertTitle>{title}</AlertTitle>
       <AlertDescription>
-        {error instanceof Error ? error.message : "发生未知错误"}
+        {error instanceof Error ? error.message : t("发生未知错误")}
       </AlertDescription>
     </Alert>
   );
 }
-
 export function EmptyState({
   title,
   description,

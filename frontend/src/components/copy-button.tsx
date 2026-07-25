@@ -1,16 +1,15 @@
 import { Check, Copy } from "lucide-react";
 import { useState } from "react";
-
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-
+import { t } from "@/lib/i18n";
 export function CopyButton({
   value,
-  label = "复制",
+  label = t("复制"),
 }: {
   value: string;
   label?: string;
@@ -33,7 +32,7 @@ export function CopyButton({
           {copied ? <Check /> : <Copy />}
         </Button>
       </TooltipTrigger>
-      <TooltipContent>{copied ? "已复制" : label}</TooltipContent>
+      <TooltipContent>{copied ? t("已复制") : label}</TooltipContent>
     </Tooltip>
   );
 }

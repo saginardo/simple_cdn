@@ -1,8 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, Settings2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Link, useParams } from "react-router-dom";
-
 import {
   EmptyState,
   PageBody,
@@ -27,14 +26,19 @@ import {
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
 import { useListPagination } from "@/hooks/use-list-pagination";
+import { usePersistentEnum } from "@/hooks/use-persistent-state";
 import { formatBytes, formatNumber, formatPercent } from "@/lib/format";
 import type { Overview } from "@/lib/types";
-
+import { t, useI18n } from "@/lib/i18n";
 type Metric = "requests" | "bytes" | "error_requests";
-
 export function OverviewSitePage() {
+  useI18n();
   const { siteId = "" } = useParams();
-  const [metric, setMetric] = useState<Metric>("requests");
+  const [metric, setMetric] = usePersistentEnum<Metric>(
+    "simple-cdn.overview.site.metric",
+    ["requests", "bytes", "error_requests"] as const,
+    "requests",
+  );
   const query = useQuery({
     queryKey: ["overview"],
     queryFn: () => api<Overview>("/api/overview"),
@@ -43,25 +47,24 @@ export function OverviewSitePage() {
   const site = query.data?.sites.find((item) => item.id === siteId);
   const chartData = useMemo(() => (site?.series ?? []).map(chartPoint), [site]);
   const statusPagination = useListPagination(site?.status_codes ?? []);
-
   return (
     <>
       <PageHeader
-        title={site?.name ?? "站点请求详情"}
-        description={site?.domains.join(", ") || "最近 24 小时站点流量"}
+        title={site?.name ?? t("站点请求详情")}
+        description={site?.domains.join(", ") || t("最近 24 小时站点流量")}
         actions={
           <>
             <Button asChild variant="outline">
               <Link to="/overview">
                 <ArrowLeft />
-                返回概览
+                {t("返回概览")}
               </Link>
             </Button>
             {site ? (
               <Button asChild>
                 <Link to={`/sites/${encodeURIComponent(site.id)}`}>
                   <Settings2 />
-                  管理站点
+                  {t("管理站点")}
                 </Link>
               </Button>
             ) : null}
@@ -72,15 +75,21 @@ export function OverviewSitePage() {
         {query.isLoading ? <PageLoading /> : null}
         {query.error ? <PageError error={query.error} /> : null}
         {query.data && !site ? (
-          <EmptyState title="未找到站点" description="该站点可能已被删除" />
+          <EmptyState
+            title={t("未找到站点")}
+            description={t("该站点可能已被删除")}
+          />
         ) : null}
         {site ? (
           <>
             <section className="grid gap-3 sm:grid-cols-3">
-              <Summary label="请求数" value={formatNumber(site.requests)} />
-              <Summary label="传输量" value={formatBytes(site.bytes)} />
               <Summary
-                label="错误率"
+                label={t("请求数")}
+                value={formatNumber(site.requests)}
+              />
+              <Summary label={t("传输量")} value={formatBytes(site.bytes)} />
+              <Summary
+                label={t("错误率")}
                 value={formatPercent(
                   site.requests ? site.error_requests / site.requests : 0,
                   2,
@@ -90,17 +99,19 @@ export function OverviewSitePage() {
             <Card>
               <CardHeader className="flex-row items-start justify-between gap-4">
                 <div>
-                  <CardTitle>站点趋势</CardTitle>
-                  <CardDescription>按小时聚合</CardDescription>
+                  <CardTitle>{t("站点趋势")}</CardTitle>
+                  <CardDescription>{t("按小时聚合")}</CardDescription>
                 </div>
                 <Tabs
                   value={metric}
                   onValueChange={(value) => setMetric(value as Metric)}
                 >
                   <TabsList>
-                    <TabsTrigger value="requests">请求</TabsTrigger>
-                    <TabsTrigger value="bytes">流量</TabsTrigger>
-                    <TabsTrigger value="error_requests">错误</TabsTrigger>
+                    <TabsTrigger value="requests">{t("请求")}</TabsTrigger>
+                    <TabsTrigger value="bytes">{t("流量")}</TabsTrigger>
+                    <TabsTrigger value="error_requests">
+                      {t("错误")}
+                    </TabsTrigger>
                   </TabsList>
                 </Tabs>
               </CardHeader>
@@ -110,8 +121,8 @@ export function OverviewSitePage() {
             </Card>
             <Card>
               <CardHeader>
-                <CardTitle>HTTP 状态码</CardTitle>
-                <CardDescription>按请求量降序</CardDescription>
+                <CardTitle>{t("HTTP 状态码")}</CardTitle>
+                <CardDescription>{t("按请求量降序")}</CardDescription>
               </CardHeader>
               <CardContent className="px-0">
                 {site.status_codes.length ? (
@@ -136,13 +147,13 @@ export function OverviewSitePage() {
                     </div>
                     <ListPagination
                       pagination={statusPagination}
-                      itemLabel="个状态码"
+                      itemLabel={t("个状态码")}
                       className="mt-4"
                     />
                   </>
                 ) : (
                   <div className="px-6">
-                    <EmptyState title="暂无状态码数据" />
+                    <EmptyState title={t("暂无状态码数据")} />
                   </div>
                 )}
               </CardContent>
@@ -153,7 +164,6 @@ export function OverviewSitePage() {
     </>
   );
 }
-
 function Summary({ label, value }: { label: string; value: string }) {
   return (
     <Panel className="px-5 py-4">

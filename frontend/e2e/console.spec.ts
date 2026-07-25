@@ -1453,6 +1453,64 @@ test("theme menu supports light dark and system modes", async ({
   await expect(page.getByRole("heading", { name: "消息中心" })).toBeVisible();
 });
 
+test("language switch localizes workspaces and survives reload", async ({
+  page,
+}, testInfo) => {
+  const errors = trackPageErrors(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await mockAPI(page);
+  await page.goto("/#/overview");
+
+  await page.getByRole("button", { name: "切换语言" }).click();
+  await page.getByRole("menuitemradio", { name: "English" }).click();
+  await expect(page.locator("html")).toHaveAttribute("lang", "en");
+  await expect(
+    page.getByRole("heading", { name: "Overview", level: 1 }),
+  ).toBeVisible();
+  await expect(page.getByRole("link", { name: "Scheduling" })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Theme: System" }),
+  ).toBeVisible();
+
+  for (const [path, heading] of [
+    ["logs", "Logs"],
+    ["monitoring", "Monitoring"],
+    ["scheduling", "Scheduling"],
+    ["nodes", "Nodes"],
+    ["sites", "Sites"],
+    ["security", "Security"],
+    ["certificates", "Certificates"],
+    ["settings", "Settings"],
+  ]) {
+    await page.goto(`/#/${path}`);
+    await expect(
+      page.getByRole("heading", { name: heading, level: 1 }),
+    ).toBeVisible();
+  }
+
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("lang", "en");
+  await expect(
+    page.getByRole("heading", { name: "Settings", level: 1 }),
+  ).toBeVisible();
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/#/scheduling");
+  await expect(
+    page.getByRole("heading", { name: "Scheduling", level: 1 }),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth + 1,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: testInfo.outputPath("scheduling-english-mobile.png"),
+    fullPage: true,
+  });
+  expect(errors).toEqual([]);
+});
+
 test("mobile sidebar closes after hash navigation without horizontal overflow", async ({
   page,
 }, testInfo) => {
@@ -1825,6 +1883,7 @@ test("all primary workspaces and the new-site editor mount without runtime error
   for (const [path, heading] of [
     ["security", "安全"],
     ["monitoring", "监测"],
+    ["scheduling", "调度"],
     ["nodes", "节点"],
     ["sites", "站点"],
     ["certificates", "证书"],
@@ -1837,6 +1896,12 @@ test("all primary workspaces and the new-site editor mount without runtime error
     ).toBeVisible();
   }
   await page.getByRole("tab", { name: "备份与恢复" }).click();
+  await expect(page.getByText("S3 在线恢复")).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("tab", { name: "备份与恢复" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
   await expect(page.getByText("S3 在线恢复")).toBeVisible();
   expect(errors).toEqual([]);
 });
@@ -1970,6 +2035,7 @@ test("monitoring workspace shows scoring, probe results, and target controls", a
   await expect(page.getByText("edge-hong-kong")).toBeVisible();
   await expect(page.getByText("智能暂停")).toBeVisible();
   await expect(page.getByText("96", { exact: true })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "智能路由" })).toHaveCount(0);
   await page.screenshot({
     path: testInfo.outputPath("monitoring-desktop.png"),
     fullPage: true,
@@ -2010,18 +2076,26 @@ test("monitoring workspace shows scoring, probe results, and target controls", a
   await renameDialog.getByLabel("名称").fill("核心 API");
   await renameDialog.getByRole("button", { name: "保存" }).click();
   await expect(page.getByText("拨测目标名称已更新")).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("tab", { name: "目标配置" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(page.getByText("probe-a.example.com:443")).toBeVisible();
   expect(errors).toEqual([]);
 });
 
-test("smart routing tab edits per-node score and schedule gates", async ({
+test("scheduling workspace edits per-node score and schedule gates", async ({
   page,
 }, testInfo) => {
   const errors = trackPageErrors(page);
   await page.setViewportSize({ width: 1440, height: 900 });
   await mockAPI(page);
-  await page.goto("/#/monitoring");
+  await page.goto("/#/scheduling");
 
-  await page.getByRole("tab", { name: "智能路由" }).click();
+  await expect(
+    page.getByRole("heading", { name: "调度", level: 1 }),
+  ).toBeVisible();
   await expect(page.getByText("评分、时间", { exact: true })).toBeVisible();
   await expect(page.getByText("窗口内", { exact: true })).toBeVisible();
   await page.screenshot({
@@ -2070,7 +2144,9 @@ test("smart routing tab edits per-node score and schedule gates", async ({
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
-  await page.getByRole("tab", { name: "智能路由" }).click();
+  await expect(
+    page.getByRole("heading", { name: "调度", level: 1 }),
+  ).toBeVisible();
   await expect(page.getByText("edge-hong-kong")).toBeVisible();
   expect(
     await page.evaluate(
@@ -2115,6 +2191,11 @@ test("monitoring node history overlays named targets and switches range", async 
   await sevenDayTab.click();
   await sevenDayResponse;
   await expect(sevenDayTab).toHaveAttribute("aria-selected", "true");
+  await page.reload();
+  await expect(page.getByRole("tab", { name: "7 天" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
   await page.screenshot({
     path: testInfo.outputPath("monitoring-history-desktop.png"),
     fullPage: true,
@@ -2167,6 +2248,12 @@ test("login screen renders without an authenticated session", async ({
     path: testInfo.outputPath("login-mobile.png"),
     fullPage: true,
   });
+  await page.getByRole("button", { name: "切换语言" }).click();
+  await page.getByRole("menuitemradio", { name: "English" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Sign in to the control plane" }),
+  ).toBeVisible();
+  await expect(page.getByLabel("Administrator password")).toBeVisible();
 });
 
 function trackPageErrors(page: Page) {

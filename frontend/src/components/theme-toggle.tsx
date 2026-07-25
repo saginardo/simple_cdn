@@ -14,6 +14,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { t, useI18n } from "@/lib/i18n";
 
 const modes = {
   light: { label: "浅色", icon: Sun },
@@ -24,6 +25,7 @@ const modes = {
 type ThemeMode = keyof typeof modes;
 
 export function ThemeToggle() {
+  useI18n();
   const { theme, setTheme } = useTheme();
   const mode: ThemeMode =
     theme && theme in modes ? (theme as ThemeMode) : "system";
@@ -37,13 +39,15 @@ export function ThemeToggle() {
             <Button
               variant="ghost"
               size="icon-sm"
-              aria-label={`主题：${modes[mode].label}`}
+              aria-label={t("主题：{mode}", {
+                mode: t(modes[mode].label),
+              })}
             >
               <CurrentIcon />
             </Button>
           </DropdownMenuTrigger>
         </TooltipTrigger>
-        <TooltipContent>切换主题</TooltipContent>
+        <TooltipContent>{t("切换主题")}</TooltipContent>
       </Tooltip>
       <DropdownMenuContent align="end" className="min-w-36">
         <DropdownMenuRadioGroup
@@ -57,7 +61,7 @@ export function ThemeToggle() {
             return (
               <DropdownMenuRadioItem key={key} value={key}>
                 <Icon />
-                {modes[key].label}
+                {t(modes[key].label)}
               </DropdownMenuRadioItem>
             );
           })}

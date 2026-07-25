@@ -9,7 +9,6 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-
 import { CopyButton } from "@/components/copy-button";
 import { HTTPStatusBadge } from "@/components/http-status-badge";
 import {
@@ -31,8 +30,9 @@ import {
 import { api } from "@/lib/api";
 import { formatBytes, formatDateTime, formatNumber } from "@/lib/format";
 import type { AccessLog, Node, Site } from "@/lib/types";
-
+import { t, useI18n } from "@/lib/i18n";
 export function LogDetailPage() {
+  useI18n();
   const { logId = "" } = useParams();
   const navigate = useNavigate();
   const encodedID = encodeURIComponent(logId);
@@ -50,23 +50,22 @@ export function LogDetailPage() {
     queryKey: ["nodes"],
     queryFn: () => api<Node[]>("/api/nodes"),
   });
-
   return (
     <>
       <PageHeader
-        title="请求详情"
+        title={t("请求详情")}
         description={log.data ? formatDateTime(log.data.timestamp) : undefined}
         actions={
           <Button variant="outline" onClick={() => navigate("/logs")}>
             <ArrowLeft />
-            返回日志
+            {t("返回日志")}
           </Button>
         }
       />
       <PageBody>
         {log.isLoading ? <PageLoading rows={3} /> : null}
         {log.error ? (
-          <PageError title="请求详情加载失败" error={log.error} />
+          <PageError title={t("请求详情加载失败")} error={log.error} />
         ) : null}
         {log.data ? (
           <LogDetails
@@ -75,12 +74,11 @@ export function LogDetailPage() {
             nodeName={nameFor(nodes.data, log.data.node_id)}
           />
         ) : null}
-        {!logId ? <EmptyState title="缺少日志 ID" /> : null}
+        {!logId ? <EmptyState title={t("缺少日志 ID")} /> : null}
       </PageBody>
     </>
   );
 }
-
 function LogDetails({
   entry,
   siteName,
@@ -98,7 +96,6 @@ function LogDetails({
     ["Accept", entry.accept],
     ["Range", entry.range],
   ].filter((item): item is [string, string] => Boolean(item[1]));
-
   return (
     <div className="space-y-5">
       <Card>
@@ -114,44 +111,47 @@ function LogDetails({
             {entry.path}
           </CardTitle>
           <CardDescription className="flex min-w-0 items-center gap-2">
-            <span className="truncate">请求 ID：{entry.id}</span>
-            <CopyButton value={entry.id} label="复制请求 ID" />
+            <span className="truncate">
+              {t("请求 ID：")}
+              {entry.id}
+            </span>
+            <CopyButton value={entry.id} label={t("复制请求 ID")} />
           </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-px border-t bg-border sm:grid-cols-2 xl:grid-cols-4">
           <Metric
             icon={<Globe2 />}
-            label="客户端"
+            label={t("客户端")}
             value={entry.client_ip || "--"}
           />
           <Metric
             icon={<Server />}
-            label="站点"
+            label={t("站点")}
             value={siteName || entry.site_id}
           />
           <Metric
             icon={<Server />}
-            label="节点"
+            label={t("节点")}
             value={nodeName || entry.node_id}
           />
           <Metric
             icon={<Clock3 />}
-            label="总耗时"
+            label={t("总耗时")}
             value={`${formatNumber(entry.duration_ms)} ms`}
           />
           <Metric
             icon={<ArrowUpFromLine />}
-            label="请求大小"
+            label={t("请求大小")}
             value={formatBytes(entry.request_bytes)}
           />
           <Metric
             icon={<ArrowDownToLine />}
-            label="响应大小"
+            label={t("响应大小")}
             value={formatBytes(entry.bytes)}
           />
           <Metric
             icon={<Globe2 />}
-            label="协议"
+            label={t("协议")}
             value={
               [entry.scheme?.toUpperCase(), entry.protocol]
                 .filter(Boolean)
@@ -160,7 +160,7 @@ function LogDetails({
           />
           <Metric
             icon={<Server />}
-            label="上游"
+            label={t("上游")}
             value={entry.upstream || "--"}
           />
         </CardContent>
@@ -169,18 +169,21 @@ function LogDetails({
       <div className="grid gap-5 xl:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle>上游响应</CardTitle>
-            <CardDescription>源站连接与响应结果</CardDescription>
+            <CardTitle>{t("上游响应")}</CardTitle>
+            <CardDescription>{t("源站连接与响应结果")}</CardDescription>
           </CardHeader>
           <CardContent className="divide-y border-t p-0">
-            <DetailRow label="上游地址" value={entry.upstream || "--"} />
-            <DetailRow label="上游状态" value={entry.upstream_status || "--"} />
+            <DetailRow label={t("上游地址")} value={entry.upstream || "--"} />
             <DetailRow
-              label="上游响应时间"
+              label={t("上游状态")}
+              value={entry.upstream_status || "--"}
+            />
+            <DetailRow
+              label={t("上游响应时间")}
               value={entry.upstream_response_time || "--"}
             />
             <DetailRow
-              label="响应 Content-Type"
+              label={t("响应 Content-Type")}
               value={entry.response_content_type || "--"}
             />
           </CardContent>
@@ -188,8 +191,8 @@ function LogDetails({
 
         <Card>
           <CardHeader>
-            <CardTitle>请求头</CardTitle>
-            <CardDescription>边缘节点采集的常用请求头</CardDescription>
+            <CardTitle>{t("请求头")}</CardTitle>
+            <CardDescription>{t("边缘节点采集的常用请求头")}</CardDescription>
           </CardHeader>
           <CardContent className="divide-y border-t p-0">
             {headers.length ? (
@@ -198,7 +201,7 @@ function LogDetails({
               ))
             ) : (
               <div className="p-5 text-sm text-muted-foreground">
-                暂无请求头数据
+                {t("暂无请求头数据")}
               </div>
             )}
           </CardContent>
@@ -207,7 +210,6 @@ function LogDetails({
     </div>
   );
 }
-
 function Metric({
   icon,
   label,
@@ -229,7 +231,6 @@ function Metric({
     </div>
   );
 }
-
 function DetailRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="grid gap-1 px-5 py-3 sm:grid-cols-[10rem_minmax(0,1fr)] sm:gap-4">
@@ -238,9 +239,13 @@ function DetailRow({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
-
 function nameFor(
-  items: Array<{ id: string; name: string }> | undefined,
+  items:
+    | Array<{
+        id: string;
+        name: string;
+      }>
+    | undefined,
   id: string,
 ) {
   return items?.find((item) => item.id === id)?.name ?? id;

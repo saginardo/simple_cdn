@@ -3,7 +3,6 @@ import { ArrowLeft, RefreshCw } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
-
 import {
   EmptyState,
   PageBody,
@@ -30,24 +29,39 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
+import { usePersistentEnum } from "@/hooks/use-persistent-state";
 import { formatDateTime, formatNumber } from "@/lib/format";
 import type {
   MonitoringHistory,
   MonitoringHistoryRange,
   MonitoringHistorySeries,
 } from "@/lib/types";
-
+import { getLocale, t, useI18n } from "@/lib/i18n";
 const historyRanges: Array<{
   value: MonitoringHistoryRange;
   label: string;
 }> = [
-  { value: "1h", label: "1 小时" },
-  { value: "6h", label: "6 小时" },
-  { value: "12h", label: "12 小时" },
-  { value: "24h", label: "24 小时" },
-  { value: "7d", label: "7 天" },
+  {
+    value: "1h",
+    label: "1 小时",
+  },
+  {
+    value: "6h",
+    label: "6 小时",
+  },
+  {
+    value: "12h",
+    label: "12 小时",
+  },
+  {
+    value: "24h",
+    label: "24 小时",
+  },
+  {
+    value: "7d",
+    label: "7 天",
+  },
 ];
-
 const chartColors = [
   "var(--chart-1)",
   "var(--chart-2)",
@@ -55,22 +69,24 @@ const chartColors = [
   "var(--chart-4)",
   "var(--chart-5)",
 ];
-
 interface ChartSeries {
   series: MonitoringHistorySeries;
   dataKey: string;
   color: string;
 }
-
 interface HistoryChartPoint {
   timestamp: number;
   isoTime: string;
   [key: string]: number | string | null;
 }
-
 export function MonitoringNodeHistoryPage() {
+  useI18n();
   const { nodeId = "" } = useParams();
-  const [range, setRange] = useState<MonitoringHistoryRange>("24h");
+  const [range, setRange] = usePersistentEnum<MonitoringHistoryRange>(
+    "simple-cdn.monitoring.history.range",
+    ["1h", "6h", "12h", "24h", "7d"] as const,
+    "24h",
+  );
   const [hiddenTargets, setHiddenTargets] = useState<Set<string>>(new Set());
   const query = useQuery({
     queryKey: ["monitoring-history", nodeId, range],
@@ -107,7 +123,10 @@ export function MonitoringNodeHistoryPage() {
       Object.fromEntries(
         visibleChartSeries.map(({ series, dataKey, color }) => [
           dataKey,
-          { label: series.name, color },
+          {
+            label: series.name,
+            color,
+          },
         ]),
       ) satisfies ChartConfig,
     [visibleChartSeries],
@@ -116,26 +135,29 @@ export function MonitoringNodeHistoryPage() {
     () => historyTotals(data?.series ?? []),
     [data?.series],
   );
-
   return (
     <>
       <PageHeader
-        title={data?.node.name ?? "拨测历史"}
+        title={data?.node.name ?? t("拨测历史")}
         description={
-          data ? `${data.node.public_ipv4} · TCP 拨测历史` : "节点 TCP 拨测历史"
+          data
+            ? t("{value0} · TCP 拨测历史", {
+                value0: data.node.public_ipv4,
+              })
+            : t("节点 TCP 拨测历史")
         }
         actions={
           <>
             <Button asChild variant="outline">
               <Link to="/monitoring">
                 <ArrowLeft />
-                返回监测
+                {t("返回监测")}
               </Link>
             </Button>
             <Button
               variant="outline"
               size="icon"
-              aria-label="刷新拨测历史"
+              aria-label={t("刷新拨测历史")}
               disabled={query.isFetching}
               onClick={() => void query.refetch()}
             >
@@ -149,26 +171,28 @@ export function MonitoringNodeHistoryPage() {
       <PageBody>
         {query.isLoading ? <PageLoading /> : null}
         {query.error ? (
-          <PageError title="拨测历史加载失败" error={query.error} />
+          <PageError title={t("拨测历史加载失败")} error={query.error} />
         ) : null}
         {data ? (
           <>
             <Panel>
               <dl className="grid sm:grid-cols-2 xl:grid-cols-4">
-                <HistoryDatum label="节点状态">
+                <HistoryDatum label={t("节点状态")}>
                   <StatusBadge
                     status={data.node.status}
                     label={
-                      data.node.monitor_auto_paused ? "监测暂停" : undefined
+                      data.node.monitor_auto_paused ? t("监测暂停") : undefined
                     }
                   />
                 </HistoryDatum>
                 <HistoryDatum
-                  label="历史目标"
-                  value={`${formatNumber(data.series.length)} 个`}
+                  label={t("历史目标")}
+                  value={t("{value0} 个", {
+                    value0: formatNumber(data.series.length),
+                  })}
                 />
                 <HistoryDatum
-                  label="TCP 成功率"
+                  label={t("TCP 成功率")}
                   value={
                     totals.attempts
                       ? `${((100 * totals.successes) / totals.attempts).toFixed(1)}%`
@@ -176,7 +200,7 @@ export function MonitoringNodeHistoryPage() {
                   }
                 />
                 <HistoryDatum
-                  label="聚合间隔"
+                  label={t("聚合间隔")}
                   value={formatBucket(data.bucket_seconds)}
                 />
               </dl>
@@ -189,10 +213,10 @@ export function MonitoringNodeHistoryPage() {
                   setRange(value as MonitoringHistoryRange)
                 }
               >
-                <TabsList aria-label="历史时间范围">
+                <TabsList aria-label={t("历史时间范围")}>
                   {historyRanges.map((item) => (
                     <TabsTrigger key={item.value} value={item.value}>
-                      {item.label}
+                      {t(item.label)}
                     </TabsTrigger>
                   ))}
                 </TabsList>
@@ -201,23 +225,25 @@ export function MonitoringNodeHistoryPage() {
 
             {!data.available ? (
               <EmptyState
-                title="历史拨测数据不可用"
+                title={t("历史拨测数据不可用")}
                 description={data.unavailable_reason}
               />
             ) : data.series.length ? (
               <Card>
                 <CardHeader>
                   <div>
-                    <CardTitle>TCP 时延趋势</CardTitle>
+                    <CardTitle>{t("TCP 时延趋势")}</CardTitle>
                     <CardDescription>
-                      {formatDateTime(data.from)} 至 {formatDateTime(data.to)}
+                      {formatDateTime(data.from)}
+                      {t(" 至 ")}
+                      {formatDateTime(data.to)}
                     </CardDescription>
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-5">
                   <div
                     className="grid gap-3 border-y py-4 sm:grid-cols-2 xl:grid-cols-3"
-                    aria-label="拨测目标图例"
+                    aria-label={t("拨测目标图例")}
                   >
                     {allChartSeries.map(({ series, color }) => {
                       const visible = !hiddenTargets.has(series.target_id);
@@ -230,7 +256,7 @@ export function MonitoringNodeHistoryPage() {
                           <Checkbox
                             id={`history-target-${series.target_id}`}
                             checked={visible}
-                            aria-label={`${visible ? "隐藏" : "显示"} ${series.name}`}
+                            aria-label={`${visible ? t("隐藏") : t("显示")} ${series.name}`}
                             onCheckedChange={(checked) =>
                               setHiddenTargets((current) => {
                                 const next = new Set(current);
@@ -247,7 +273,9 @@ export function MonitoringNodeHistoryPage() {
                             <span className="flex items-center gap-2 text-sm font-medium">
                               <span
                                 className="size-2 shrink-0 rounded-[2px]"
-                                style={{ backgroundColor: color }}
+                                style={{
+                                  backgroundColor: color,
+                                }}
                                 aria-hidden="true"
                               />
                               <span className="truncate">{series.name}</span>
@@ -274,14 +302,14 @@ export function MonitoringNodeHistoryPage() {
                       range={range}
                     />
                   ) : (
-                    <EmptyState title="请选择至少一个拨测目标" />
+                    <EmptyState title={t("请选择至少一个拨测目标")} />
                   )}
                 </CardContent>
               </Card>
             ) : (
               <EmptyState
-                title="暂无历史拨测数据"
-                description="节点完成新一轮拨测后，历史曲线会显示在这里"
+                title={t("暂无历史拨测数据")}
+                description={t("节点完成新一轮拨测后，历史曲线会显示在这里")}
               />
             )}
           </>
@@ -290,7 +318,6 @@ export function MonitoringNodeHistoryPage() {
     </>
   );
 }
-
 function MonitoringHistoryChart({
   data,
   series,
@@ -306,13 +333,21 @@ function MonitoringHistoryChart({
     <ChartContainer
       config={config}
       className="h-[340px] w-full aspect-auto"
-      initialDimension={{ width: 720, height: 340 }}
+      initialDimension={{
+        width: 720,
+        height: 340,
+      }}
       data-testid="monitoring-history-chart"
       data-series-count={series.length}
     >
       <LineChart
         data={data}
-        margin={{ left: 4, right: 12, top: 8, bottom: 0 }}
+        margin={{
+          left: 4,
+          right: 12,
+          top: 8,
+          bottom: 0,
+        }}
         accessibilityLayer
       >
         <CartesianGrid vertical={false} strokeDasharray="3 3" />
@@ -349,7 +384,9 @@ function MonitoringHistoryChart({
                 <>
                   <span
                     className="my-0.5 w-1 shrink-0 rounded-[2px]"
-                    style={{ backgroundColor: item.color }}
+                    style={{
+                      backgroundColor: item.color,
+                    }}
                     aria-hidden="true"
                   />
                   <span className="flex min-w-36 flex-1 items-center justify-between gap-4">
@@ -374,7 +411,9 @@ function MonitoringHistoryChart({
             stroke={color}
             strokeWidth={2}
             dot={false}
-            activeDot={{ r: 4 }}
+            activeDot={{
+              r: 4,
+            }}
             connectNulls={false}
             isAnimationActive={false}
           />
@@ -383,7 +422,6 @@ function MonitoringHistoryChart({
     </ChartContainer>
   );
 }
-
 function HistoryDatum({
   label,
   value,
@@ -402,7 +440,6 @@ function HistoryDatum({
     </div>
   );
 }
-
 function buildChartData(series: ChartSeries[]): HistoryChartPoint[] {
   const points = new Map<number, HistoryChartPoint>();
   for (const item of series) {
@@ -421,7 +458,6 @@ function buildChartData(series: ChartSeries[]): HistoryChartPoint[] {
     (left, right) => Number(left.timestamp) - Number(right.timestamp),
   );
 }
-
 function historyTotals(series: MonitoringHistorySeries[]) {
   let attempts = 0;
   let successes = 0;
@@ -431,13 +467,15 @@ function historyTotals(series: MonitoringHistorySeries[]) {
       successes += point.successful_attempts;
     }
   }
-  return { attempts, successes };
+  return {
+    attempts,
+    successes,
+  };
 }
-
 function formatAxisTime(timestamp: number, range: MonitoringHistoryRange) {
   const date = new Date(timestamp);
   if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleString("zh-CN", {
+  return date.toLocaleString(getLocale(), {
     month: range === "7d" ? "2-digit" : undefined,
     day: range === "7d" ? "2-digit" : undefined,
     hour: "2-digit",
@@ -445,9 +483,16 @@ function formatAxisTime(timestamp: number, range: MonitoringHistoryRange) {
     hour12: false,
   });
 }
-
 function formatBucket(seconds: number) {
-  if (seconds >= 3600) return `${seconds / 3600} 小时`;
-  if (seconds >= 60) return `${seconds / 60} 分钟`;
-  return `${seconds} 秒`;
+  if (seconds >= 3600)
+    return t("{value0} 小时", {
+      value0: seconds / 3600,
+    });
+  if (seconds >= 60)
+    return t("{value0} 分钟", {
+      value0: seconds / 60,
+    });
+  return t("{value0} 秒", {
+    value0: seconds,
+  });
 }

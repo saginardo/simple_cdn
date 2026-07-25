@@ -1,4 +1,5 @@
 import { Badge } from "@/components/ui/badge";
+import { t } from "@/lib/i18n";
 import { toneBadge, type Tone } from "@/lib/tones";
 import { cn } from "@/lib/utils";
 
@@ -52,7 +53,7 @@ export function StatusBadge({
       variant="outline"
       className={cn("font-normal", tones[status] && toneBadge[tones[status]])}
     >
-      {label ?? labels[status] ?? status}
+      {t(label ?? labels[status] ?? status)}
     </Badge>
   );
 }

@@ -1,7 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { ArrowRight, CirclePlus, RefreshCw } from "lucide-react";
 import { Link } from "react-router-dom";
-
 import {
   EmptyState,
   PageBody,
@@ -25,8 +24,9 @@ import { api } from "@/lib/api";
 import { formatDateTime, formatNumber } from "@/lib/format";
 import type { DeploymentTask, PublishStatus, Site } from "@/lib/types";
 import { useListPagination } from "@/hooks/use-list-pagination";
-
+import { t, useI18n } from "@/lib/i18n";
 export function SitesPage() {
+  useI18n();
   const query = useQuery({
     queryKey: ["sites"],
     queryFn: () => api<Site[]>("/api/sites"),
@@ -36,13 +36,13 @@ export function SitesPage() {
   return (
     <>
       <PageHeader
-        title="站点"
-        description="域名、源站、边缘节点与发布状态"
+        title={t("站点")}
+        description={t("域名、源站、边缘节点与发布状态")}
         actions={
           <Button asChild>
             <Link to="/sites/new">
               <CirclePlus />
-              添加站点
+              {t("添加站点")}
             </Link>
           </Button>
         }
@@ -56,14 +56,14 @@ export function SitesPage() {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="pl-5">站点</TableHead>
-                    <TableHead>协议</TableHead>
-                    <TableHead>节点</TableHead>
-                    <TableHead>版本</TableHead>
-                    <TableHead>发布状态</TableHead>
-                    <TableHead>更新时间</TableHead>
+                    <TableHead className="pl-5">{t("站点")}</TableHead>
+                    <TableHead>{t("协议")}</TableHead>
+                    <TableHead>{t("节点")}</TableHead>
+                    <TableHead>{t("版本")}</TableHead>
+                    <TableHead>{t("发布状态")}</TableHead>
+                    <TableHead>{t("更新时间")}</TableHead>
                     <TableHead className="w-12 pr-5">
-                      <span className="sr-only">管理</span>
+                      <span className="sr-only">{t("管理")}</span>
                     </TableHead>
                   </TableRow>
                 </TableHeader>
@@ -73,7 +73,7 @@ export function SitesPage() {
                       <TableCell className="pl-5">
                         <div className="font-medium">{site.name}</div>
                         <div className="max-w-sm truncate text-xs text-muted-foreground">
-                          {site.domains.join(", ") || "无 HTTP 域名"}
+                          {site.domains.join(", ") || t("无 HTTP 域名")}
                         </div>
                       </TableCell>
                       <TableCell className="text-sm">
@@ -95,7 +95,9 @@ export function SitesPage() {
                         <Button asChild variant="ghost" size="icon-sm">
                           <Link
                             to={`/sites/${encodeURIComponent(site.id)}`}
-                            aria-label={`管理 ${site.name}`}
+                            aria-label={t("管理 {value0}", {
+                              value0: site.name,
+                            })}
                           >
                             <ArrowRight />
                           </Link>
@@ -107,12 +109,12 @@ export function SitesPage() {
               </Table>
               <ListPagination
                 pagination={pagination}
-                itemLabel="个站点"
+                itemLabel={t("个站点")}
                 action={
                   <Button
                     variant="ghost"
                     size="icon-xs"
-                    aria-label="刷新站点"
+                    aria-label={t("刷新站点")}
                     onClick={() => void query.refetch()}
                   >
                     <RefreshCw
@@ -124,8 +126,8 @@ export function SitesPage() {
             </Panel>
           ) : (
             <EmptyState
-              title="暂无站点"
-              description="创建站点后配置域名、源站与边缘节点"
+              title={t("暂无站点")}
+              description={t("创建站点后配置域名、源站与边缘节点")}
             />
           )
         ) : null}
@@ -133,7 +135,6 @@ export function SitesPage() {
     </>
   );
 }
-
 function SiteStatus({ site }: { site: Site }) {
   const encodedID = encodeURIComponent(site.id);
   const publish = useQuery({
@@ -143,23 +144,25 @@ function SiteStatus({ site }: { site: Site }) {
     refetchInterval: (query) =>
       activeTask(query.state.data?.task) ? 2_000 : 20_000,
   });
-  if (site.deleting) return <StatusBadge status="applying" label="删除中" />;
-  if (!site.enabled) return <StatusBadge status="pending" label="已停用" />;
+  if (site.deleting)
+    return <StatusBadge status="applying" label={t("删除中")} />;
+  if (!site.enabled)
+    return <StatusBadge status="pending" label={t("已停用")} />;
   const publishTask = publish.data?.task;
   return (
     <StatusBadge
       status={publishTask?.status ?? (site.published ? "succeeded" : "pending")}
-      label={publishTask ? undefined : site.published ? "已发布" : "待发布"}
+      label={
+        publishTask ? undefined : site.published ? t("已发布") : t("待发布")
+      }
     />
   );
 }
-
 function activeTask(task?: DeploymentTask | null) {
   return Boolean(
     task && ["queued", "dispatching", "applying"].includes(task.status),
   );
 }
-
 function siteProtocol(site: Site) {
   if (site.tcp_only) return "TCP / TLS";
   if (site.tcp_forwards.length) return "HTTP + TCP";

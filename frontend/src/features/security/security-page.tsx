@@ -12,7 +12,6 @@ import {
 } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { toast } from "sonner";
-
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { ListPagination } from "@/components/list-pagination";
 import {
@@ -58,15 +57,22 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { api, errorMessage } from "@/lib/api";
 import { useListPagination } from "@/hooks/use-list-pagination";
+import { usePersistentEnum } from "@/hooks/use-persistent-state";
 import { formatDateTime, formatNumber } from "@/lib/format";
 import type {
   RateLimitPolicy,
   SecurityOverview,
   SecurityPolicy,
 } from "@/lib/types";
-
+import { t, useI18n } from "@/lib/i18n";
 export function SecurityPage() {
+  useI18n();
   const queryClient = useQueryClient();
+  const [section, setSection] = usePersistentEnum(
+    "simple-cdn.security.tab",
+    ["policies", "rate", "bans", "events", "nodes"] as const,
+    "policies",
+  );
   const [policy, setPolicy] = useState<SecurityPolicy | "new" | null>(null);
   const [rateLimit, setRateLimit] = useState<RateLimitPolicy | "new" | null>(
     null,
@@ -85,10 +91,12 @@ export function SecurityPage() {
     queryClient.setQueryData(["security"], data);
   const deploy = useMutation({
     mutationFn: () =>
-      api<SecurityOverview>("/api/security/deploy", { method: "POST" }),
+      api<SecurityOverview>("/api/security/deploy", {
+        method: "POST",
+      }),
     onSuccess: (data) => {
       applyResult(data);
-      toast.success("安全策略已重新发布");
+      toast.success(t("安全策略已重新发布"));
     },
     onError: (error) => toast.error(errorMessage(error)),
   });
@@ -96,12 +104,14 @@ export function SecurityPage() {
     mutationFn: (target: NonNullable<typeof remove>) =>
       api<SecurityOverview>(
         `/api/security/${target.kind === "policy" ? "policies" : "rate-limit-policies"}/${encodeURIComponent(target.id)}`,
-        { method: "DELETE" },
+        {
+          method: "DELETE",
+        },
       ),
     onSuccess: (data) => {
       applyResult(data);
       setRemove(null);
-      toast.success("策略已删除并发布");
+      toast.success(t("策略已删除并发布"));
     },
     onError: (error) => toast.error(errorMessage(error)),
   });
@@ -112,7 +122,7 @@ export function SecurityPage() {
       }),
     onSuccess: (data) => {
       applyResult(data);
-      toast.success("IP 封禁已解除");
+      toast.success(t("IP 封禁已解除"));
     },
     onError: (error) => toast.error(errorMessage(error)),
   });
@@ -142,12 +152,11 @@ export function SecurityPage() {
       node.desired_version > 0 &&
       node.applied_version >= node.desired_version,
   );
-
   return (
     <>
       <PageHeader
-        title="安全"
-        description="边缘访问策略、请求限速与活动封禁"
+        title={t("安全")}
+        description={t("边缘访问策略、请求限速与活动封禁")}
         actions={
           <>
             <Button
@@ -160,11 +169,11 @@ export function SecurityPage() {
               ) : (
                 <Rocket />
               )}
-              重新发布
+              {t("重新发布")}
             </Button>
             <Button onClick={() => setPolicy("new")}>
               <CirclePlus />
-              访问策略
+              {t("访问策略")}
             </Button>
           </>
         }
@@ -176,70 +185,76 @@ export function SecurityPage() {
           <>
             {data.deployment_error ? (
               <Alert variant="destructive">
-                <AlertTitle>部分策略未能发布</AlertTitle>
+                <AlertTitle>{t("部分策略未能发布")}</AlertTitle>
                 <AlertDescription>{data.deployment_error}</AlertDescription>
               </Alert>
             ) : null}
             <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               <Summary
                 icon={ShieldCheck}
-                label="启用策略"
+                label={t("启用策略")}
                 value={formatNumber(enabled)}
               />
               <Summary
                 icon={Ban}
-                label="活动封禁"
+                label={t("活动封禁")}
                 value={formatNumber(data.active_ban_count)}
               />
               <Summary
                 icon={Zap}
-                label="能力覆盖"
+                label={t("能力覆盖")}
                 value={`${capableNodes.length} / ${eligibleNodes.length}`}
               />
               <Summary
                 icon={Rocket}
-                label="已应用节点"
+                label={t("已应用节点")}
                 value={`${appliedNodes.length} / ${capableNodes.length}`}
               />
             </section>
-            <Tabs defaultValue="policies" className="space-y-4">
+            <Tabs
+              value={section}
+              onValueChange={(value) => setSection(value as typeof section)}
+              className="space-y-4"
+            >
               <TabsList>
-                <TabsTrigger value="policies">访问策略</TabsTrigger>
-                <TabsTrigger value="rate">请求限速</TabsTrigger>
-                <TabsTrigger value="bans">活动封禁</TabsTrigger>
-                <TabsTrigger value="events">最近命中</TabsTrigger>
-                <TabsTrigger value="nodes">节点覆盖</TabsTrigger>
+                <TabsTrigger value="policies">{t("访问策略")}</TabsTrigger>
+                <TabsTrigger value="rate">{t("请求限速")}</TabsTrigger>
+                <TabsTrigger value="bans">{t("活动封禁")}</TabsTrigger>
+                <TabsTrigger value="events">{t("最近命中")}</TabsTrigger>
+                <TabsTrigger value="nodes">{t("节点覆盖")}</TabsTrigger>
               </TabsList>
               <TabsContent value="policies">
                 <SectionHeader
-                  title="通用访问策略"
-                  meta="按优先级匹配规范化路径"
+                  title={t("通用访问策略")}
+                  meta={t("按优先级匹配规范化路径")}
                   action={
                     <Button size="sm" onClick={() => setPolicy("new")}>
                       <CirclePlus />
-                      新增
+                      {t("新增")}
                     </Button>
                   }
                 />
                 <DataFrame
                   empty={!data.policies.length}
-                  emptyTitle="暂无访问策略"
+                  emptyTitle={t("暂无访问策略")}
                   footer={
                     <ListPagination
                       pagination={policiesPagination}
-                      itemLabel="个策略"
+                      itemLabel={t("个策略")}
                     />
                   }
                 >
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>策略</TableHead>
-                        <TableHead>表达式</TableHead>
-                        <TableHead>动作</TableHead>
-                        <TableHead>优先级</TableHead>
-                        <TableHead>状态</TableHead>
-                        <TableHead className="text-right">操作</TableHead>
+                        <TableHead>{t("策略")}</TableHead>
+                        <TableHead>{t("表达式")}</TableHead>
+                        <TableHead>{t("动作")}</TableHead>
+                        <TableHead>{t("优先级")}</TableHead>
+                        <TableHead>{t("状态")}</TableHead>
+                        <TableHead className="text-right">
+                          {t("操作")}
+                        </TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -249,7 +264,7 @@ export function SecurityPage() {
                             <div className="font-medium">{item.name}</div>
                             {item.builtin ? (
                               <span className="text-xs text-muted-foreground">
-                                内置策略
+                                {t("内置策略")}
                               </span>
                             ) : null}
                           </TableCell>
@@ -263,14 +278,18 @@ export function SecurityPage() {
                           </TableCell>
                           <TableCell>
                             {item.action === "ban"
-                              ? `IP 封禁 · ${durationLabel(item.ban_duration_seconds)}`
-                              : "仅拦截"}
+                              ? t("IP 封禁 · {value0}", {
+                                  value0: durationLabel(
+                                    item.ban_duration_seconds,
+                                  ),
+                                })
+                              : t("仅拦截")}
                           </TableCell>
                           <TableCell>{formatNumber(item.priority)}</TableCell>
                           <TableCell>
                             <StatusBadge
                               status={item.enabled ? "succeeded" : "pending"}
-                              label={item.enabled ? "已启用" : "已停用"}
+                              label={item.enabled ? t("已启用") : t("已停用")}
                             />
                           </TableCell>
                           <TableCell>
@@ -278,7 +297,7 @@ export function SecurityPage() {
                               <Button
                                 variant="ghost"
                                 size="icon-sm"
-                                aria-label="编辑策略"
+                                aria-label={t("编辑策略")}
                                 onClick={() => setPolicy(item)}
                               >
                                 <Pencil />
@@ -287,7 +306,7 @@ export function SecurityPage() {
                                 <Button
                                   variant="ghost"
                                   size="icon-sm"
-                                  aria-label="删除策略"
+                                  aria-label={t("删除策略")}
                                   onClick={() =>
                                     setRemove({
                                       kind: "policy",
@@ -309,35 +328,37 @@ export function SecurityPage() {
               </TabsContent>
               <TabsContent value="rate">
                 <SectionHeader
-                  title="通用速率限制"
-                  meta="边缘节点按客户端 IP 执行一秒窗口限速"
+                  title={t("通用速率限制")}
+                  meta={t("边缘节点按客户端 IP 执行一秒窗口限速")}
                   action={
                     <Button size="sm" onClick={() => setRateLimit("new")}>
                       <CirclePlus />
-                      新增
+                      {t("新增")}
                     </Button>
                   }
                 />
                 <DataFrame
                   empty={!data.rate_limit_policies.length}
-                  emptyTitle="暂无限速策略"
+                  emptyTitle={t("暂无限速策略")}
                   footer={
                     <ListPagination
                       pagination={rateLimitPagination}
-                      itemLabel="个策略"
+                      itemLabel={t("个策略")}
                     />
                   }
                 >
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>策略</TableHead>
-                        <TableHead>计数 Key</TableHead>
-                        <TableHead>阈值</TableHead>
-                        <TableHead>响应条件</TableHead>
-                        <TableHead>升级动作</TableHead>
-                        <TableHead>状态</TableHead>
-                        <TableHead className="text-right">操作</TableHead>
+                        <TableHead>{t("策略")}</TableHead>
+                        <TableHead>{t("计数 Key")}</TableHead>
+                        <TableHead>{t("阈值")}</TableHead>
+                        <TableHead>{t("响应条件")}</TableHead>
+                        <TableHead>{t("升级动作")}</TableHead>
+                        <TableHead>{t("状态")}</TableHead>
+                        <TableHead className="text-right">
+                          {t("操作")}
+                        </TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -346,26 +367,34 @@ export function SecurityPage() {
                           <TableCell className="font-medium">
                             {item.name}
                           </TableCell>
-                          <TableCell>客户端 IP</TableCell>
+                          <TableCell>{t("客户端 IP")}</TableCell>
                           <TableCell className="tabular-nums">
-                            {formatNumber(item.requests_per_second)} 请求/秒
+                            {formatNumber(item.requests_per_second)}
+                            {t(" 请求/秒")}
                           </TableCell>
                           <TableCell>
                             {item.response_condition_enabled
                               ? item.response_status_classes
                                   ?.map((code) => `${code}xx`)
-                                  .join("、") || "无有效条件"
-                              : "全部请求"}
+                                  .join("、") || t("无有效条件")
+                              : t("全部请求")}
                           </TableCell>
                           <TableCell>
                             {item.ban_enabled
-                              ? `连续 ${formatNumber(item.ban_after_consecutive_429)} 次 429 · 封禁 ${durationLabel(item.ban_duration_seconds)}`
-                              : "仅返回 429"}
+                              ? t("连续 {value0} 次 429 · 封禁 {value1}", {
+                                  value0: formatNumber(
+                                    item.ban_after_consecutive_429,
+                                  ),
+                                  value1: durationLabel(
+                                    item.ban_duration_seconds,
+                                  ),
+                                })
+                              : t("仅返回 429")}
                           </TableCell>
                           <TableCell>
                             <StatusBadge
                               status={item.enabled ? "succeeded" : "pending"}
-                              label={item.enabled ? "已启用" : "已停用"}
+                              label={item.enabled ? t("已启用") : t("已停用")}
                             />
                           </TableCell>
                           <TableCell>
@@ -373,7 +402,7 @@ export function SecurityPage() {
                               <Button
                                 variant="ghost"
                                 size="icon-sm"
-                                aria-label="编辑限速策略"
+                                aria-label={t("编辑限速策略")}
                                 onClick={() => setRateLimit(item)}
                               >
                                 <Pencil />
@@ -381,7 +410,7 @@ export function SecurityPage() {
                               <Button
                                 variant="ghost"
                                 size="icon-sm"
-                                aria-label="删除限速策略"
+                                aria-label={t("删除限速策略")}
                                 onClick={() =>
                                   setRemove({
                                     kind: "rate",
@@ -402,20 +431,25 @@ export function SecurityPage() {
               </TabsContent>
               <TabsContent value="bans">
                 <SectionHeader
-                  title="活动封禁"
+                  title={t("活动封禁")}
                   meta={
                     data.active_ban_count > data.bans.length
-                      ? `共 ${data.active_ban_count} 条，显示前 ${data.bans.length} 条`
-                      : `${data.active_ban_count} 条`
+                      ? t("共 {value0} 条，显示前 {value1} 条", {
+                          value0: data.active_ban_count,
+                          value1: data.bans.length,
+                        })
+                      : t("{value0} 条", {
+                          value0: data.active_ban_count,
+                        })
                   }
                 />
                 <DataFrame
                   empty={!data.bans.length}
-                  emptyTitle="暂无活动封禁"
+                  emptyTitle={t("暂无活动封禁")}
                   footer={
                     <ListPagination
                       pagination={bansPagination}
-                      itemLabel="个封禁"
+                      itemLabel={t("个封禁")}
                     />
                   }
                 >
@@ -423,11 +457,13 @@ export function SecurityPage() {
                     <TableHeader>
                       <TableRow>
                         <TableHead>IP</TableHead>
-                        <TableHead>触发策略</TableHead>
-                        <TableHead>节点</TableHead>
-                        <TableHead>请求</TableHead>
-                        <TableHead>到期时间</TableHead>
-                        <TableHead className="text-right">操作</TableHead>
+                        <TableHead>{t("触发策略")}</TableHead>
+                        <TableHead>{t("节点")}</TableHead>
+                        <TableHead>{t("请求")}</TableHead>
+                        <TableHead>{t("到期时间")}</TableHead>
+                        <TableHead className="text-right">
+                          {t("操作")}
+                        </TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -457,7 +493,7 @@ export function SecurityPage() {
                               onClick={() => unban.mutate(ban.ip)}
                             >
                               <LockOpen />
-                              解封
+                              {t("解封")}
                             </Button>
                           </TableCell>
                         </TableRow>
@@ -468,28 +504,28 @@ export function SecurityPage() {
               </TabsContent>
               <TabsContent value="events">
                 <SectionHeader
-                  title="最近命中"
-                  meta="保留 7 天，每页最多 20 条"
+                  title={t("最近命中")}
+                  meta={t("保留 7 天，每页最多 20 条")}
                 />
                 <DataFrame
                   empty={!data.events.length}
-                  emptyTitle="暂无策略命中"
+                  emptyTitle={t("暂无策略命中")}
                   footer={
                     <ListPagination
                       pagination={eventsPagination}
-                      itemLabel="条命中"
+                      itemLabel={t("条命中")}
                     />
                   }
                 >
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>时间</TableHead>
+                        <TableHead>{t("时间")}</TableHead>
                         <TableHead>IP</TableHead>
-                        <TableHead>策略</TableHead>
-                        <TableHead>节点</TableHead>
-                        <TableHead>请求</TableHead>
-                        <TableHead>动作</TableHead>
+                        <TableHead>{t("策略")}</TableHead>
+                        <TableHead>{t("节点")}</TableHead>
+                        <TableHead>{t("请求")}</TableHead>
+                        <TableHead>{t("动作")}</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -512,7 +548,9 @@ export function SecurityPage() {
                             <code className="text-xs">{event.path}</code>
                           </TableCell>
                           <TableCell>
-                            {event.action === "ban" ? "IP 封禁" : "仅拦截"}
+                            {event.action === "ban"
+                              ? t("IP 封禁")
+                              : t("仅拦截")}
                           </TableCell>
                         </TableRow>
                       ))}
@@ -521,26 +559,29 @@ export function SecurityPage() {
                 </DataFrame>
               </TabsContent>
               <TabsContent value="nodes">
-                <SectionHeader title="节点部署" meta="能力与策略应用版本" />
+                <SectionHeader
+                  title={t("节点部署")}
+                  meta={t("能力与策略应用版本")}
+                />
                 <DataFrame
                   empty={!data.nodes.length}
-                  emptyTitle="暂无节点"
+                  emptyTitle={t("暂无节点")}
                   footer={
                     <ListPagination
                       pagination={nodesPagination}
-                      itemLabel="个节点"
+                      itemLabel={t("个节点")}
                     />
                   }
                 >
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>节点</TableHead>
-                        <TableHead>状态</TableHead>
-                        <TableHead>访问能力</TableHead>
-                        <TableHead>限速能力</TableHead>
-                        <TableHead>版本</TableHead>
-                        <TableHead>结果</TableHead>
+                        <TableHead>{t("节点")}</TableHead>
+                        <TableHead>{t("状态")}</TableHead>
+                        <TableHead>{t("访问能力")}</TableHead>
+                        <TableHead>{t("限速能力")}</TableHead>
+                        <TableHead>{t("版本")}</TableHead>
+                        <TableHead>{t("结果")}</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -561,33 +602,38 @@ export function SecurityPage() {
                             <TableCell>
                               {node.capable
                                 ? node.configured
-                                  ? "已配置"
-                                  : "待配置"
-                                : "需升级"}
+                                  ? t("已配置")
+                                  : t("待配置")
+                                : t("需升级")}
                             </TableCell>
                             <TableCell>
                               {node.rate_limit_capable
                                 ? node.rate_limit_configured
-                                  ? "已配置"
-                                  : "待配置"
-                                : "需升级"}
+                                  ? t("已配置")
+                                  : t("待配置")
+                                : t("需升级")}
                             </TableCell>
                             <TableCell className="text-xs">
-                              期望 v{node.desired_version} · 当前 v
+                              {t("期望 v")}
+                              {node.desired_version}
+                              {t(" · 当前 v")}
                               {node.applied_version}
                             </TableCell>
                             <TableCell>
                               {node.last_error ? (
-                                <StatusBadge status="failed" label="节点错误" />
+                                <StatusBadge
+                                  status="failed"
+                                  label={t("节点错误")}
+                                />
                               ) : ready ? (
                                 <StatusBadge
                                   status="succeeded"
-                                  label="已应用"
+                                  label={t("已应用")}
                                 />
                               ) : (
                                 <StatusBadge
                                   status="applying"
-                                  label="等待应用"
+                                  label={t("等待应用")}
                                 />
                               )}
                             </TableCell>
@@ -621,9 +667,11 @@ export function SecurityPage() {
         onOpenChange={(open) => {
           if (!open) setRemove(null);
         }}
-        title="删除安全策略"
-        description={`删除「${remove?.name ?? ""}」后会立即重新发布所有边缘配置。`}
-        confirmLabel="删除并发布"
+        title={t("删除安全策略")}
+        description={t("删除「{value0}」后会立即重新发布所有边缘配置。", {
+          value0: remove?.name ?? "",
+        })}
+        confirmLabel={t("删除并发布")}
         destructive
         busy={removeMutation.isPending}
         onConfirm={async () => {
@@ -633,7 +681,6 @@ export function SecurityPage() {
     </>
   );
 }
-
 function SecurityPolicyDialog({
   value,
   onOpenChange,
@@ -648,15 +695,14 @@ function SecurityPolicyDialog({
     <PolicyDialogShell
       key={existing?.id || String(value)}
       open={Boolean(value)}
-      title={existing ? "编辑访问策略" : "新增访问策略"}
-      description="PCRE 兼容安全子集，保存后自动发布"
+      title={existing ? t("编辑访问策略") : t("新增访问策略")}
+      description={t("PCRE 兼容安全子集，保存后自动发布")}
       onOpenChange={onOpenChange}
       existing={existing}
       onSaved={onSaved}
     />
   );
 }
-
 function PolicyDialogShell({
   open,
   title,
@@ -703,7 +749,7 @@ function PolicyDialogShell({
     onSuccess: (data) => {
       onSaved(data);
       onOpenChange(false);
-      toast.success("访问策略已保存并发布");
+      toast.success(t("访问策略已保存并发布"));
     },
     onError: (error) => toast.error(errorMessage(error)),
   });
@@ -720,7 +766,7 @@ function PolicyDialogShell({
             <DialogDescription>{description}</DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-5 sm:grid-cols-2">
-            <Field label="名称" id="policy-name">
+            <Field label={t("名称")} id="policy-name">
               <Input
                 id="policy-name"
                 required
@@ -729,7 +775,7 @@ function PolicyDialogShell({
                 onChange={(event) => setName(event.target.value)}
               />
             </Field>
-            <Field label="优先级" id="policy-priority">
+            <Field label={t("优先级")} id="policy-priority">
               <Input
                 id="policy-priority"
                 type="number"
@@ -740,7 +786,7 @@ function PolicyDialogShell({
                 onChange={(event) => setPriority(Number(event.target.value))}
               />
             </Field>
-            <Field label="动作" id="policy-action">
+            <Field label={t("动作")} id="policy-action">
               <Select
                 value={action}
                 onValueChange={(value) => setAction(value as "block" | "ban")}
@@ -749,13 +795,13 @@ function PolicyDialogShell({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="ban">IP 封禁</SelectItem>
-                  <SelectItem value="block">仅拦截请求</SelectItem>
+                  <SelectItem value="ban">{t("IP 封禁")}</SelectItem>
+                  <SelectItem value="block">{t("仅拦截请求")}</SelectItem>
                 </SelectContent>
               </Select>
             </Field>
             {action === "ban" ? (
-              <Field label="封禁时间" id="policy-ban-duration">
+              <Field label={t("封禁时间")} id="policy-ban-duration">
                 <Select
                   value={String(duration)}
                   onValueChange={(value) => setDuration(Number(value))}
@@ -764,18 +810,18 @@ function PolicyDialogShell({
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="3600">1 小时</SelectItem>
-                    <SelectItem value="21600">6 小时</SelectItem>
-                    <SelectItem value="43200">12 小时</SelectItem>
-                    <SelectItem value="86400">24 小时</SelectItem>
-                    <SelectItem value="259200">3 天</SelectItem>
-                    <SelectItem value="604800">7 天</SelectItem>
+                    <SelectItem value="3600">{t("1 小时")}</SelectItem>
+                    <SelectItem value="21600">{t("6 小时")}</SelectItem>
+                    <SelectItem value="43200">{t("12 小时")}</SelectItem>
+                    <SelectItem value="86400">{t("24 小时")}</SelectItem>
+                    <SelectItem value="259200">{t("3 天")}</SelectItem>
+                    <SelectItem value="604800">{t("7 天")}</SelectItem>
                   </SelectContent>
                 </Select>
               </Field>
             ) : null}
             <div className="flex items-center justify-between rounded-lg border px-3 py-2 sm:col-span-2">
-              <Label htmlFor="policy-enabled">启用策略</Label>
+              <Label htmlFor="policy-enabled">{t("启用策略")}</Label>
               <Switch
                 id="policy-enabled"
                 checked={enabled}
@@ -783,7 +829,7 @@ function PolicyDialogShell({
               />
             </div>
             <div className="grid gap-2 sm:col-span-2">
-              <Label htmlFor="policy-pattern">路径正则</Label>
+              <Label htmlFor="policy-pattern">{t("路径正则")}</Label>
               <Textarea
                 id="policy-pattern"
                 required
@@ -802,7 +848,7 @@ function PolicyDialogShell({
               variant="outline"
               onClick={() => onOpenChange(false)}
             >
-              取消
+              {t("取消")}
             </Button>
             <Button type="submit" disabled={mutation.isPending}>
               {mutation.isPending ? (
@@ -810,7 +856,7 @@ function PolicyDialogShell({
               ) : (
                 <Rocket />
               )}
-              保存并发布
+              {t("保存并发布")}
             </Button>
           </DialogFooter>
         </form>
@@ -818,7 +864,6 @@ function PolicyDialogShell({
     </Dialog>
   );
 }
-
 function RateLimitDialog({
   value,
   onOpenChange,
@@ -839,7 +884,6 @@ function RateLimitDialog({
     />
   );
 }
-
 function RateDialogShell({
   open,
   existing,
@@ -890,7 +934,7 @@ function RateDialogShell({
     onSuccess: (data) => {
       onSaved(data);
       onOpenChange(false);
-      toast.success("限速策略已保存并发布");
+      toast.success(t("限速策略已保存并发布"));
     },
     onError: (error) => toast.error(errorMessage(error)),
   });
@@ -904,14 +948,14 @@ function RateDialogShell({
         <form onSubmit={submit}>
           <DialogHeader>
             <DialogTitle>
-              {existing ? "编辑限速策略" : "新增限速策略"}
+              {existing ? t("编辑限速策略") : t("新增限速策略")}
             </DialogTitle>
             <DialogDescription>
-              边缘节点按客户端 IP 使用一秒窗口计数
+              {t("边缘节点按客户端 IP 使用一秒窗口计数")}
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-5 sm:grid-cols-2">
-            <Field label="名称" id="rate-name">
+            <Field label={t("名称")} id="rate-name">
               <Input
                 id="rate-name"
                 required
@@ -920,7 +964,7 @@ function RateDialogShell({
                 onChange={(event) => setName(event.target.value)}
               />
             </Field>
-            <Field label="每秒请求上限" id="rate-rps">
+            <Field label={t("每秒请求上限")} id="rate-rps">
               <Input
                 id="rate-rps"
                 type="number"
@@ -932,7 +976,7 @@ function RateDialogShell({
               />
             </Field>
             <div className="flex items-center justify-between rounded-lg border px-3 py-2 sm:col-span-2">
-              <Label htmlFor="rate-enabled">启用策略</Label>
+              <Label htmlFor="rate-enabled">{t("启用策略")}</Label>
               <Switch
                 id="rate-enabled"
                 checked={enabled}
@@ -941,9 +985,9 @@ function RateDialogShell({
             </div>
             <div className="flex items-center justify-between rounded-lg border px-3 py-2 sm:col-span-2">
               <div>
-                <Label htmlFor="rate-conditional">仅统计指定响应</Label>
+                <Label htmlFor="rate-conditional">{t("仅统计指定响应")}</Label>
                 <p className="text-xs text-muted-foreground">
-                  根据响应状态类别计入窗口
+                  {t("根据响应状态类别计入窗口")}
                 </p>
               </div>
               <Switch
@@ -978,9 +1022,11 @@ function RateDialogShell({
             ) : null}
             <div className="flex items-center justify-between rounded-lg border px-3 py-2 sm:col-span-2">
               <div>
-                <Label htmlFor="rate-ban-enabled">连续超限后封禁 IP</Label>
+                <Label htmlFor="rate-ban-enabled">
+                  {t("连续超限后封禁 IP")}
+                </Label>
                 <p className="text-xs text-muted-foreground">
-                  达到连续 429 次数后触发边缘封禁
+                  {t("达到连续 429 次数后触发边缘封禁")}
                 </p>
               </div>
               <Switch
@@ -1002,7 +1048,7 @@ function RateDialogShell({
             </div>
             {banEnabled ? (
               <>
-                <Field label="连续 429 次数" id="rate-ban-after">
+                <Field label={t("连续 429 次数")} id="rate-ban-after">
                   <Input
                     id="rate-ban-after"
                     type="number"
@@ -1015,7 +1061,7 @@ function RateDialogShell({
                     }
                   />
                 </Field>
-                <Field label="封禁时间" id="rate-ban-duration">
+                <Field label={t("封禁时间")} id="rate-ban-duration">
                   <Select
                     value={String(banDuration)}
                     onValueChange={(value) => setBanDuration(Number(value))}
@@ -1024,12 +1070,12 @@ function RateDialogShell({
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="3600">1 小时</SelectItem>
-                      <SelectItem value="21600">6 小时</SelectItem>
-                      <SelectItem value="43200">12 小时</SelectItem>
-                      <SelectItem value="86400">24 小时</SelectItem>
-                      <SelectItem value="259200">3 天</SelectItem>
-                      <SelectItem value="604800">7 天</SelectItem>
+                      <SelectItem value="3600">{t("1 小时")}</SelectItem>
+                      <SelectItem value="21600">{t("6 小时")}</SelectItem>
+                      <SelectItem value="43200">{t("12 小时")}</SelectItem>
+                      <SelectItem value="86400">{t("24 小时")}</SelectItem>
+                      <SelectItem value="259200">{t("3 天")}</SelectItem>
+                      <SelectItem value="604800">{t("7 天")}</SelectItem>
                     </SelectContent>
                   </Select>
                 </Field>
@@ -1042,7 +1088,7 @@ function RateDialogShell({
               variant="outline"
               onClick={() => onOpenChange(false)}
             >
-              取消
+              {t("取消")}
             </Button>
             <Button
               type="submit"
@@ -1061,7 +1107,7 @@ function RateDialogShell({
               ) : (
                 <Rocket />
               )}
-              保存并发布
+              {t("保存并发布")}
             </Button>
           </DialogFooter>
         </form>
@@ -1069,7 +1115,6 @@ function RateDialogShell({
     </Dialog>
   );
 }
-
 function Summary({
   icon: Icon,
   label,
@@ -1156,12 +1201,12 @@ function durationLabel(seconds?: number) {
   return (
     (
       {
-        3600: "1 小时",
-        21600: "6 小时",
-        43200: "12 小时",
-        86400: "24 小时",
-        259200: "3 天",
-        604800: "7 天",
+        3600: t("1 小时"),
+        21600: t("6 小时"),
+        43200: t("12 小时"),
+        86400: t("24 小时"),
+        259200: t("3 天"),
+        604800: t("7 天"),
       } as Record<number, string>
     )[Number(seconds)] ?? "--"
   );

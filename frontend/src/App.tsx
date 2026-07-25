@@ -8,6 +8,7 @@ import { BrandingSync } from "@/components/branding-sync";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 import { AuthProvider, AuthGate } from "@/features/auth/auth-provider";
+import { I18nProvider } from "@/lib/i18n";
 
 const OverviewPage = lazy(() =>
   import("@/features/overview/overview-page").then((module) => ({
@@ -43,6 +44,11 @@ const MonitoringNodeHistoryPage = lazy(() =>
   import("@/features/monitoring/monitoring-node-history-page").then(
     (module) => ({ default: module.MonitoringNodeHistoryPage }),
   ),
+);
+const SchedulingPage = lazy(() =>
+  import("@/features/scheduling/scheduling-page").then((module) => ({
+    default: module.SchedulingPage,
+  })),
 );
 const NodesPage = lazy(() =>
   import("@/features/nodes/nodes-page").then((module) => ({
@@ -96,48 +102,57 @@ export default function App() {
         disableTransitionOnChange
       >
         <TooltipProvider delayDuration={300}>
-          <AuthProvider>
-            <AuthGate>
-              <HashRouter>
-                <Routes>
-                  <Route element={<AppShell />}>
-                    <Route
-                      index
-                      element={<Navigate to="/overview" replace />}
-                    />
-                    <Route path="/overview" element={<OverviewPage />} />
-                    <Route
-                      path="/overview/sites/:siteId"
-                      element={<OverviewSitePage />}
-                    />
-                    <Route path="/logs" element={<LogsPage />} />
-                    <Route path="/logs/:logId" element={<LogDetailPage />} />
-                    <Route path="/security" element={<SecurityPage />} />
-                    <Route path="/monitoring" element={<MonitoringPage />} />
-                    <Route
-                      path="/monitoring/nodes/:nodeId"
-                      element={<MonitoringNodeHistoryPage />}
-                    />
-                    <Route path="/nodes" element={<NodesPage />} />
-                    <Route path="/nodes/:nodeId" element={<NodeDetailPage />} />
-                    <Route path="/sites" element={<SitesPage />} />
-                    <Route path="/sites/new" element={<SiteDetailPage />} />
-                    <Route path="/sites/:siteId" element={<SiteDetailPage />} />
-                    <Route
-                      path="/certificates"
-                      element={<CertificatesPage />}
-                    />
-                    <Route path="/settings" element={<SettingsPage />} />
-                    <Route
-                      path="*"
-                      element={<Navigate to="/overview" replace />}
-                    />
-                  </Route>
-                </Routes>
-              </HashRouter>
-            </AuthGate>
-          </AuthProvider>
-          <Toaster position="top-right" richColors closeButton />
+          <I18nProvider>
+            <AuthProvider>
+              <AuthGate>
+                <HashRouter>
+                  <Routes>
+                    <Route element={<AppShell />}>
+                      <Route
+                        index
+                        element={<Navigate to="/overview" replace />}
+                      />
+                      <Route path="/overview" element={<OverviewPage />} />
+                      <Route
+                        path="/overview/sites/:siteId"
+                        element={<OverviewSitePage />}
+                      />
+                      <Route path="/logs" element={<LogsPage />} />
+                      <Route path="/logs/:logId" element={<LogDetailPage />} />
+                      <Route path="/security" element={<SecurityPage />} />
+                      <Route path="/monitoring" element={<MonitoringPage />} />
+                      <Route path="/scheduling" element={<SchedulingPage />} />
+                      <Route
+                        path="/monitoring/nodes/:nodeId"
+                        element={<MonitoringNodeHistoryPage />}
+                      />
+                      <Route path="/nodes" element={<NodesPage />} />
+                      <Route
+                        path="/nodes/:nodeId"
+                        element={<NodeDetailPage />}
+                      />
+                      <Route path="/sites" element={<SitesPage />} />
+                      <Route path="/sites/new" element={<SiteDetailPage />} />
+                      <Route
+                        path="/sites/:siteId"
+                        element={<SiteDetailPage />}
+                      />
+                      <Route
+                        path="/certificates"
+                        element={<CertificatesPage />}
+                      />
+                      <Route path="/settings" element={<SettingsPage />} />
+                      <Route
+                        path="*"
+                        element={<Navigate to="/overview" replace />}
+                      />
+                    </Route>
+                  </Routes>
+                </HashRouter>
+              </AuthGate>
+            </AuthProvider>
+            <Toaster position="top-right" richColors closeButton />
+          </I18nProvider>
         </TooltipProvider>
       </ThemeProvider>
     </QueryClientProvider>
