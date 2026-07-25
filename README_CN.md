@@ -144,8 +144,8 @@ sudo docker compose ps
 
 1. 添加站点的主机名、分配节点 ID、主源站和可选备源站。控制器会根据主机名自动识别 Cloudflare 区域（Zone）。站点默认继承全局 DNS TTL，也可在草稿中选择 60-300 秒覆盖；该覆盖只会在发布后生效。生成的 HTTPS 站点默认请求体上限为 128 MiB，站点表单可调整为固定的 256、512 或 1024 MiB。HTTP/HTTPS/WebSocket 代理默认上游读写空闲超时为 360 秒，可选 6、15、30 或 60 分钟。WebSocket 和 SSE 无需声明路径：WebSocket 使用 `Upgrade`，浏览器 SSE 使用 `Accept: text/event-stream`，每个 POST 都会透传 [OpenAI 风格流式响应](https://developers.openai.com/api/docs/guides/streaming-responses)，非标准客户端还可发送 `X-CDN-Stream: 1`。普通站点使用 HTTP(S) 源站；整个主机名不得使用磁盘缓存时启用透传模式；全 WebSocket 站点使用 `ws://` 或 `wss://`；全 gRPC 主机名使用 `grpc://` 或 `grpcs://`。
 2. 在 Cloudflare 中保持这些主机名记录为 DNS-only。控制面只管理带有 `cdn-platform:site=<site-id>;...` 标签的记录；如果主机名已被无标签 A 记录或其他站点的 A 记录占用，操作会被拒绝。
-3. 执行“签发 TLS”。控制面 VPS 通过权限受限的 Cloudflare Token 排队执行异步 DNS-01 任务，并加密保存结果证书。“站点”页面会轮询任务状态，刷新页面不会取消任务。同一站点同时只能存在一个活跃证书任务，重复点击会复用该任务。
-4. 执行“发布”。控制器为每个受影响节点构建期望状态，并等待最长 90 秒，让已分配的活跃节点完成校验和应用。“站点”页面会显示逐节点冲突或超时详情；解决冲突后点击“重新发布”。
+3. 创建站点后，控制面 VPS 会立即通过权限受限的 Cloudflare Token 排队执行异步 DNS-01 任务，并加密保存结果证书。“站点”页面会轮询任务状态，刷新页面不会取消任务。同一站点同时只能存在一个活跃证书任务。
+4. 执行“发布”。控制器会先检查 TLS 签发状态；证书尚未签发成功时不会创建发布任务，并提示证书正在申请。失败或缺失的签发任务会在发布预检时自动重新入队。签发成功后，控制器为每个受影响节点构建期望状态，并等待最长 90 秒，让已分配的活跃节点完成校验和应用。“站点”页面会显示逐节点冲突或超时详情；解决冲突后点击“重新发布”。
 5. 等待边缘节点进入活跃状态，并连续通过 5 次节点级和站点级 HTTPS 探测。随后控制器使用站点已发布 TTL 覆盖或默认 60 秒全局值创建 DNS-only A 记录。
 6. 从经过身份验证的 API 获取 `GET /api/sites/{site-id}/origin-allowlist`，将返回的 `/32` CIDR 加入源站防火墙或安全组，以防止绕过 CDN 直连源站。
 
@@ -159,7 +159,7 @@ HTTP 边缘节点提供 `http://EDGE_IPV4/__cdn_health`。已发布 HTTP 配置�
 
 对于不需要视频缓存、只要求稳定转发 HTTP(S) Range 流量的整站代理，请启用透传模式并重新发布。透传模式仅支持 HTTP(S)，并会禁用 Nginx 缓存。不要在保留 `proxy_cache` 的同时只补充 `Range` / `If-Range`，这无法保证正确的回源范围语义。启用条件、限制、故障分析和 `206` 校验命令见 [docs/PASSTHROUGH_MODE.md](docs/PASSTHROUGH_MODE.md)。
 
-证书任务使用 `CERTIFICATE_ISSUE_TIMEOUT`，默认值为 `10m`，并等待 30 秒让 Cloudflare DNS-01 TXT 记录传播。如果 Certbot 明确报告 `No TXT record found`，签发器会再等待 30 秒并重试一次；其他失败立即返回。控制面停止或重启会将进行中的任务标记为失败，而不会自动重试，以避免重复 ACME 请求；控制器恢复后再次点击“签发 TLS”。经过身份验证的 `GET /api/sites/{site-id}/certificate-task` 和 `GET /api/tasks/{task-id}` API 会返回持久化任务状态和失败详情。
+证书任务使用 `CERTIFICATE_ISSUE_TIMEOUT`，默认值为 `10m`，并等待 30 秒让 Cloudflare DNS-01 TXT 记录传播。如果 Certbot 明确报告 `No TXT record found`，签发器会再等待 30 秒并重试一次；其他失败立即返回。控制面停止或重启会将进行中的任务标记为失败，而不会立即重放，以避免重复 ACME 请求；控制器恢复后再次执行“发布”会自动排队新的签发任务。经过身份验证的 `GET /api/sites/{site-id}/certificate-task` 和 `GET /api/tasks/{task-id}` API 会返回持久化任务状态和失败详情。
 
 ## 站点删除
 

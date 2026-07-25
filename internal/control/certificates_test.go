@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -171,6 +172,125 @@ func TestIssueTLSReusesActiveTaskAndExposesLatestTask(t *testing.T) {
 		updated, err := database.GetTask(first.ID)
 		return err == nil && updated.Status == domain.TaskSucceeded
 	})
+}
+
+func TestCreateSiteQueuesCertificateAutomatically(t *testing.T) {
+	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.CreateInitialAdmin("hash", "secret"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CreateSession("admin", "session-token", "csrf-token", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	node, err := database.CreateNode("edge-auto", "203.0.113.20")
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := NewEncryptionKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := NewCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificate, privateKey, notAfter := testCertificate(t, "auto.example.test")
+	issuer := &blockingCertificateIssuer{
+		certificate: integrations.IssuedCertificate{CertificatePEM: certificate, PrivateKeyPEM: privateKey, NotAfter: notAfter},
+		started:     make(chan struct{}),
+		release:     make(chan struct{}),
+		canceled:    make(chan struct{}),
+	}
+	manager := &CertificateManager{
+		Store: database, Publisher: Publisher{Store: database, Cipher: cipher}, Issuer: issuer, IssueTimeout: time.Minute,
+	}
+	manager.Start(context.Background())
+	t.Cleanup(manager.Stop)
+	server := &Server{Store: database, CertificateManager: manager}
+
+	created := requestSite(t, server, http.MethodPost, "/api/sites", map[string]any{
+		"name": "automatic TLS", "zone_id": "zone", "domains": []string{"auto.example.test"}, "node_ids": []string{node.ID},
+		"primary_origin": map[string]any{"url": "https://origin.example.test", "enabled": true}, "enabled": true,
+	})
+	select {
+	case <-issuer.started:
+	case <-time.After(time.Second):
+		t.Fatal("automatic certificate issuer was not started")
+	}
+	task, err := database.LatestCertificateTask(created.ID)
+	if err != nil || task.Kind != manualCertificateTask || !certificateTaskIsActive(task.Status) {
+		t.Fatalf("automatic certificate task = %#v, err=%v", task, err)
+	}
+	close(issuer.release)
+	waitFor(t, time.Second, func() bool {
+		updated, err := database.GetTask(task.ID)
+		return err == nil && updated.Status == domain.TaskSucceeded
+	})
+
+	cleartext := requestSite(t, server, http.MethodPost, "/api/sites", map[string]any{
+		"name": "cleartext TCP", "zone_id": "zone", "domains": []string{"smtp.example.test"}, "node_ids": []string{node.ID},
+		"tcp_only": true, "tcp_forwards": []map[string]any{{
+			"name": "SMTP", "listen_port": 25, "upstream_host": "mail.example.test", "upstream_port": 25,
+		}}, "enabled": true,
+	})
+	if _, err := database.LatestCertificateTask(cleartext.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("cleartext TCP certificate task error = %v, want not found", err)
+	}
+	if issuer.Calls() != 1 {
+		t.Fatalf("issuer calls = %d, want 1", issuer.Calls())
+	}
+}
+
+func TestPublishQueuesAndWaitsForCertificate(t *testing.T) {
+	database, site, manager, issuer := newCertificateTestManager(t)
+	manager.Start(context.Background())
+	t.Cleanup(manager.Stop)
+	if err := database.CreateInitialAdmin("hash", "secret"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CreateSession("admin", "session-token", "csrf-token", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{Store: database, Publisher: manager.Publisher, CertificateManager: manager}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/sites/"+site.ID+"/publish", nil)
+	request.AddCookie(&http.Cookie{Name: "cdn_session", Value: "session-token"})
+	request.Header.Set("X-CSRF-Token", "csrf-token")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "TLS certificate issuance is in progress") {
+		t.Fatalf("publish before certificate = %d %s", response.Code, response.Body.String())
+	}
+	if _, err := database.LatestPublishTask(site.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("publish task before certificate error = %v, want not found", err)
+	}
+	select {
+	case <-issuer.started:
+	case <-time.After(time.Second):
+		t.Fatal("publish preflight did not start certificate issuance")
+	}
+	certificateTask, err := database.LatestCertificateTask(site.ID)
+	if err != nil || !certificateTaskIsActive(certificateTask.Status) {
+		t.Fatalf("certificate task = %#v, err=%v", certificateTask, err)
+	}
+	close(issuer.release)
+	waitFor(t, time.Second, func() bool {
+		updated, err := database.GetTask(certificateTask.ID)
+		return err == nil && updated.Status == domain.TaskSucceeded
+	})
+
+	request = httptest.NewRequest(http.MethodPost, "/api/sites/"+site.ID+"/publish", nil)
+	request.AddCookie(&http.Cookie{Name: "cdn_session", Value: "session-token"})
+	request.Header.Set("X-CSRF-Token", "csrf-token")
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("publish after certificate = %d %s", response.Code, response.Body.String())
+	}
 }
 
 func TestLatestCertificateTaskAPI(t *testing.T) {

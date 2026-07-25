@@ -1031,7 +1031,51 @@ test("new site discovers its Cloudflare zone from domains", async ({
   await page.getByRole("button", { name: "创建站点" }).click();
   const request = await createRequest;
   expect(request.postDataJSON()).not.toHaveProperty("zone_id");
-  await expect(page.getByText("站点已创建")).toBeVisible();
+  await expect(
+    page.getByText("站点已创建，TLS 证书正在自动申请"),
+  ).toBeVisible();
+});
+
+test("site publish waits while automatic TLS issuance is active", async ({
+  page,
+}) => {
+  let publishRequests = 0;
+  page.on("request", (request) => {
+    if (
+      new URL(request.url()).pathname === "/api/sites/site-1/publish" &&
+      request.method() === "POST"
+    ) {
+      publishRequests += 1;
+    }
+  });
+  await mockAPI(page, {
+    "/api/sites": [{ ...site, published: false }],
+    "/api/sites/site-1/tls-status": {
+      certificate_task: {
+        id: "tls-pending",
+        kind: "issue_certificate",
+        site_id: "site-1",
+        status: "applying",
+        detail: "waiting for DNS-01 validation",
+        created_at: now.toISOString(),
+        updated_at: now.toISOString(),
+      },
+      published_after_certificate: false,
+    },
+  });
+  await page.goto("/#/sites/site-1");
+
+  const operations = page
+    .locator('[data-slot="card"]')
+    .filter({ hasText: "发布与运维" });
+  await operations.getByRole("button", { name: "发布站点" }).click();
+  await expect(
+    page.getByRole("dialog", { name: "正在申请 TLS 证书" }),
+  ).toBeVisible();
+  await expect(
+    operations.getByRole("button", { name: "签发 TLS" }),
+  ).toHaveCount(0);
+  expect(publishRequests).toBe(0);
 });
 
 test("site operations show current assignments instead of publish task targets", async ({

@@ -59,7 +59,7 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { api, errorMessage } from "@/lib/api";
+import { api, ApiError, errorMessage } from "@/lib/api";
 import { formatNumber } from "@/lib/format";
 import { useListPagination } from "@/hooks/use-list-pagination";
 import type {
@@ -133,6 +133,8 @@ export function SiteDetailPage() {
   const [discardOpen, setDiscardOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [allowlistOpen, setAllowlistOpen] = useState(false);
+  const [tlsPendingOpen, setTlsPendingOpen] = useState(false);
+  const [checkingTLS, setCheckingTLS] = useState(false);
   const globalTTL = settings.data?.dns.default_ttl_seconds ?? 60;
   const dirty = Boolean(baseline && JSON.stringify(draft) !== baseline);
   const encodedID = encodeURIComponent(siteId ?? "");
@@ -208,12 +210,21 @@ export function SiteDetailPage() {
       });
       void queryClient.invalidateQueries({ queryKey: ["sites"] });
       void queryClient.invalidateQueries({
+        queryKey: ["site-tls", saved.id],
+      });
+      void queryClient.invalidateQueries({
         queryKey: ["site-publish", saved.id],
       });
       void queryClient.invalidateQueries({
         queryKey: ["site-allowlist", saved.id],
       });
-      toast.success(isNew ? "站点已创建" : "站点配置已保存");
+      toast.success(
+        isNew && siteNeedsCertificate(saved)
+          ? "站点已创建，TLS 证书正在自动申请"
+          : isNew
+            ? "站点已创建"
+            : "站点配置已保存",
+      );
       if (isNew)
         navigate(`/sites/${encodeURIComponent(saved.id)}`, { replace: true });
     },
@@ -236,7 +247,28 @@ export function SiteDetailPage() {
       });
       void queryClient.invalidateQueries({ queryKey: ["sites"] });
     },
-    onError: (error) => toast.error(errorMessage(error)),
+    onError: (error, input) => {
+      if (
+        input.path.endsWith("/publish") &&
+        error instanceof ApiError &&
+        error.status === 409 &&
+        error.data &&
+        typeof error.data === "object" &&
+        "certificate_task" in error.data
+      ) {
+        const task = (error.data as { certificate_task?: DeploymentTask })
+          .certificate_task;
+        if (task) {
+          queryClient.setQueryData<TLSStatus>(["site-tls", siteId], {
+            certificate_task: task,
+            published_after_certificate: false,
+          });
+          setTlsPendingOpen(true);
+          return;
+        }
+      }
+      toast.error(errorMessage(error));
+    },
   });
   const deleteSite = useMutation({
     mutationFn: () =>
@@ -260,6 +292,39 @@ export function SiteDetailPage() {
   function goBack() {
     if (dirty) setDiscardOpen(true);
     else navigate("/sites");
+  }
+  async function publishSite() {
+    if (!site) return;
+    if (!site.enabled || !siteNeedsCertificate(site)) {
+      operation.mutate({ path: `/api/sites/${encodedID}/publish` });
+      return;
+    }
+
+    setCheckingTLS(true);
+    try {
+      let status = await api<TLSStatus>(`/api/sites/${encodedID}/tls-status`);
+      queryClient.setQueryData(["site-tls", siteId], status);
+      if (status.certificate_task?.status === "succeeded") {
+        operation.mutate({ path: `/api/sites/${encodedID}/publish` });
+        return;
+      }
+      if (!activeTask(status.certificate_task)) {
+        const task = await api<DeploymentTask>(
+          `/api/sites/${encodedID}/certificate`,
+          { method: "POST" },
+        );
+        status = {
+          certificate_task: task,
+          published_after_certificate: false,
+        };
+        queryClient.setQueryData(["site-tls", siteId], status);
+      }
+      setTlsPendingOpen(true);
+    } catch (error) {
+      toast.error(errorMessage(error));
+    } finally {
+      setCheckingTLS(false);
+    }
   }
   const loading =
     sites.isLoading || nodes.isLoading || settings.isLoading || !loadedKey;
@@ -373,12 +438,8 @@ export function SiteDetailPage() {
                   tls={tls.data}
                   publish={publish.data}
                   deletion={deletion.data}
-                  pending={operation.isPending}
-                  onPublish={() =>
-                    operation.mutate({
-                      path: `/api/sites/${encodedID}/publish`,
-                    })
-                  }
+                  pending={operation.isPending || checkingTLS}
+                  onPublish={() => void publishSite()}
                   onCertificate={() =>
                     operation.mutate({
                       path: `/api/sites/${encodedID}/certificate`,
@@ -419,6 +480,22 @@ export function SiteDetailPage() {
           await deleteSite.mutateAsync();
         }}
       />
+      <Dialog open={tlsPendingOpen} onOpenChange={setTlsPendingOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>正在申请 TLS 证书</DialogTitle>
+            <DialogDescription>
+              TLS 证书申请成功后才能发布站点。系统正在后台完成 DNS-01
+              验证，请稍后再次发布。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button type="button" onClick={() => setTlsPendingOpen(false)}>
+              知道了
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <AllowlistDialog
         open={allowlistOpen}
         onOpenChange={setAllowlistOpen}
@@ -1045,9 +1122,7 @@ function SiteOperations({
     !site.tcp_only &&
     !site.passthrough &&
     /^https?:/i.test(site.primary_origin.url);
-  const needsTLS =
-    site.domains.length > 0 ||
-    site.tcp_forwards.some((forward) => forward.listen_tls);
+  const needsTLS = siteNeedsCertificate(site);
   return (
     <Card>
       <CardHeader>
@@ -1142,15 +1217,15 @@ function SiteOperations({
           <Rocket />
           {site.published ? "重新发布" : "发布站点"}
         </Button>
-        {needsTLS ? (
+        {needsTLS && tls && !certActive ? (
           <Button
             type="button"
             variant="outline"
-            disabled={site.deleting || pending || certActive}
+            disabled={site.deleting || pending}
             onClick={onCertificate}
           >
             <KeyRound />
-            签发 TLS
+            {tls.certificate_task ? "重新申请 TLS" : "申请 TLS"}
           </Button>
         ) : null}
         {cacheable ? (
@@ -1453,6 +1528,12 @@ function Toggle({
 function activeTask(task?: DeploymentTask | null) {
   return Boolean(
     task && ["queued", "dispatching", "applying"].includes(task.status),
+  );
+}
+
+function siteNeedsCertificate(site: Site) {
+  return (
+    !site.tcp_only || site.tcp_forwards.some((forward) => forward.listen_tls)
   );
 }
 

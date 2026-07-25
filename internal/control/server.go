@@ -743,6 +743,20 @@ func (s *Server) createSite(response http.ResponseWriter, request *http.Request)
 		return
 	}
 	s.audit(request, adminID(request.Context()), "create", "site", site.ID, site.Name)
+	if domain.SiteNeedsCertificate(site) && s.CertificateManager != nil {
+		task, created, queueErr := s.CertificateManager.QueueIssue(site)
+		if queueErr != nil {
+			if s.Logger != nil {
+				s.Logger.Warn("queue automatic site certificate issuance", "site_id", site.ID, "error", queueErr)
+			}
+		} else {
+			detail := task.ID + " automatic"
+			if !created {
+				detail += " reused"
+			}
+			s.audit(request, adminID(request.Context()), "issue_certificate", "site", site.ID, detail)
+		}
+	}
 	writeJSON(response, http.StatusCreated, site)
 }
 
@@ -843,13 +857,48 @@ func (s *Server) deleteSiteStatus(response http.ResponseWriter, request *http.Re
 }
 
 func (s *Server) publishSite(response http.ResponseWriter, request *http.Request) {
-	task, err := s.Publisher.PublishSite(request.PathValue("id"))
+	site, _, err := s.Store.GetSite(request.PathValue("id"))
 	if err != nil {
 		writeStoreError(response, err)
 		return
 	}
-	s.audit(request, adminID(request.Context()), "publish", "site", request.PathValue("id"), task.ID)
+	if site.Enabled && domain.SiteNeedsCertificate(site) {
+		certificateTask, ready, err := s.certificateReadyForPublish(site)
+		if err != nil {
+			writeError(response, http.StatusServiceUnavailable, err)
+			return
+		}
+		if !ready {
+			s.audit(request, adminID(request.Context()), "issue_certificate", "site", site.ID, certificateTask.ID+" publish preflight")
+			writeJSON(response, http.StatusConflict, map[string]any{
+				"error":            "TLS certificate issuance is in progress; publish after it succeeds",
+				"certificate_task": certificateTask,
+			})
+			return
+		}
+	}
+	task, err := s.Publisher.PublishSite(site.ID)
+	if err != nil {
+		writeStoreError(response, err)
+		return
+	}
+	s.audit(request, adminID(request.Context()), "publish", "site", site.ID, task.ID)
 	writeJSON(response, http.StatusAccepted, task)
+}
+
+func (s *Server) certificateReadyForPublish(site domain.Site) (domain.DeploymentTask, bool, error) {
+	task, err := s.Store.LatestCertificateTask(site.ID)
+	if err == nil && task.Status == domain.TaskSucceeded {
+		return task, true, nil
+	}
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return domain.DeploymentTask{}, false, err
+	}
+	if s.CertificateManager == nil {
+		return task, false, errors.New("certificate issuer is not configured")
+	}
+	task, _, err = s.CertificateManager.QueueIssue(site)
+	return task, false, err
 }
 
 func (s *Server) publishStatus(response http.ResponseWriter, request *http.Request) {
