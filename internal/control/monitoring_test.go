@@ -64,7 +64,7 @@ func TestSmartRoutingAPIConfiguresNodeAndManualStatusTakesOwnership(t *testing.T
 	if err := json.Unmarshal(overviewResponse.Body.Bytes(), &overview); err != nil {
 		t.Fatal(err)
 	}
-	if overview.Timezone != store.SmartRoutingTimezone || len(overview.Nodes) != 1 || !overview.Nodes[0].Enabled || !overview.Nodes[0].Score.Enabled || !overview.Nodes[0].Capable {
+	if overview.Timezone != store.SmartRoutingTimezone || len(overview.Nodes) != 1 || !overview.Nodes[0].Enabled || !overview.Nodes[0].Score.Enabled || !overview.Nodes[0].Capable || overview.Nodes[0].Score.ResumeAfterRounds != store.SmartRoutingMinResumeRounds {
 		t.Fatalf("default smart routing overview = %#v", overview)
 	}
 
@@ -133,6 +133,25 @@ func TestSmartRoutingAPIRejectsInvalidHysteresis(t *testing.T) {
 	(&Server{Store: database}).updateNodeSmartRouting(response, request)
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("invalid hysteresis status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
+func TestSmartRoutingAPIRejectsRecoveryBelowMinimum(t *testing.T) {
+	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	node, _ := database.CreateNode("edge-smart-recovery", "203.0.113.132")
+	config := store.DefaultSmartRoutingConfig()
+	config.Score.ResumeAfterRounds = store.SmartRoutingMinResumeRounds - 1
+	body, _ := json.Marshal(config)
+	request := httptest.NewRequest(http.MethodPut, "/api/monitoring/nodes/"+node.ID+"/smart-routing", bytes.NewReader(body))
+	request.SetPathValue("id", node.ID)
+	response := httptest.NewRecorder()
+	(&Server{Store: database}).updateNodeSmartRouting(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid recovery rounds status = %d, body = %s", response.Code, response.Body.String())
 	}
 }
 
@@ -244,19 +263,29 @@ func TestMonitoringReportNotifiesConfirmedAnomalyAndRecovery(t *testing.T) {
 	if anomaly.Category != integrations.NotificationCategoryMonitoring || anomaly.Severity != integrations.NotificationSeverityError || !anomaly.SuppressUntilResolved || anomaly.Cooldown != 5*time.Minute || anomaly.Key == "" {
 		t.Fatalf("anomaly notification = %#v", anomaly)
 	}
-	healthyBody, _ := json.Marshal(monitoringReportRequest{Results: []domain.MonitoringProbeResult{{
-		TargetID: target.ID, Attempts: 3, SuccessfulAttempts: 3, AverageLatencyMS: 20,
-		CheckedAt: base.Add((store.MonitoringAutoPauseAfter + 1) * time.Second),
-	}}})
-	healthyRequest := httptest.NewRequest(http.MethodPost, "/api/edge/v1/monitoring-results", bytes.NewReader(healthyBody))
-	healthyRequest = healthyRequest.WithContext(context.WithValue(healthyRequest.Context(), edgeContextKey{}, node.ID))
-	healthyResponse := httptest.NewRecorder()
-	server.edgeMonitoringReport(healthyResponse, healthyRequest)
-	if healthyResponse.Code != http.StatusOK || len(notifier.notifications) != 2 {
-		t.Fatalf("recovery response=%d notifications=%#v", healthyResponse.Code, notifier.notifications)
+	for round := 1; round <= store.SmartRoutingMinResumeRounds; round++ {
+		healthyBody, _ := json.Marshal(monitoringReportRequest{Results: []domain.MonitoringProbeResult{{
+			TargetID: target.ID, Attempts: 3, SuccessfulAttempts: 3, AverageLatencyMS: 20,
+			CheckedAt: base.Add(time.Duration(store.MonitoringAutoPauseAfter+round) * time.Second),
+		}}})
+		healthyRequest := httptest.NewRequest(http.MethodPost, "/api/edge/v1/monitoring-results", bytes.NewReader(healthyBody))
+		healthyRequest = healthyRequest.WithContext(context.WithValue(healthyRequest.Context(), edgeContextKey{}, node.ID))
+		healthyResponse := httptest.NewRecorder()
+		server.edgeMonitoringReport(healthyResponse, healthyRequest)
+		wantNotifications := 1 + round
+		if healthyResponse.Code != http.StatusOK || len(notifier.notifications) != wantNotifications {
+			t.Fatalf("recovery round %d response=%d notifications=%#v", round, healthyResponse.Code, notifier.notifications)
+		}
+		if round < store.SmartRoutingMinResumeRounds {
+			pending := notifier.notifications[len(notifier.notifications)-1]
+			if pending.Resolved || pending.Severity != integrations.NotificationSeverityError {
+				t.Fatalf("pending recovery notification = %#v", pending)
+			}
+		}
 	}
-	if !notifier.notifications[1].Resolved || !notifier.notifications[1].NotifyOnResolve || notifier.notifications[1].Severity != integrations.NotificationSeveritySuccess {
-		t.Fatalf("recovery notification = %#v", notifier.notifications[1])
+	recovery := notifier.notifications[len(notifier.notifications)-1]
+	if !recovery.Resolved || !recovery.NotifyOnResolve || recovery.Severity != integrations.NotificationSeveritySuccess {
+		t.Fatalf("recovery notification = %#v", recovery)
 	}
 }
 

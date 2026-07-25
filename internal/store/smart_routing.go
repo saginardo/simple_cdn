@@ -17,6 +17,7 @@ const (
 	SmartRoutingMaxRounds        = 120
 	SmartRoutingDefaultScore     = 80
 	SmartRoutingDefaultLowRounds = 4
+	SmartRoutingMinResumeRounds  = 3
 )
 
 const smartRoutingPolicyColumns = `node_id, enabled, score_enabled, score_pause_below,
@@ -112,7 +113,7 @@ func DefaultSmartRoutingConfig() SmartRoutingConfig {
 		Score: SmartRoutingScoreConfig{
 			Enabled: true, PauseBelowScore: SmartRoutingDefaultScore,
 			PauseAfterRounds: SmartRoutingDefaultLowRounds,
-			ResumeAtScore:    SmartRoutingDefaultScore, ResumeAfterRounds: 1,
+			ResumeAtScore:    SmartRoutingDefaultScore, ResumeAfterRounds: SmartRoutingMinResumeRounds,
 		},
 		Schedule: SmartRoutingScheduleConfig{Windows: []SmartRoutingWindow{}},
 	}
@@ -131,8 +132,8 @@ func NormalizeSmartRoutingConfig(input SmartRoutingConfig) (SmartRoutingConfig, 
 	if input.Score.PauseAfterRounds < 1 || input.Score.PauseAfterRounds > SmartRoutingMaxRounds {
 		return SmartRoutingConfig{}, fmt.Errorf("score pause rounds must be between 1 and %d", SmartRoutingMaxRounds)
 	}
-	if input.Score.ResumeAfterRounds < 1 || input.Score.ResumeAfterRounds > SmartRoutingMaxRounds {
-		return SmartRoutingConfig{}, fmt.Errorf("score resume rounds must be between 1 and %d", SmartRoutingMaxRounds)
+	if input.Score.ResumeAfterRounds < SmartRoutingMinResumeRounds || input.Score.ResumeAfterRounds > SmartRoutingMaxRounds {
+		return SmartRoutingConfig{}, fmt.Errorf("score resume rounds must be between %d and %d", SmartRoutingMinResumeRounds, SmartRoutingMaxRounds)
 	}
 	if len(input.Schedule.Windows) > SmartRoutingMaxWindows {
 		return SmartRoutingConfig{}, fmt.Errorf("schedule supports at most %d windows", SmartRoutingMaxWindows)
@@ -385,18 +386,20 @@ func (s *Store) UpdateSmartRoutingPolicy(nodeID string, input SmartRoutingConfig
 			} else {
 				next.ScoreGate = SmartRoutingScoreUnknown
 			}
-			var score int
-			var checkedAt string
-			if err := tx.QueryRow(`SELECT score, last_checked_at FROM node_monitoring_status WHERE node_id = ?`, nodeID).Scan(&score, &checkedAt); err == nil {
-				checked, parseErr := parseTime(checkedAt)
-				if parseErr != nil {
-					return SmartRoutingUpdateOutcome{}, parseErr
+			if next.ScoreGate != SmartRoutingScoreBlocked {
+				var score int
+				var checkedAt string
+				if err := tx.QueryRow(`SELECT score, last_checked_at FROM node_monitoring_status WHERE node_id = ?`, nodeID).Scan(&score, &checkedAt); err == nil {
+					checked, parseErr := parseTime(checkedAt)
+					if parseErr != nil {
+						return SmartRoutingUpdateOutcome{}, parseErr
+					}
+					if scoreFreshAfter <= 0 || !checked.Before(at.Add(-scoreFreshAfter)) {
+						advanceSmartRoutingScore(&next, score)
+					}
+				} else if !errors.Is(err, sql.ErrNoRows) {
+					return SmartRoutingUpdateOutcome{}, err
 				}
-				if scoreFreshAfter <= 0 || !checked.Before(at.Add(-scoreFreshAfter)) {
-					advanceSmartRoutingScore(&next, score)
-				}
-			} else if !errors.Is(err, sql.ErrNoRows) {
-				return SmartRoutingUpdateOutcome{}, err
 			}
 		}
 	}
@@ -555,7 +558,11 @@ func advanceSmartRoutingScore(policy *SmartRoutingPolicy, score int) bool {
 		policy.ScoreLowStreak = 0
 		if score >= policy.ScoreResumeAt {
 			policy.ScoreRecoveryStreak++
-			if policy.ScoreRecoveryStreak >= policy.ScoreResumeRounds {
+			resumeRounds := policy.ScoreResumeRounds
+			if resumeRounds < SmartRoutingMinResumeRounds {
+				resumeRounds = SmartRoutingMinResumeRounds
+			}
+			if policy.ScoreRecoveryStreak >= resumeRounds {
 				policy.ScoreGate = SmartRoutingScoreAllowed
 				policy.ScoreRecoveryStreak = 0
 			}

@@ -46,6 +46,14 @@ func TestSmartRoutingScheduleSupportsWeeklyAndCrossMidnightWindows(t *testing.T)
 
 func TestNormalizeSmartRoutingConfigValidatesThresholdsAndWindows(t *testing.T) {
 	config := DefaultSmartRoutingConfig()
+	if config.Score.ResumeAfterRounds != SmartRoutingMinResumeRounds {
+		t.Fatalf("default resume rounds = %d, want %d", config.Score.ResumeAfterRounds, SmartRoutingMinResumeRounds)
+	}
+	config.Score.ResumeAfterRounds = SmartRoutingMinResumeRounds - 1
+	if _, err := NormalizeSmartRoutingConfig(config); err == nil {
+		t.Fatal("resume rounds below the minimum were accepted")
+	}
+	config = DefaultSmartRoutingConfig()
 	config.Score.ResumeAtScore = config.Score.PauseBelowScore - 1
 	if _, err := NormalizeSmartRoutingConfig(config); err == nil {
 		t.Fatal("resume threshold below pause threshold was accepted")
@@ -63,6 +71,22 @@ func TestNormalizeSmartRoutingConfigValidatesThresholdsAndWindows(t *testing.T) 
 	weekdays := normalized.Schedule.Windows[0].Weekdays
 	if len(weekdays) != 2 || weekdays[0] != 1 || weekdays[1] != 5 {
 		t.Fatalf("normalized weekdays = %#v", weekdays)
+	}
+}
+
+func TestSmartRoutingRecoveryEnforcesMinimumRounds(t *testing.T) {
+	policy := SmartRoutingPolicy{
+		ScoreGate: SmartRoutingScoreBlocked, ScoreResumeAt: SmartRoutingDefaultScore,
+		ScoreResumeRounds: 1,
+	}
+	for round := 1; round <= SmartRoutingMinResumeRounds; round++ {
+		changed := advanceSmartRoutingScore(&policy, SmartRoutingDefaultScore)
+		if round < SmartRoutingMinResumeRounds && (changed || policy.ScoreGate != SmartRoutingScoreBlocked) {
+			t.Fatalf("recovery round %d changed policy = %#v", round, policy)
+		}
+	}
+	if policy.ScoreGate != SmartRoutingScoreAllowed || policy.ScoreRecoveryStreak != 0 {
+		t.Fatalf("final recovery policy = %#v", policy)
 	}
 }
 
@@ -87,7 +111,7 @@ func TestSmartRoutingUsesPerNodeHysteresisAndConsecutiveRounds(t *testing.T) {
 	config.Score.PauseBelowScore = 70
 	config.Score.PauseAfterRounds = 2
 	config.Score.ResumeAtScore = 90
-	config.Score.ResumeAfterRounds = 2
+	config.Score.ResumeAfterRounds = SmartRoutingMinResumeRounds
 	if _, err := database.UpdateSmartRoutingPolicy(node.ID, config, time.Now().UTC(), monitoringStaleAfterForTest); err != nil {
 		t.Fatal(err)
 	}
@@ -122,30 +146,58 @@ func TestSmartRoutingUsesPerNodeHysteresisAndConsecutiveRounds(t *testing.T) {
 	if disabled.Policy.ScoreGate != SmartRoutingScoreBlocked || disabled.Transition.NodeStatus != domain.NodeActive {
 		t.Fatalf("disabled smart routing did not retain score decision: %#v", disabled)
 	}
+	healthyResult := func(at time.Time) domain.MonitoringProbeResult {
+		return domain.MonitoringProbeResult{TargetID: target.ID, Attempts: 3, SuccessfulAttempts: 3, AverageLatencyMS: 20, CheckedAt: at}
+	}
+	whileDisabled, err := database.RecordMonitoringRound(node.ID, []domain.MonitoringProbeResult{healthyResult(checkedAt.Add(2 * time.Second))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if whileDisabled.NodeStatus != domain.NodeActive || whileDisabled.Transition.ScoreGate != SmartRoutingScoreBlocked {
+		t.Fatalf("healthy round while disabled = %#v", whileDisabled)
+	}
 	config.Enabled = true
 	reenabled, err := database.UpdateSmartRoutingPolicy(node.ID, config, time.Now().UTC(), monitoringStaleAfterForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reenabled.Policy.ScoreGate != SmartRoutingScoreBlocked || reenabled.Transition.NodeStatus != domain.NodeDraining {
+	if reenabled.Policy.ScoreGate != SmartRoutingScoreBlocked || reenabled.Policy.ScoreRecoveryStreak != 0 || reenabled.Transition.NodeStatus != domain.NodeDraining {
 		t.Fatalf("smart routing handoff did not restore score blocker: %#v", reenabled)
 	}
-	healthyResult := func(at time.Time) domain.MonitoringProbeResult {
-		return domain.MonitoringProbeResult{TargetID: target.ID, Attempts: 3, SuccessfulAttempts: 3, AverageLatencyMS: 20, CheckedAt: at}
-	}
-	third, err := database.RecordMonitoringRound(node.ID, []domain.MonitoringProbeResult{healthyResult(checkedAt.Add(2 * time.Second))})
+	firstRecovery, err := database.RecordMonitoringRound(node.ID, []domain.MonitoringProbeResult{healthyResult(checkedAt.Add(3 * time.Second))})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if third.NodeStatus != domain.NodeDraining || third.Transition.ScoreGateChanged {
-		t.Fatalf("first recovery round = %#v", third)
+	if firstRecovery.NodeStatus != domain.NodeDraining || firstRecovery.Transition.ScoreGateChanged {
+		t.Fatalf("first recovery round = %#v", firstRecovery)
 	}
-	fourth, err := database.RecordMonitoringRound(node.ID, []domain.MonitoringProbeResult{healthyResult(checkedAt.Add(3 * time.Second))})
+	reset, err := database.RecordMonitoringRound(node.ID, []domain.MonitoringProbeResult{failedMonitoringResult(target.ID, checkedAt.Add(4*time.Second))})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fourth.NodeStatus != domain.NodeActive || !fourth.Transition.ScoreGateChanged || fourth.Transition.ScoreGate != SmartRoutingScoreAllowed {
-		t.Fatalf("second recovery round = %#v", fourth)
+	policy, err := database.SmartRoutingPolicy(node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reset.NodeStatus != domain.NodeDraining || policy.ScoreRecoveryStreak != 0 {
+		t.Fatalf("interrupted recovery = %#v, policy = %#v", reset, policy)
+	}
+	for round := 1; round <= SmartRoutingMinResumeRounds; round++ {
+		outcome, err := database.RecordMonitoringRound(node.ID, []domain.MonitoringProbeResult{
+			healthyResult(checkedAt.Add(time.Duration(4+round) * time.Second)),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if round < SmartRoutingMinResumeRounds {
+			if outcome.NodeStatus != domain.NodeDraining || outcome.Transition.ScoreGateChanged {
+				t.Fatalf("recovery round %d = %#v", round, outcome)
+			}
+			continue
+		}
+		if outcome.NodeStatus != domain.NodeActive || !outcome.Transition.ScoreGateChanged || outcome.Transition.ScoreGate != SmartRoutingScoreAllowed {
+			t.Fatalf("final recovery round = %#v", outcome)
+		}
 	}
 }
 

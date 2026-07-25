@@ -761,6 +761,8 @@ const weekdays = [
   { value: 7, label: "日" },
 ];
 
+const minimumSmartRoutingResumeRounds = 3;
+
 function SmartRoutingDialog({
   node,
   timezone,
@@ -904,7 +906,7 @@ function SmartRoutingDialog({
                   <Input
                     id="smart-resume-rounds"
                     type="number"
-                    min={1}
+                    min={minimumSmartRoutingResumeRounds}
                     max={120}
                     disabled={!config.score.enabled}
                     value={config.score.resume_after_rounds}
@@ -1107,7 +1109,7 @@ function emptySmartRoutingConfig(): SmartRoutingConfig {
       pause_below_score: 80,
       pause_after_rounds: 4,
       resume_at_score: 80,
-      resume_after_rounds: 1,
+      resume_after_rounds: minimumSmartRoutingResumeRounds,
     },
     schedule: { enabled: false, windows: [] },
   };
@@ -1130,11 +1132,15 @@ function smartRoutingValidationError(config: SmartRoutingConfig) {
   }
   if (
     config.score.pause_after_rounds < 1 ||
-    config.score.pause_after_rounds > 120 ||
-    config.score.resume_after_rounds < 1 ||
+    config.score.pause_after_rounds > 120
+  ) {
+    return "暂停轮数必须在 1 到 120 之间";
+  }
+  if (
+    config.score.resume_after_rounds < minimumSmartRoutingResumeRounds ||
     config.score.resume_after_rounds > 120
   ) {
-    return "连续轮数必须在 1 到 120 之间";
+    return `恢复轮数必须在 ${minimumSmartRoutingResumeRounds} 到 120 之间`;
   }
   if (config.schedule.enabled && config.schedule.windows.length === 0) {
     return "时间门控至少需要一个时间窗";

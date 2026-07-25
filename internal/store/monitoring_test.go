@@ -50,14 +50,22 @@ func TestMonitoringRoundAutoPausesAndRecoversNode(t *testing.T) {
 	}
 	healthy := domain.MonitoringProbeResult{
 		TargetID: target.ID, Attempts: 3, SuccessfulAttempts: 3, AverageLatencyMS: 20,
-		CheckedAt: checkedAt.Add((MonitoringAutoPauseAfter + 1) * time.Second),
 	}
-	outcome, err := database.RecordMonitoringRound(node.ID, []domain.MonitoringProbeResult{healthy})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome.NodeStatus != domain.NodeActive || !outcome.StatusChanged || outcome.Status.Score != 100 || outcome.Status.ConsecutiveAbnormal != 0 {
-		t.Fatalf("recovery outcome = %#v", outcome)
+	for round := 1; round <= SmartRoutingMinResumeRounds; round++ {
+		healthy.CheckedAt = checkedAt.Add(time.Duration(MonitoringAutoPauseAfter+round) * time.Second)
+		outcome, err := database.RecordMonitoringRound(node.ID, []domain.MonitoringProbeResult{healthy})
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantStatus := domain.NodeDraining
+		wantChanged := false
+		if round == SmartRoutingMinResumeRounds {
+			wantStatus = domain.NodeActive
+			wantChanged = true
+		}
+		if outcome.NodeStatus != wantStatus || outcome.StatusChanged != wantChanged || outcome.Status.Score != 100 || outcome.Status.ConsecutiveAbnormal != 0 {
+			t.Fatalf("recovery round %d outcome = %#v", round, outcome)
+		}
 	}
 	recovered, err := database.GetNode(node.ID)
 	if err != nil {

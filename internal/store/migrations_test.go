@@ -57,14 +57,14 @@ func TestSmartRoutingMigrationBackfillsExistingNodeOwnership(t *testing.T) {
 	if _, err := database.db.Exec(`DROP TABLE node_smart_routing`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.db.Exec(`DELETE FROM schema_migrations WHERE version = 17`); err != nil {
+	if _, err := database.db.Exec(`DELETE FROM schema_migrations WHERE version >= 17`); err != nil {
 		t.Fatal(err)
 	}
 	if err := database.Migrate(); err != nil {
 		t.Fatal(err)
 	}
 	activePolicy, err := database.SmartRoutingPolicy(active.ID)
-	if err != nil || !activePolicy.Enabled || activePolicy.ScoreGate != SmartRoutingScoreUnknown {
+	if err != nil || !activePolicy.Enabled || activePolicy.ScoreGate != SmartRoutingScoreUnknown || activePolicy.ScoreResumeRounds != SmartRoutingMinResumeRounds {
 		t.Fatalf("active policy = %#v, %v", activePolicy, err)
 	}
 	autoPolicy, err := database.SmartRoutingPolicy(autoPaused.ID)
@@ -74,6 +74,34 @@ func TestSmartRoutingMigrationBackfillsExistingNodeOwnership(t *testing.T) {
 	manualPolicy, err := database.SmartRoutingPolicy(manualPaused.ID)
 	if err != nil || manualPolicy.Enabled || !manualPolicy.ScoreEnabled {
 		t.Fatalf("manual policy = %#v, %v", manualPolicy, err)
+	}
+}
+
+func TestSmartRoutingMinimumRecoveryRoundsMigrationUpgradesExistingPolicies(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	node, err := database.CreateNode("legacy-smart-edge", "203.0.113.129")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`UPDATE node_smart_routing SET score_resume_rounds = 1, score_recovery_streak = 1 WHERE node_id = ?`, node.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`DELETE FROM schema_migrations WHERE version = 18`); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	policy, err := database.SmartRoutingPolicy(node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy.ScoreResumeRounds != SmartRoutingMinResumeRounds || policy.ScoreRecoveryStreak != 1 {
+		t.Fatalf("migrated policy = %#v", policy)
 	}
 }
 

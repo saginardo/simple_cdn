@@ -33,6 +33,7 @@ var schemaMigrations = []schemaMigration{
 	{Version: 15, Name: "node-nginx-capacity-and-site-timeouts", Apply: migrateNodeNginxCapacityAndSiteTimeouts},
 	{Version: 16, Name: "edge-agent-version", Apply: migrateEdgeAgentVersion},
 	{Version: 17, Name: "smart-routing", Apply: migrateSmartRouting},
+	{Version: 18, Name: "smart-routing-minimum-recovery-rounds", Apply: migrateSmartRoutingMinimumRecoveryRounds},
 }
 
 func migrateSmartRouting(tx *sql.Tx) error {
@@ -44,7 +45,7 @@ func migrateSmartRouting(tx *sql.Tx) error {
 		score_pause_below INTEGER NOT NULL DEFAULT 80,
 		score_pause_rounds INTEGER NOT NULL DEFAULT 4,
 		score_resume_at INTEGER NOT NULL DEFAULT 80,
-		score_resume_rounds INTEGER NOT NULL DEFAULT 1,
+		score_resume_rounds INTEGER NOT NULL DEFAULT 3,
 		score_gate TEXT NOT NULL DEFAULT 'unknown',
 		score_low_streak INTEGER NOT NULL DEFAULT 0,
 		score_recovery_streak INTEGER NOT NULL DEFAULT 0,
@@ -63,7 +64,7 @@ func migrateSmartRouting(tx *sql.Tx) error {
 	)
 	SELECT nodes.id,
 		CASE WHEN nodes.status IN (?, ?) OR nodes.monitor_auto_paused = 1 THEN 1 ELSE 0 END,
-		1, 80, 4, 80, 1,
+		1, 80, 4, 80, 3,
 		CASE
 			WHEN nodes.monitor_auto_paused = 1 THEN 'blocked'
 			WHEN COALESCE(status.score, -1) >= 80 THEN 'allowed'
@@ -77,6 +78,11 @@ func migrateSmartRouting(tx *sql.Tx) error {
 	FROM nodes
 	LEFT JOIN node_monitoring_status AS status ON status.node_id = nodes.id
 	ON CONFLICT(node_id) DO NOTHING`, domain.NodePending, domain.NodeActive, createdAt)
+	return err
+}
+
+func migrateSmartRoutingMinimumRecoveryRounds(tx *sql.Tx) error {
+	_, err := tx.Exec(`UPDATE node_smart_routing SET score_resume_rounds = 3 WHERE score_resume_rounds < 3`)
 	return err
 }
 
