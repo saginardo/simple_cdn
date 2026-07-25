@@ -19,7 +19,7 @@ import (
 	"simple_cdn/internal/domain"
 )
 
-func TestRenderedCacheUsesOnlyStaticSuffixes(t *testing.T) {
+func TestRenderedCacheIsolatesCredentialedStaticRequests(t *testing.T) {
 	binary, err := exec.LookPath("nginx")
 	if err != nil {
 		t.Skip("nginx is not installed")
@@ -135,41 +135,65 @@ func TestRenderedCacheUsesOnlyStaticSuffixes(t *testing.T) {
 		return string(body), response.Header.Get("X-Test-Cache"), response.Header.Get("X-Origin-Sequence")
 	}
 
-	if body, cache, sequence := request("/assets/app.js", "session=first", "Bearer first"); body != "origin-1" || cache != "MISS" || sequence != "1" {
-		t.Fatalf("first static response body=%q cache=%q sequence=%q", body, cache, sequence)
+	if body, cache, sequence := request("/assets/app.js", "", ""); body != "origin-1" || cache != "MISS" || sequence != "1" {
+		t.Fatalf("first anonymous static response body=%q cache=%q sequence=%q", body, cache, sequence)
 	}
-	if body, cache, sequence := request("/assets/app.js", "session=second", "Bearer second"); body != "origin-1" || cache != "HIT" || sequence != "1" {
-		t.Fatalf("cached static response body=%q cache=%q sequence=%q", body, cache, sequence)
+	if body, cache, sequence := request("/assets/app.js", "", ""); body != "origin-1" || cache != "HIT" || sequence != "1" {
+		t.Fatalf("cached anonymous static response body=%q cache=%q sequence=%q", body, cache, sequence)
 	}
-	if body, cache, sequence := request("/api/data", "session=dynamic", "Bearer dynamic"); body != "origin-2" || cache != "" || sequence != "2" {
-		t.Fatalf("first dynamic response body=%q cache=%q sequence=%q", body, cache, sequence)
+	if body, cache, sequence := request("/assets/app.js", "session=first", ""); body != "origin-2" || cache != "BYPASS" || sequence != "2" {
+		t.Fatalf("first cookie static response body=%q cache=%q sequence=%q", body, cache, sequence)
 	}
-	if body, cache, sequence := request("/api/data", "", ""); body != "origin-3" || cache != "" || sequence != "3" {
-		t.Fatalf("repeated dynamic response body=%q cache=%q sequence=%q", body, cache, sequence)
+	if body, cache, sequence := request("/assets/app.js", "session=second", ""); body != "origin-3" || cache != "BYPASS" || sequence != "3" {
+		t.Fatalf("second cookie static response body=%q cache=%q sequence=%q", body, cache, sequence)
 	}
-	if body, cache, sequence := request("/assets/session.js", "session=first", ""); body != "origin-4" || cache != "MISS" || sequence != "4" {
+	if body, cache, sequence := request("/assets/app.js", "", "Bearer first"); body != "origin-4" || cache != "BYPASS" || sequence != "4" {
+		t.Fatalf("first authorized static response body=%q cache=%q sequence=%q", body, cache, sequence)
+	}
+	if body, cache, sequence := request("/assets/app.js", "", "Bearer second"); body != "origin-5" || cache != "BYPASS" || sequence != "5" {
+		t.Fatalf("second authorized static response body=%q cache=%q sequence=%q", body, cache, sequence)
+	}
+	if body, cache, sequence := request("/api/data", "session=dynamic", "Bearer dynamic"); body != "origin-6" || cache != "" || sequence != "6" {
+		t.Fatalf("credentialed dynamic response body=%q cache=%q sequence=%q", body, cache, sequence)
+	}
+	if body, cache, sequence := request("/api/data", "", ""); body != "origin-7" || cache != "" || sequence != "7" {
+		t.Fatalf("anonymous dynamic response body=%q cache=%q sequence=%q", body, cache, sequence)
+	}
+	if body, cache, sequence := request("/assets/session.js", "", ""); body != "origin-8" || cache != "MISS" || sequence != "8" {
 		t.Fatalf("first Set-Cookie static response body=%q cache=%q sequence=%q", body, cache, sequence)
 	}
-	if body, cache, sequence := request("/assets/session.js", "session=second", ""); body != "origin-5" || cache != "MISS" || sequence != "5" {
+	if body, cache, sequence := request("/assets/session.js", "", ""); body != "origin-9" || cache != "MISS" || sequence != "9" {
 		t.Fatalf("repeated Set-Cookie static response body=%q cache=%q sequence=%q", body, cache, sequence)
 	}
 
 	originMu.Lock()
 	defer originMu.Unlock()
-	if len(originRequests) != 5 {
+	if len(originRequests) != 9 {
 		t.Fatalf("origin requests = %#v", originRequests)
 	}
-	if originRequests[0].Path != "/assets/app.js" || originRequests[0].Cookie != "session=first" || originRequests[0].Authorization != "Bearer first" {
-		t.Fatalf("public static origin request = %#v", originRequests[0])
+	if originRequests[0].Path != "/assets/app.js" || originRequests[0].Cookie != "" || originRequests[0].Authorization != "" {
+		t.Fatalf("anonymous static origin request = %#v", originRequests[0])
 	}
-	if originRequests[1].Path != "/api/data" || originRequests[1].Cookie != "session=dynamic" || originRequests[1].Authorization != "Bearer dynamic" {
-		t.Fatalf("first dynamic origin request = %#v", originRequests[1])
+	if originRequests[1].Path != "/assets/app.js" || originRequests[1].Cookie != "session=first" || originRequests[1].Authorization != "" {
+		t.Fatalf("first cookie static origin request = %#v", originRequests[1])
 	}
-	if originRequests[2].Path != "/api/data" || originRequests[2].Cookie != "" || originRequests[2].Authorization != "" {
-		t.Fatalf("repeated dynamic origin request = %#v", originRequests[2])
+	if originRequests[2].Path != "/assets/app.js" || originRequests[2].Cookie != "session=second" || originRequests[2].Authorization != "" {
+		t.Fatalf("second cookie static origin request = %#v", originRequests[2])
 	}
-	for _, request := range originRequests[3:] {
-		if request.Path != "/assets/session.js" || request.Cookie == "" {
+	if originRequests[3].Path != "/assets/app.js" || originRequests[3].Cookie != "" || originRequests[3].Authorization != "Bearer first" {
+		t.Fatalf("first authorized static origin request = %#v", originRequests[3])
+	}
+	if originRequests[4].Path != "/assets/app.js" || originRequests[4].Cookie != "" || originRequests[4].Authorization != "Bearer second" {
+		t.Fatalf("second authorized static origin request = %#v", originRequests[4])
+	}
+	if originRequests[5].Path != "/api/data" || originRequests[5].Cookie != "session=dynamic" || originRequests[5].Authorization != "Bearer dynamic" {
+		t.Fatalf("credentialed dynamic origin request = %#v", originRequests[5])
+	}
+	if originRequests[6].Path != "/api/data" || originRequests[6].Cookie != "" || originRequests[6].Authorization != "" {
+		t.Fatalf("anonymous dynamic origin request = %#v", originRequests[6])
+	}
+	for _, request := range originRequests[7:] {
+		if request.Path != "/assets/session.js" || request.Cookie != "" || request.Authorization != "" {
 			t.Fatalf("Set-Cookie static origin request = %#v", request)
 		}
 	}

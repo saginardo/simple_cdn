@@ -69,7 +69,7 @@ edge-a 上的 cdn-edge-agent ── HTTPS ${CONTROL_MTLS_PORT} ──> cdn-contr
 
 ### 3.3 请求处理策略
 
-- 普通 HTTP(S)：只有 CSS、JavaScript、字体、图片、WebAssembly 和 Web Manifest 等常见静态后缀的 GET/HEAD 会选择缓存，其他 URI 使用 `proxy_cache off`；缓存键包含 `site_id` 和 `cache_generation`。缓存资格不检查请求中的 Authorization 或 Cookie，且这些请求头会原样回源；Nginx 仍遵循源站响应自带的缓存控制语义。
+- 普通 HTTP(S)：只有 CSS、JavaScript、字体、图片、WebAssembly 和 Web Manifest 等常见静态后缀的 GET/HEAD 会选择缓存，其他 URI 使用 `proxy_cache off`；缓存键包含 `site_id` 和 `cache_generation`。携带 Authorization 或 Cookie 的请求不会读取或写入共享缓存，但这些请求头仍会原样回源；Nginx 同时遵循源站响应自带的缓存控制语义。
 - 磁盘缓存：所有站点共享节点缓存区，全局默认总上限为 1 GiB/节点，可在节点详情页单独覆写；`keys_zone` 大小按有效节点缓存上限和启用缓存的站点数计算，并限制在 16-512 MiB；7 天非活跃回收，并启用 cache lock、revalidate、后台刷新和上游错误时 stale 回退。
 - 整站透传：HTTP(S) 站点可选启用，关闭 Nginx 缓存、请求缓冲和响应缓冲，使用站点配置的读写空闲超时，并显式转发 `Range` / `If-Range`，适用于视频及其他按字节范围读取的流量。操作语义、已验证故障根因和验收命令见 [PASSTHROUGH_MODE.md](PASSTHROUGH_MODE.md)。
 - 请求体上限：业务站点默认 `128 MiB`，可按站点选择 `128 / 256 / 512 / 1024 MiB` 四个档位；修改后需重新发布才能进入边缘 Nginx 配置。

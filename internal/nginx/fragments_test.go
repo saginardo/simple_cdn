@@ -22,10 +22,11 @@ func TestSplitHTTPConfigSeparatesBaseAndSiteServers(t *testing.T) {
 	if len(sites) != 2 || sites[0].Name != "site-site-a.conf" || sites[1].Name != "site-site-b.conf" {
 		t.Fatalf("HTTP site fragments = %#v", sites)
 	}
-	if !strings.Contains(base, "proxy_cache_path") || !strings.Contains(base, "listen 443 ssl default_server") || strings.Contains(base, "a-origin.example.test") || strings.Contains(base, "b-origin.example.test") {
+	if !strings.Contains(base, "proxy_cache_path") || !strings.Contains(base, "$cdn_private_cache_bypass") || !strings.Contains(base, "listen 443 ssl default_server") || strings.Contains(base, "a-origin.example.test") || strings.Contains(base, "b-origin.example.test") {
 		t.Fatalf("HTTP base fragment has the wrong ownership:\n%s", base)
 	}
-	if !strings.Contains(sites[0].Content, "a-origin.example.test") || !strings.Contains(sites[1].Content, "b-origin.example.test") {
+	if !strings.Contains(sites[0].Content, "a-origin.example.test") || !strings.Contains(sites[0].Content, "proxy_cache_bypass $cdn_private_cache_bypass;") ||
+		!strings.Contains(sites[1].Content, "b-origin.example.test") || !strings.Contains(sites[1].Content, "proxy_no_cache $cdn_private_cache_bypass;") {
 		t.Fatalf("site server fragments = %#v", sites)
 	}
 }
