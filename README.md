@@ -4,7 +4,7 @@ English | [简体中文](README_CN.md)
 
 A small self-hosted CDN for one administrator, one Debian 12 control VPS, and 3-10 Debian 12 edge VPSs. Cloudflare is authoritative DNS only: end users connect directly to the edge nodes.
 
-Current version: `0.1.6` (defined by [`VERSION`](VERSION)).
+Current version: `0.1.7` (defined by [`VERSION`](VERSION)).
 
 ## What is implemented
 

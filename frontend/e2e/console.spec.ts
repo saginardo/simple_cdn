@@ -1590,7 +1590,7 @@ test("cache defaults are configurable and overridden by individual nodes", async
     },
     capabilities: [],
     agent_version: "0.1.2",
-    target_agent_version: "0.1.6",
+    target_agent_version: "0.1.7",
     applied_version: 8,
     last_heartbeat_at: now.toISOString(),
     created_at: now.toISOString(),
@@ -1655,7 +1655,7 @@ test("cache defaults are configurable and overridden by individual nodes", async
 
   await page.goto("/#/nodes/node-1");
   await expect(page.getByText("v0.1.2", { exact: true })).toBeVisible();
-  await expect(page.getByText("v0.1.6", { exact: true })).toBeVisible();
+  await expect(page.getByText("v0.1.7", { exact: true })).toBeVisible();
   await expect(page.getByText("全局默认 4 GB")).toBeVisible();
   const override = page.getByLabel("覆写全局缓存配额");
   const nodeCacheSize = page.getByLabel("节点缓存总上限（GB）");
@@ -1807,7 +1807,7 @@ test("bulk node upgrade refreshes the page without opening a result dialog", asy
     status: "active",
     capabilities: ["self_upgrade"],
     agent_version: "0.1.4",
-    target_agent_version: "0.1.6",
+    target_agent_version: "0.1.7",
     applied_version: 8,
     last_heartbeat_at: now.toISOString(),
     created_at: now.toISOString(),
