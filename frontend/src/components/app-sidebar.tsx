@@ -39,10 +39,10 @@ const groups = [
   {
     label: "运营",
     items: [
-      { label: "安全", to: "/security", icon: ShieldCheck },
-      { label: "监测", to: "/monitoring", icon: Activity },
       { label: "节点", to: "/nodes", icon: Server },
       { label: "站点", to: "/sites", icon: Waypoints },
+      { label: "监测", to: "/monitoring", icon: Activity },
+      { label: "安全", to: "/security", icon: ShieldCheck },
       { label: "证书", to: "/certificates", icon: BadgeCheck },
     ],
   },
