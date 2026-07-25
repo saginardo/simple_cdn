@@ -37,7 +37,16 @@ The shared host-network Caddy installation stays outside this directory. It prox
 
 ## GitHub Actions delivery
 
-`.github/workflows/ci-cd.yml` owns compilation, tests, and image construction. Pull requests run frontend checks, Go tests/vet, browser smoke tests, Compose validation, and an unpushed Linux AMD64 image build. A successful `main` build publishes both `main` and `sha-<commit>` tags to `ghcr.io/saginardo/simple_cdn`, with provenance and SBOM attestations, and records the immutable digest in the job summary. The workflow deliberately contains no production host, credential, SSH, or rollout configuration and never connects to a production environment.
+`.github/workflows/ci-cd.yml` owns compilation, tests, version resolution, and image construction. Pull requests run frontend checks, Go tests/vet, browser smoke tests, Compose validation, and an unpushed Linux AMD64 image build. A successful `main` build embeds `0.0.0-dev+<commit>` and publishes both `main` and `sha-<commit>` tags to `ghcr.io/saginardo/simple_cdn`. A pushed `vMAJOR.MINOR.PATCH` tag is the sole source of a stable release version and publishes only that matching image tag, so it cannot overwrite the development image for the same commit. Every published image includes provenance and SBOM attestations, and its immutable digest is recorded in the job summary. The workflow deliberately contains no production host, credential, SSH, or rollout configuration and never connects to a production environment.
+
+Create a stable release from the tested commit without editing any version file:
+
+```bash
+git tag -a v0.1.8 -m "simple_cdn v0.1.8"
+git push origin v0.1.8
+```
+
+The workflow rejects tags that do not begin with `v` followed by a semantic `MAJOR.MINOR.PATCH` version. Docker-compatible pre-release suffixes such as `-rc.1` are accepted; `+build` metadata is rejected because it cannot be preserved in a Docker tag. Untagged local release builds use a development version derived from the commit and append `.dirty` when the worktree has changes; a clean checkout exactly at a release tag resolves to that stable version.
 
 Keep production deployment wiring in private infrastructure configuration outside this repository. That automation should pass the published `@sha256:<digest>` reference to `scripts/deploy-control-compose.sh`. The host then pulls the exact image, updates only `compose.yaml`, `.env`, and `app/`, recreates the running control/certificate/backup containers without building, checks the control health endpoint and running image ID, and restores the previous definition and image if validation fails. After a successful cutover it removes unused images belonging to this project, while leaving every other Docker repository untouched. Persistent `config/`, `data/`, `logs/`, and `backup/` content is outside this replacement boundary.
 

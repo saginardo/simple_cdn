@@ -22,9 +22,19 @@ jobs:
     name: Compile and test
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - name: Check out source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Resolve build version
+        id: version
+        shell: bash
+        run: |
+          version=$(./scripts/resolve-version.sh)
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "Build version: \`$version\`" >>"$GITHUB_STEP_SUMMARY"
 
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -44,17 +54,6 @@ jobs:
 
       - name: Validate frontend
         run: npm --prefix frontend run check
-
-      - name: Validate project version
-        shell: bash
-        run: |
-          version=$(tr -d '[:space:]' <VERSION)
-          frontend_version=$(node -p "require('./frontend/package.json').version")
-          test "$version" = "$frontend_version"
-          grep -Fxq "ARG VERSION=$version" Dockerfile
-          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
-            test "$GITHUB_REF_NAME" = "v$version"
-          fi
 
       - name: Test Go packages
         shell: bash
@@ -82,6 +81,9 @@ jobs:
 
       - name: Validate deployment scripts
         run: bash -n scripts/*.sh test/*.sh test/fake-docker
+
+      - name: Test build version resolution
+        run: ./test/resolve-version.sh
 
       - name: Exercise deployment rollback
         run: sudo ./test/deploy-control-compose.sh
@@ -139,11 +141,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
-      - name: Read project version
-        id: version
-        shell: bash
-        run: echo "version=$(tr -d '[:space:]' <VERSION)" >>"$GITHUB_OUTPUT"
-
       - name: Log in to GHCR
         if: github.event_name != 'pull_request'
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -160,13 +157,13 @@ jobs:
           flavor: latest=false
           tags: |
             type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
-            type=raw,value=sha-${{ github.sha }},enable=${{ github.event_name != 'pull_request' }}
+            type=raw,value=sha-${{ github.sha }},enable=${{ github.event_name != 'pull_request' && github.ref_type != 'tag' }}
             type=ref,event=tag
             type=ref,event=pr
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.version=${{ needs.verify.outputs.version }}
 
       - name: Build and optionally publish image
         id: build
@@ -178,7 +175,7 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: VERSION=${{ steps.version.outputs.version }}
+          build-args: VERSION=${{ needs.verify.outputs.version }}
           cache-from: type=gha,scope=control-image
           cache-to: type=gha,mode=max,scope=control-image
           provenance: mode=max

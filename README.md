@@ -4,7 +4,7 @@ English | [简体中文](README_CN.md)
 
 A small self-hosted CDN for one administrator, one Debian 12 control VPS, and 3-10 Debian 12 edge VPSs. Cloudflare is authoritative DNS only: end users connect directly to the edge nodes.
 
-Current version: `0.1.7` (defined by [`VERSION`](VERSION)).
+Published versions are derived from `vMAJOR.MINOR.PATCH` Git tags. See the repository's [version tags](https://github.com/saginardo/simple_cdn/tags).
 
 ## What is implemented
 
@@ -63,13 +63,15 @@ go test ./...
 ./scripts/build-release.sh dist
 ```
 
+An untagged local build uses `0.0.0-dev+<commit>` (plus `.dirty` for modified worktrees). A clean checkout exactly at a valid `vMAJOR.MINOR.PATCH` tag uses that tag as the release version; no version file needs editing.
+
 Browser smoke tests live in `frontend/e2e` and cover authenticated workspaces, the login screen, responsive sidebar behavior, and the shadcn/Recharts overview chart. Run `npm --prefix frontend run test:e2e` after installing Playwright Chromium.
 
 For UI development, run the TLS control plane on `127.0.0.1:8443`, then start `npm --prefix frontend run dev`. Vite proxies authenticated API requests to the local TLS endpoint (including its development certificate) and keeps the existing hash routes.
 
 `dist/SHA256SUMS` lets operators independently verify release artifacts. The controller hashes `EDGE_BINARY_PATH` at startup and embeds that digest in every enrollment and upgrade instruction, so no separately maintained checksum setting is required. When the controller serves the bundled edge binary, use `https://CONTROL_PUBLIC_URL/downloads/cdn-edge-agent-linux-amd64` as `EDGE_BINARY_URL`.
 
-GitHub Actions runs the same compilation and validation checks, browser smoke tests, and a complete Docker build for every pull request. Successful `main` builds publish `ghcr.io/saginardo/simple_cdn`; the workflow never connects to production. Private deployment automation consumes the immutable digest, and the control host only pulls that image instead of compiling source or running `docker compose build`. See [the Compose deployment guide](docs/COMPOSE_DEPLOYMENT.md#github-actions-delivery).
+GitHub Actions runs the same compilation and validation checks, browser smoke tests, and a complete Docker build for every pull request. Successful `main` builds publish development-versioned `main` and `sha-<commit>` images. Pushing a valid `vMAJOR.MINOR.PATCH` tag publishes the matching stable image without editing project files. The workflow never connects to production. Private deployment automation consumes an immutable digest, and the control host only pulls that image instead of compiling source or running `docker compose build`. See [the Compose deployment guide](docs/COMPOSE_DEPLOYMENT.md#github-actions-delivery).
 
 ## Control-plane installation
 

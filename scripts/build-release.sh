@@ -2,11 +2,8 @@
 set -euo pipefail
 
 OUTPUT_DIR="${1:-dist}"
-VERSION=$(tr -d '[:space:]' <VERSION)
-if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "VERSION must contain a semantic version such as 0.1.0" >&2
-  exit 2
-fi
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+BUILD_VERSION=$("$SCRIPT_DIR/resolve-version.sh")
 mkdir -p "$OUTPUT_DIR"
 
 if ! command -v npm >/dev/null 2>&1; then
@@ -21,7 +18,7 @@ build() {
   local package="$1"
   local output="$2"
   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
-    -ldflags="-s -w -X simple_cdn/internal/version.Version=$VERSION" \
+    -ldflags="-s -w -X simple_cdn/internal/version.Version=$BUILD_VERSION" \
     -o "$OUTPUT_DIR/$output" "$package"
 }
 
@@ -34,4 +31,4 @@ else
   (cd "$OUTPUT_DIR" && shasum -a 256 *-linux-amd64 >SHA256SUMS)
 fi
 
-echo "Built Linux AMD64 release assets in $OUTPUT_DIR"
+echo "Built Linux AMD64 assets for $BUILD_VERSION in $OUTPUT_DIR"

@@ -4,7 +4,7 @@
 
 一个面向单管理员的轻量自托管 CDN：使用一台 Debian 12 VPS 运行控制面，并由 3-10 台 Debian 12 VPS 作为边缘节点。Cloudflare 仅提供权威 DNS，终端用户直接连接边缘节点。
 
-当前版本：`0.1.7`（以 [`VERSION`](VERSION) 为准）。
+已发布版本由 `vMAJOR.MINOR.PATCH` Git 标签推导，详见仓库的[版本标签](https://github.com/saginardo/simple_cdn/tags)。
 
 ## 已实现功能
 
@@ -63,13 +63,15 @@ go test ./...
 ./scripts/build-release.sh dist
 ```
 
+未打标签的本地构建使用 `0.0.0-dev+<commit>`（工作区有修改时追加 `.dirty`）。干净工作区恰好位于有效的 `vMAJOR.MINOR.PATCH` 标签时，直接使用该标签作为发布版本，无需修改版本文件。
+
 浏览器冒烟测试位于 `frontend/e2e`，覆盖已登录工作区、登录页、响应式侧栏和 shadcn/Recharts 概览图表。安装 Playwright Chromium 后，运行 `npm --prefix frontend run test:e2e`。
 
 开发管理界面时，先在 `127.0.0.1:8443` 启动 TLS 控制面，再运行 `npm --prefix frontend run dev`。Vite 会将经过身份验证的 API 请求代理到本地 TLS 端点，支持其开发证书，并保留现有哈希路由。
 
 `dist/SHA256SUMS` 用于运维人员独立校验发布制品。控制器启动时会计算 `EDGE_BINARY_PATH` 的摘要，并将其写入每条注册与升级指令，因此不再需要单独维护校验和配置。由控制器提供内置边缘二进制文件时，可将 `https://CONTROL_PUBLIC_URL/downloads/cdn-edge-agent-linux-amd64` 用作 `EDGE_BINARY_URL`。
 
-GitHub Actions 会为每个拉取请求执行相同的编译与校验、浏览器冒烟测试和完整 Docker 镜像构建。`main` 构建成功后发布 `ghcr.io/saginardo/simple_cdn`，工作流不会连接生产环境。私有部署自动化消费不可变 digest；控制主机只拉取镜像，不再编译源码或执行 `docker compose build`。详见 [Compose 部署文档](docs/COMPOSE_DEPLOYMENT.md#github-actions-delivery)。
+GitHub Actions 会为每个拉取请求执行相同的编译与校验、浏览器冒烟测试和完整 Docker 镜像构建。`main` 构建成功后发布带开发版本的 `main` 和 `sha-<commit>` 镜像；推送有效的 `vMAJOR.MINOR.PATCH` 标签会直接发布对应稳定版镜像，无需修改项目文件。工作流不会连接生产环境。私有部署自动化消费不可变 digest；控制主机只拉取镜像，不再编译源码或执行 `docker compose build`。详见 [Compose 部署文档](docs/COMPOSE_DEPLOYMENT.md#github-actions-delivery)。
 
 ## 控制面安装
 
