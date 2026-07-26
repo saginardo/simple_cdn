@@ -11,7 +11,7 @@ x-control-environment: &control-environment
 
 services:
   clickhouse:
-    image: clickhouse/clickhouse-server:26.6.1.1193
+    image: clickhouse/clickhouse-server:26.6
     restart: unless-stopped
     environment:
       CLICKHOUSE_SKIP_USER_SETUP: "1"

@@ -117,7 +117,7 @@ edge-a 上的 cdn-edge-agent ── HTTPS ${CONTROL_MTLS_PORT} ──> cdn-contr
 | 控制面监听 | Compose `control` 使用 host network 监听 `${CONTROL_MTLS_PORT}`；公网 443 由共享反向代理接入。 |
 | 控制服务 | Compose `control`、`clickhouse`、`control-cert-renew` 应保持运行并通过健康检查。 |
 | 数据目录 | 统一根目录 `/opt/cdn-platform`；配置、control 数据、ClickHouse、证书、日志、备份和 rollback 均在其下。 |
-| ClickHouse | Compose `clickhouse` 固定为 `26.6.1.1193`，HTTP 仅映射到 `127.0.0.1:${CLICKHOUSE_HTTP_PORT}`。 |
+| ClickHouse | Compose `clickhouse` 使用 `26.6` 分支浮动标签，跟随该分支的最新补丁；待 `26.8` 正式标记为 LTS 并通过升级验证后切换。HTTP 仅映射到 `127.0.0.1:${CLICKHOUSE_HTTP_PORT}`。 |
 | ClickHouse 验收 | 原始访问日志、分钟聚合和 `cdn_tcp_monitoring_history` 应持续写入；拨测历史 TTL 为 7 天，具体数量不记录在仓库中。 |
 | TLS | Compose 内使用 Cloudflare DNS-01 独立签发并每 12 小时检查续期；主控支持无重启热加载。 |
 | 备份 | SQLite、ClickHouse 和 Restic 工作流应通过隔离恢复演练；凭据只保存在部署环境。 |
