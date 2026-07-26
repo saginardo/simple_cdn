@@ -816,6 +816,11 @@ test("desktop overview renders shadcn chart and aligned navigation", async ({
   await expect(page.getByText("38,241", { exact: true })).toBeVisible();
   await expect(page.getByText("静态资源主站")).toBeVisible();
   await expect(page.getByLabel("simple_cdn 版本 v0.1.1")).toBeVisible();
+  const metricBand = page.locator('[data-slot="metric-band"]');
+  await expect(metricBand).toBeVisible();
+  await expect(
+    metricBand.locator('[data-slot="metric-band-item"]'),
+  ).toHaveCount(4);
   const chart = page.locator('[data-slot="chart"] svg').first();
   await expect(chart).toBeVisible();
   expect((await chart.boundingBox())?.height).toBeGreaterThan(200);

@@ -132,6 +132,42 @@ export function OverviewPage() {
   const errorRate = totals?.requests
     ? totals.error_requests / totals.requests
     : 0;
+  const metricItems = [
+    {
+      id: "requests",
+      icon: Activity,
+      label: t("请求数"),
+      value: formatNumber(totals?.requests),
+      meta: t("最近 24 小时"),
+      tone: "info" as const,
+    },
+    {
+      id: "bytes",
+      icon: DatabaseZap,
+      label: t("传输量"),
+      value: formatBytes(totals?.bytes),
+      meta: t("边缘下行流量"),
+      tone: "success" as const,
+    },
+    {
+      id: "errors",
+      icon: TriangleAlert,
+      label: t("错误请求"),
+      value: formatNumber(totals?.error_requests),
+      meta: t("HTTP 4xx 与 5xx"),
+      tone: "warning" as const,
+    },
+    {
+      id: "error-rate",
+      icon: TriangleAlert,
+      label: t("错误率"),
+      value: formatPercent(errorRate, 2),
+      meta: t("{value0} 个站点", {
+        value0: formatNumber(query.data?.sites.length),
+      }),
+      tone: errorRate > 0.05 ? ("danger" as const) : ("success" as const),
+    },
+  ];
   const sortedSites = useMemo(
     () => sortOverviewSites(query.data?.sites ?? [], siteSort),
     [query.data?.sites, siteSort],
@@ -182,40 +218,18 @@ export function OverviewPage() {
         {query.error ? <PageError error={query.error} /> : null}
         {query.data ? (
           <>
-            <section
-              className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"
-              aria-label={t("关键指标")}
-            >
-              <MetricCard
-                icon={Activity}
-                label={t("请求数")}
-                value={formatNumber(totals?.requests)}
-                meta={t("最近 24 小时")}
-                tone="info"
-              />
-              <MetricCard
-                icon={DatabaseZap}
-                label={t("传输量")}
-                value={formatBytes(totals?.bytes)}
-                meta={t("边缘下行流量")}
-                tone="success"
-              />
-              <MetricCard
-                icon={TriangleAlert}
-                label={t("错误请求")}
-                value={formatNumber(totals?.error_requests)}
-                meta={t("HTTP 4xx 与 5xx")}
-                tone="warning"
-              />
-              <MetricCard
-                icon={TriangleAlert}
-                label={t("错误率")}
-                value={formatPercent(errorRate, 2)}
-                meta={t("{value0} 个站点", {
-                  value0: formatNumber(query.data.sites.length),
-                })}
-                tone={errorRate > 0.05 ? "danger" : "success"}
-              />
+            <section aria-label={t("关键指标")}>
+              <Card data-slot="metric-band" className="py-0">
+                <CardContent className="grid gap-0 px-0 sm:grid-cols-2 xl:grid-cols-4">
+                  {metricItems.map((item, index) => (
+                    <MetricBandItem
+                      key={item.id}
+                      {...item}
+                      className={metricBandDividers[index]}
+                    />
+                  ))}
+                </CardContent>
+              </Card>
             </section>
 
             <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
@@ -582,44 +596,57 @@ export function chartPoint(point: OverviewPoint): OverviewPoint & {
     }),
   };
 }
-function MetricCard({
+const metricBandDividers = [
+  "",
+  "border-t sm:border-t-0 sm:border-l",
+  "border-t xl:border-t-0 xl:border-l",
+  "border-t sm:border-l xl:border-t-0",
+] as const;
+
+function MetricBandItem({
   icon: Icon,
   label,
   value,
   meta,
   tone,
+  className,
 }: {
   icon: typeof Activity;
   label: string;
   value: string;
   meta: string;
   tone: Tone;
+  className?: string;
 }) {
   return (
-    <Card className="relative min-h-[7.75rem]">
-      <span
-        className={cn("absolute inset-y-0 left-0 w-1", toneFill[tone])}
-        aria-hidden="true"
-      />
-      <CardContent className="flex min-h-[7.75rem] items-start justify-between gap-3 py-4 pl-5 pr-4">
-        <div>
-          <p className="font-mono text-[0.6875rem] font-medium text-muted-foreground">
-            {label}
-          </p>
-          <p className="mt-2 text-[1.65rem] font-semibold leading-none tracking-normal tabular-nums">
-            {value}
-          </p>
-          <p className="mt-2 text-xs text-muted-foreground">{meta}</p>
-        </div>
+    <div
+      data-slot="metric-band-item"
+      className={cn("flex min-h-36 flex-col px-5 py-4", className)}
+    >
+      <div className="flex min-w-0 items-center gap-2">
         <span
           className={cn(
-            "grid size-8 shrink-0 place-items-center rounded-md",
+            "grid size-7 shrink-0 place-items-center rounded-md",
             toneSurface[tone],
           )}
         >
           <Icon className={cn("size-4", toneText[tone])} aria-hidden="true" />
         </span>
-      </CardContent>
-    </Card>
+        <p className="truncate text-sm font-medium text-muted-foreground">
+          {label}
+        </p>
+      </div>
+      <p className="mt-5 text-[1.65rem] font-semibold leading-none tracking-normal tabular-nums">
+        {value}
+      </p>
+      <p className="mt-2 text-xs text-muted-foreground">{meta}</p>
+      <span
+        className={cn(
+          "mt-auto block h-0.5 w-10 rounded-full opacity-70",
+          toneFill[tone],
+        )}
+        aria-hidden="true"
+      />
+    </div>
   );
 }
