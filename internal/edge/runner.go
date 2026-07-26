@@ -17,6 +17,7 @@ type Runner interface {
 	Test() error
 	Apply() error
 	PortListeners(ports []int) ([]domain.PortConflict, error)
+	UDPPortListeners(ports []int) ([]domain.PortConflict, error)
 }
 
 type NginxRunner struct {
@@ -168,21 +169,29 @@ func readNginxProcessSnapshot() (nginxProcessSnapshot, error) {
 var listenerProcess = regexp.MustCompile(`\("([^"]+)",pid=([0-9]+)`) // ss users:(()) output
 
 func (r NginxRunner) PortListeners(ports []int) ([]domain.PortConflict, error) {
+	return r.portListeners("TCP", "tcp", "-ltnp", ports)
+}
+
+func (r NginxRunner) UDPPortListeners(ports []int) ([]domain.PortConflict, error) {
+	return r.portListeners("UDP", "udp", "-lunp", ports)
+}
+
+func (r NginxRunner) portListeners(label, protocol, ssOptions string, ports []int) ([]domain.PortConflict, error) {
 	seen := make(map[string]domain.PortConflict)
 	for _, port := range ports {
-		output, err := r.run("ss", "-H", "-ltnp", fmt.Sprintf("( sport = :%d )", port))
+		output, err := r.run("ss", "-H", ssOptions, fmt.Sprintf("( sport = :%d )", port))
 		if err != nil {
-			return nil, fmt.Errorf("inspect TCP port %d: %w: %s", port, err, output)
+			return nil, fmt.Errorf("inspect %s port %d: %w: %s", label, port, err, output)
 		}
 		matches := listenerProcess.FindAllStringSubmatch(string(output), -1)
 		if len(matches) == 0 && strings.TrimSpace(string(output)) != "" {
-			key := fmt.Sprintf("%d:unknown:0", port)
-			seen[key] = domain.PortConflict{Port: port, Process: "unknown"}
+			key := fmt.Sprintf("%s:%d:unknown:0", protocol, port)
+			seen[key] = domain.PortConflict{Protocol: protocol, Port: port, Process: "unknown"}
 		}
 		for _, match := range matches {
 			pid, _ := strconv.Atoi(match[2])
-			listener := domain.PortConflict{Port: port, PID: pid, Process: match[1]}
-			key := fmt.Sprintf("%d:%s:%d", listener.Port, listener.Process, listener.PID)
+			listener := domain.PortConflict{Protocol: protocol, Port: port, PID: pid, Process: match[1]}
+			key := fmt.Sprintf("%s:%d:%s:%d", protocol, listener.Port, listener.Process, listener.PID)
 			seen[key] = listener
 		}
 	}

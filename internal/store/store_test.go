@@ -51,7 +51,7 @@ func TestNodeStateNginxFragmentsRoundTrip(t *testing.T) {
 			HTTPBase: "HTTP base", HTTPSites: []domain.NginxConfigFragment{{Name: "site-a.conf", Content: "HTTP site"}},
 			StreamBase: "stream base", StreamSites: []domain.NginxConfigFragment{{Name: "site-a.conf", Content: "stream site"}},
 		},
-		PublicPorts: []int{80, 443}, CacheMaxBytes: 9 << 30,
+		PublicPorts: []int{80, 443}, PublicUDPPorts: []int{443}, CacheMaxBytes: 9 << 30,
 	}
 	if err := database.SaveNodeState(node.ID, state, nil); err != nil {
 		t.Fatal(err)
@@ -62,7 +62,8 @@ func TestNodeStateNginxFragmentsRoundTrip(t *testing.T) {
 	}
 	if loaded.NginxFragments == nil || loaded.NginxFragments.HTTPBase != "HTTP base" || loaded.NginxMainConfig != "worker_processes auto;" ||
 		loaded.NginxEventsConfig != "worker_connections 4096;" || loaded.CacheMaxBytes != 9<<30 ||
-		len(loaded.NginxFragments.HTTPSites) != 1 || loaded.NginxFragments.StreamSites[0].Content != "stream site" {
+		len(loaded.NginxFragments.HTTPSites) != 1 || loaded.NginxFragments.StreamSites[0].Content != "stream site" ||
+		len(loaded.PublicUDPPorts) != 1 || loaded.PublicUDPPorts[0] != 443 {
 		t.Fatalf("stored Nginx fragments = %#v", loaded.NginxFragments)
 	}
 }

@@ -42,7 +42,7 @@ The installer adds Debian's `nftables` package but does not replace `/etc/nftabl
 table inet simple_cdn
 ```
 
-Its base chain has an accept policy and adds one restriction: source IPv4 addresses in the managed timeout set are dropped only for TCP ports 80 and 443. SSH, control traffic, custom TCP forwarding ports, outbound traffic, and every other nftables table remain untouched. On first apply after an upgrade, the Agent removes its legacy `table inet cdn_platform` before creating the current table. Uninstall removes either project-owned table and leaves all unrelated tables untouched.
+Its base chain has an accept policy and adds one restriction: source IPv4 addresses in the managed timeout set are dropped for TCP ports 80 and 443 and QUIC UDP port 443. SSH, control traffic, custom TCP forwarding ports, other UDP traffic, outbound traffic, and every other nftables table remain untouched. On first apply after an upgrade, the Agent removes its legacy `table inet cdn_platform` before creating the current table. Uninstall removes either project-owned table and leaves all unrelated tables untouched.
 
 Only public IPv4 addresses are accepted as ban targets. Private, loopback, link-local, multicast, malformed, and IPv6 addresses are ignored. This matches the platform's current A-record and `public_ipv4` deployment model.
 
@@ -68,7 +68,7 @@ Keep public site DNS records in DNS-only/direct mode. The ban source is Nginx `$
 - Policies are global rather than scoped to individual sites. Rate counters are per policy, client IP, and edge node; they are not a fleet-wide aggregate.
 - At most 100 access policies and 50 rate policies can exist at once. The edge queue retains the latest 10,000 access-policy events and both the edge and controller cap active ban state at 50,000 addresses.
 - Matching covers normalized request paths, not query strings, headers, request bodies, or TCP forwarding traffic.
-- Ban enforcement is IPv4-only and scoped to HTTP/HTTPS ports.
+- Ban enforcement is IPv4-only and scoped to HTTP/HTTPS traffic on TCP 80/443 and QUIC UDP 443.
 - The first matching path policy wins; every enabled rate policy is evaluated independently. Saving either policy type rebuilds capable node desired states and therefore causes a normal verified Nginx reload. A rate-ban streak is local to one policy, client IP, and edge node; the resulting IP ban is synchronized globally.
 - Rate conditions use final HTTP status classes, not response bodies, gRPC trailer status, or application-specific error fields. Security policies do not replace application authentication or a dedicated upstream DDoS service.
 - The controller retains at most 100,000 recent events and 50,000 simultaneous global bans; oldest entries are evicted first when these safety limits are reached. The console shows the 500 bans with the latest expiry while reporting the full active count.

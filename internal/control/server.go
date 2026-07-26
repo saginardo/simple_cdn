@@ -1506,6 +1506,9 @@ func (s *Server) heartbeat(response http.ResponseWriter, request *http.Request) 
 		writeStoreError(response, err)
 		return
 	}
+	if err := s.reconcileEdgeRuntimeCapabilities(nodeID, input.Capabilities); err != nil && s.Logger != nil {
+		s.Logger.Warn("reconcile edge runtime capabilities", "node_id", nodeID, "error", err)
+	}
 	if input.CacheStorage != nil {
 		if err := s.Store.RecordNodeCacheStorage(nodeID, *input.CacheStorage); err != nil {
 			writeStoreError(response, err)

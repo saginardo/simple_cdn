@@ -12,12 +12,14 @@ import (
 )
 
 type fakeRunner struct {
-	testErr        error
-	applyErr       error
-	listeners      [][]domain.PortConflict
-	tests          int
-	applies        int
-	listenerChecks int
+	testErr           error
+	applyErr          error
+	listeners         [][]domain.PortConflict
+	udpListeners      [][]domain.PortConflict
+	tests             int
+	applies           int
+	listenerChecks    int
+	udpListenerChecks int
 }
 
 func (f *fakeRunner) Test() error { f.tests++; return f.testErr }
@@ -32,6 +34,15 @@ func (f *fakeRunner) PortListeners(_ []int) ([]domain.PortConflict, error) {
 		return nil, nil
 	}
 	return f.listeners[index], nil
+}
+
+func (f *fakeRunner) UDPPortListeners(_ []int) ([]domain.PortConflict, error) {
+	index := f.udpListenerChecks
+	f.udpListenerChecks++
+	if index >= len(f.udpListeners) {
+		return nil, nil
+	}
+	return f.udpListeners[index], nil
 }
 
 func TestApplyRollsBackConfigAndCertificatesOnFailedValidation(t *testing.T) {
@@ -138,6 +149,84 @@ func TestApplySupportsManagedTCPListenersAndStreamConfig(t *testing.T) {
 	}
 	if agent.lastApplyReport == nil || agent.lastApplyReport.Status != domain.ApplySucceeded || !strings.Contains(agent.lastApplyReport.Detail, "TCP 9465 and TCP 9993") {
 		t.Fatalf("apply report = %#v", agent.lastApplyReport)
+	}
+}
+
+func TestApplyRequiresNginxToOwnHTTP3UDPListener(t *testing.T) {
+	directory := t.TempDir()
+	runner := &fakeRunner{
+		listeners:    [][]domain.PortConflict{nil, {{Port: 80, PID: 11, Process: "nginx"}, {Port: 443, PID: 11, Process: "nginx"}}},
+		udpListeners: [][]domain.PortConflict{nil, {{Port: 443, PID: 11, Process: "nginx"}}},
+	}
+	agent, err := New(Config{
+		ControlURL: "https://control.example.test", StateDir: directory,
+		NginxConfigPath: filepath.Join(directory, "nginx.conf"), CertificateDir: filepath.Join(directory, "certs"), Runner: runner,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := domain.DesiredState{
+		Version: 5, NginxConfig: "server { listen 443 quic; }\n",
+		PublicPorts: []int{80, 443}, PublicUDPPorts: []int{443},
+	}
+	if err := agent.apply(state); err != nil {
+		t.Fatal(err)
+	}
+	if runner.udpListenerChecks != 2 {
+		t.Fatalf("UDP listener checks = %d, want 2", runner.udpListenerChecks)
+	}
+	if agent.lastApplyReport == nil || agent.lastApplyReport.Status != domain.ApplySucceeded || !strings.Contains(agent.lastApplyReport.Detail, "TCP 80 and TCP 443 and UDP 443") {
+		t.Fatalf("apply report = %#v", agent.lastApplyReport)
+	}
+}
+
+func TestApplyRejectsForeignHTTP3UDPListener(t *testing.T) {
+	directory := t.TempDir()
+	runner := &fakeRunner{udpListeners: [][]domain.PortConflict{{{Port: 443, PID: 91, Process: "caddy"}}}}
+	agent, err := New(Config{
+		ControlURL: "https://control.example.test", StateDir: directory,
+		NginxConfigPath: filepath.Join(directory, "nginx.conf"), CertificateDir: filepath.Join(directory, "certs"), Runner: runner,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = agent.apply(domain.DesiredState{Version: 6, NginxConfig: "server { listen 443 quic; }\n", PublicPorts: []int{80, 443}, PublicUDPPorts: []int{443}})
+	if err == nil || agent.lastApplyReport == nil || agent.lastApplyReport.Code != "port_conflict" {
+		t.Fatalf("apply result = %v, report = %#v", err, agent.lastApplyReport)
+	}
+	if runner.tests != 0 || len(agent.lastApplyReport.PortConflicts) != 1 || agent.lastApplyReport.PortConflicts[0].Protocol != "udp" || !strings.Contains(agent.lastApplyReport.Detail, "UDP 443: caddy") {
+		t.Fatalf("UDP conflict report = %#v", agent.lastApplyReport)
+	}
+}
+
+func TestApplyRollsBackWhenHTTP3UDPListenerDoesNotStart(t *testing.T) {
+	directory := t.TempDir()
+	configPath := filepath.Join(directory, "nginx.conf")
+	if err := os.WriteFile(configPath, []byte("old-config"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeRunner{
+		listeners:    [][]domain.PortConflict{nil, {{Port: 443, PID: 11, Process: "nginx"}}},
+		udpListeners: [][]domain.PortConflict{nil},
+	}
+	agent, err := New(Config{
+		ControlURL: "https://control.example.test", StateDir: directory, NginxConfigPath: configPath,
+		CertificateDir: filepath.Join(directory, "certs"), Runner: runner,
+		ListenerSettleTimeout: 2 * time.Millisecond, ListenerPollInterval: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = agent.apply(domain.DesiredState{Version: 7, NginxConfig: "server { listen 443 quic; }\n", PublicPorts: []int{443}, PublicUDPPorts: []int{443}})
+	if err == nil || agent.lastApplyReport == nil || agent.lastApplyReport.Code != "nginx_not_listening" || !strings.Contains(agent.lastApplyReport.Detail, "UDP 443") {
+		t.Fatalf("apply result = %v, report = %#v", err, agent.lastApplyReport)
+	}
+	contents, readErr := os.ReadFile(configPath)
+	if readErr != nil || string(contents) != "old-config" {
+		t.Fatalf("old configuration was not restored: %q, %v", contents, readErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(directory, "applied-version")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("failed HTTP/3 apply advanced version: %v", statErr)
 	}
 }
 

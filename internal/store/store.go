@@ -164,7 +164,8 @@ CREATE TABLE IF NOT EXISTS node_states (
 	nginx_main_config TEXT NOT NULL DEFAULT '',
 	nginx_events_config TEXT NOT NULL DEFAULT '',
 	nginx_fragments_json TEXT NOT NULL DEFAULT 'null',
-  public_ports_json TEXT NOT NULL DEFAULT '[]',
+	public_ports_json TEXT NOT NULL DEFAULT '[]',
+	public_udp_ports_json TEXT NOT NULL DEFAULT '[]',
 	cache_max_bytes INTEGER NOT NULL DEFAULT 1073741824,
   certificate_ciphertext BLOB,
   private_key_ciphertext BLOB,
@@ -1985,11 +1986,15 @@ func saveNodeStatesTx(tx *sql.Tx, updates []NodeStateUpdate, updatedAt string) e
 		if err != nil {
 			return err
 		}
+		udpPorts, err := json.Marshal(update.State.PublicUDPPorts)
+		if err != nil {
+			return err
+		}
 		fragments, err := json.Marshal(update.State.NginxFragments)
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(`INSERT INTO node_states(node_id, version, nginx_config, nginx_stream_config, nginx_main_config, nginx_events_config, nginx_fragments_json, public_ports_json, cache_max_bytes, certificate_ciphertext, private_key_ciphertext, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?) ON CONFLICT(node_id) DO UPDATE SET version=excluded.version, nginx_config=excluded.nginx_config, nginx_stream_config=excluded.nginx_stream_config, nginx_main_config=excluded.nginx_main_config, nginx_events_config=excluded.nginx_events_config, nginx_fragments_json=excluded.nginx_fragments_json, public_ports_json=excluded.public_ports_json, cache_max_bytes=excluded.cache_max_bytes, certificate_ciphertext=excluded.certificate_ciphertext, private_key_ciphertext=NULL, updated_at=excluded.updated_at`, update.NodeID, update.State.Version, update.State.NginxConfig, update.State.NginxStreamConfig, update.State.NginxMainConfig, update.State.NginxEventsConfig, string(fragments), string(ports), update.State.CacheMaxBytes, update.CertificatesCiphertext, updatedAt); err != nil {
+		if _, err := tx.Exec(`INSERT INTO node_states(node_id, version, nginx_config, nginx_stream_config, nginx_main_config, nginx_events_config, nginx_fragments_json, public_ports_json, public_udp_ports_json, cache_max_bytes, certificate_ciphertext, private_key_ciphertext, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?) ON CONFLICT(node_id) DO UPDATE SET version=excluded.version, nginx_config=excluded.nginx_config, nginx_stream_config=excluded.nginx_stream_config, nginx_main_config=excluded.nginx_main_config, nginx_events_config=excluded.nginx_events_config, nginx_fragments_json=excluded.nginx_fragments_json, public_ports_json=excluded.public_ports_json, public_udp_ports_json=excluded.public_udp_ports_json, cache_max_bytes=excluded.cache_max_bytes, certificate_ciphertext=excluded.certificate_ciphertext, private_key_ciphertext=NULL, updated_at=excluded.updated_at`, update.NodeID, update.State.Version, update.State.NginxConfig, update.State.NginxStreamConfig, update.State.NginxMainConfig, update.State.NginxEventsConfig, string(fragments), string(ports), string(udpPorts), update.State.CacheMaxBytes, update.CertificatesCiphertext, updatedAt); err != nil {
 			return err
 		}
 	}
@@ -1999,8 +2004,8 @@ func saveNodeStatesTx(tx *sql.Tx, updates []NodeStateUpdate, updatedAt string) e
 func (s *Store) NodeState(nodeID string) (domain.DesiredState, []byte, error) {
 	var state domain.DesiredState
 	var certificates []byte
-	var fragments, ports string
-	err := s.db.QueryRow(`SELECT version, nginx_config, nginx_stream_config, nginx_main_config, nginx_events_config, nginx_fragments_json, public_ports_json, cache_max_bytes, certificate_ciphertext FROM node_states WHERE node_id = ?`, nodeID).Scan(&state.Version, &state.NginxConfig, &state.NginxStreamConfig, &state.NginxMainConfig, &state.NginxEventsConfig, &fragments, &ports, &state.CacheMaxBytes, &certificates)
+	var fragments, ports, udpPorts string
+	err := s.db.QueryRow(`SELECT version, nginx_config, nginx_stream_config, nginx_main_config, nginx_events_config, nginx_fragments_json, public_ports_json, public_udp_ports_json, cache_max_bytes, certificate_ciphertext FROM node_states WHERE node_id = ?`, nodeID).Scan(&state.Version, &state.NginxConfig, &state.NginxStreamConfig, &state.NginxMainConfig, &state.NginxEventsConfig, &fragments, &ports, &udpPorts, &state.CacheMaxBytes, &certificates)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.DesiredState{}, nil, ErrNotFound
 	}
@@ -2009,6 +2014,9 @@ func (s *Store) NodeState(nodeID string) (domain.DesiredState, []byte, error) {
 	}
 	if err := json.Unmarshal([]byte(ports), &state.PublicPorts); err != nil {
 		return domain.DesiredState{}, nil, fmt.Errorf("decode desired public ports: %w", err)
+	}
+	if err := json.Unmarshal([]byte(udpPorts), &state.PublicUDPPorts); err != nil {
+		return domain.DesiredState{}, nil, fmt.Errorf("decode desired public UDP ports: %w", err)
 	}
 	if err := json.Unmarshal([]byte(fragments), &state.NginxFragments); err != nil {
 		return domain.DesiredState{}, nil, fmt.Errorf("decode desired Nginx fragments: %w", err)

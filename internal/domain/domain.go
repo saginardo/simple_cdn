@@ -103,6 +103,7 @@ const (
 	EdgeCapabilityMachineStatusStream = "machine_status_stream_v1"
 	EdgeCapabilityNginxFragments      = "nginx_fragments_v1"
 	EdgeCapabilityNginxCapacity       = "nginx_capacity_v1"
+	EdgeCapabilityHTTP3               = "http3_v1"
 	EdgeCapabilityTCPMonitoring       = "tcp_monitoring_v1"
 	EdgeCapabilityControlManifest     = "control_manifest_v1"
 )
@@ -188,13 +189,14 @@ const (
 	ApplyFailed    ApplyStatus = "failed"
 )
 
-// PortConflict identifies a local TCP listener that prevents edge Nginx from
+// PortConflict identifies a local listener that prevents edge Nginx from
 // owning one of its public ports. It is reported to the authenticated control
 // plane; the agent never terminates the conflicting process.
 type PortConflict struct {
-	Port    int    `json:"port"`
-	PID     int    `json:"pid,omitempty"`
-	Process string `json:"process"`
+	Protocol string `json:"protocol,omitempty"`
+	Port     int    `json:"port"`
+	PID      int    `json:"pid,omitempty"`
+	Process  string `json:"process"`
 }
 
 // ApplyReport is sent with an edge heartbeat after an attempt to apply a
@@ -240,6 +242,7 @@ type DesiredState struct {
 	NginxEventsConfig string                `json:"nginx_events_config,omitempty"`
 	NginxFragments    *NginxConfigFragments `json:"nginx_fragments,omitempty"`
 	PublicPorts       []int                 `json:"public_ports"`
+	PublicUDPPorts    []int                 `json:"public_udp_ports,omitempty"`
 	CacheMaxBytes     int64                 `json:"cache_max_bytes,omitempty"`
 	Certificates      map[string]TLSBundle  `json:"certificates,omitempty"`
 }

@@ -51,6 +51,8 @@ map "$request_method:$cdn_is_websocket:$cdn_accepts_event_stream:$cdn_forced_str
 {{range .CachePaths}}proxy_cache_path {{.Path}} levels=1:2 keys_zone={{.Zone}}:{{.ZoneSize}} inactive=7d max_size={{.MaxSize}} use_temp_path=off;
 {{end}}
 log_format cdn_json escape=json '{"request_id":"$request_id","timestamp":"$time_iso8601","site_id":"$cdn_site_id","client_ip":"$remote_addr","host":"$host","scheme":"$scheme","protocol":"$server_protocol","method":"$request_method","path":"$uri","status":$status,"request_bytes":$request_length,"bytes":$body_bytes_sent,"duration_seconds":$request_time,"upstream":"$upstream_addr","upstream_status":"$upstream_status","upstream_response_time":"$upstream_response_time","cache_status":"$upstream_cache_status","user_agent":"$http_user_agent","referer":"$http_referer","content_type":"$http_content_type","response_content_type":"$sent_http_content_type","accept":"$http_accept","range":"$http_range"}';
+{{if .HTTP3Enabled}}quic_retry on;
+{{end}}
 {{end}}
 
 {{if .DefaultHTTP}}server {
@@ -80,6 +82,8 @@ log_format cdn_json escape=json '{"request_id":"$request_id","timestamp":"$time_
 {{if .Sites}}
 server {
     listen 443 ssl default_server;
+{{if .HTTP3Enabled}}    listen 443 quic reuseport default_server;
+{{end}}
     ssl_reject_handshake on;
     keepalive_timeout {{.DefaultClientKeepaliveTimeout}};
     keepalive_requests {{.ClientKeepaliveRequests}};
@@ -130,6 +134,10 @@ server {
 server {
     listen 443 ssl;
     http2 on;
+{{if $.HTTP3Enabled}}    listen 443 quic;
+    http3 on;
+    add_header Alt-Svc 'h3=":443"; ma=86400' always;
+{{end}}
     server_name {{.DomainList}};
     client_max_body_size {{.ClientMaxBodySizeMB}}m;
     keepalive_timeout {{.ClientKeepaliveTimeout}};
@@ -416,6 +424,7 @@ type renderInput struct {
 	Sites                         []renderedSite
 	CachePaths                    []renderedCachePath
 	DefaultHTTP                   bool
+	HTTP3Enabled                  bool
 	SecurityEnabled               bool
 	SecurityConfig                string
 	RateLimitEnabled              bool
@@ -441,14 +450,20 @@ func RenderWithSecurityAndRateLimit(sites []domain.Site, securityPolicies []doma
 }
 
 func RenderWithOptions(sites []domain.Site, securityPolicies []domain.SecurityPolicy, rateLimitPolicies []domain.RateLimitPolicy, defaultCacheSizeGB int) (string, error) {
-	return renderWithCacheLayout(sites, securityPolicies, rateLimitPolicies, defaultCacheSizeGB)
+	return RenderWithRuntimeOptions(sites, securityPolicies, rateLimitPolicies, RenderRuntimeOptions{DefaultCacheSizeGB: defaultCacheSizeGB})
 }
 
 func RenderWithLegacyCache(sites []domain.Site, securityPolicies []domain.SecurityPolicy, rateLimitPolicies []domain.RateLimitPolicy, defaultCacheSizeGB int) (string, error) {
-	return renderWithCacheLayout(sites, securityPolicies, rateLimitPolicies, defaultCacheSizeGB)
+	return RenderWithRuntimeOptions(sites, securityPolicies, rateLimitPolicies, RenderRuntimeOptions{DefaultCacheSizeGB: defaultCacheSizeGB})
 }
 
-func renderWithCacheLayout(sites []domain.Site, securityPolicies []domain.SecurityPolicy, rateLimitPolicies []domain.RateLimitPolicy, cacheSizeGB int) (string, error) {
+type RenderRuntimeOptions struct {
+	DefaultCacheSizeGB int
+	HTTP3Enabled       bool
+}
+
+func RenderWithRuntimeOptions(sites []domain.Site, securityPolicies []domain.SecurityPolicy, rateLimitPolicies []domain.RateLimitPolicy, options RenderRuntimeOptions) (string, error) {
+	cacheSizeGB := options.DefaultCacheSizeGB
 	if err := domain.ValidateCacheMaxSizeGB(cacheSizeGB); err != nil {
 		return "", err
 	}
@@ -541,6 +556,7 @@ func renderWithCacheLayout(sites []domain.Site, securityPolicies []domain.Securi
 		Sites:                         items,
 		CachePaths:                    cachePaths,
 		DefaultHTTP:                   !dedicatedTCP,
+		HTTP3Enabled:                  options.HTTP3Enabled,
 		SecurityEnabled:               len(enabledSecurityPolicies(securityPolicies)) > 0 && !dedicatedTCP,
 		SecurityConfig:                renderSecurityConfig(securityPolicies, !dedicatedTCP),
 		RateLimitEnabled:              len(enabledRateLimitPolicies(rateLimitPolicies)) > 0 && !dedicatedTCP,

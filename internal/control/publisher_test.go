@@ -259,6 +259,62 @@ func TestPublishTCPOnlySiteBuildsStreamStateWithoutHTTPPorts(t *testing.T) {
 	}
 }
 
+func TestPublishEnablesHTTP3OnlyForCapableNodes(t *testing.T) {
+	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	key, err := NewEncryptionKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := NewCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	http3Node, err := database.CreateNode("edge-http3", "203.0.113.18")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyNode, err := database.CreateNode("edge-http2", "203.0.113.19")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetNodeCapabilities(http3Node.ID, []string{domain.EdgeCapabilityHTTP3}); err != nil {
+		t.Fatal(err)
+	}
+	site, err := database.CreateSite(domain.Site{
+		Name: "protocols", Domains: []string{"protocols.example.test"}, Nodes: []string{http3Node.ID, legacyNode.ID},
+		PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, Enabled: true,
+	}, "zone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	publisher := Publisher{Store: database, Cipher: cipher}
+	certificate, privateKey, notAfter := testCertificate(t, site.Domains...)
+	if err := publisher.StoreCertificate(site.ID, certificate, privateKey, notAfter); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := publisher.PublishSite(site.ID); err != nil {
+		t.Fatal(err)
+	}
+	http3State, _, err := database.NodeState(http3Node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(http3State.PublicUDPPorts, []int{443}) || !strings.Contains(http3State.NginxConfig, "listen 443 quic") || !strings.Contains(http3State.NginxConfig, "Alt-Svc") {
+		t.Fatalf("HTTP/3 node state = %#v\n%s", http3State.PublicUDPPorts, http3State.NginxConfig)
+	}
+	legacyState, _, err := database.NodeState(legacyNode.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(legacyState.PublicUDPPorts) != 0 || strings.Contains(legacyState.NginxConfig, "listen 443 quic") || strings.Contains(legacyState.NginxConfig, "Alt-Svc") {
+		t.Fatalf("legacy node received HTTP/3 state = %#v\n%s", legacyState.PublicUDPPorts, legacyState.NginxConfig)
+	}
+}
+
 func TestPublishTCPForwardRequiresUpgradedAgentCapability(t *testing.T) {
 	if !siteRequiresTCPStream([]domain.Site{{TCPOnly: true}}) {
 		t.Fatal("disabled TCP-only state did not require the stream-capable agent")

@@ -419,6 +419,10 @@ if [[ -z "$ROOT_PREFIX" ]]; then
   apt-get update
   apt-get install -y --no-install-recommends nginx libnginx-mod-stream libnginx-mod-http-lua ca-certificates curl iproute2 nftables logrotate lz4 procps kmod
 fi
+edge_capabilities="tcp_stream_v1,edge_rate_limit_v1,nginx_capacity_v1"
+if nginx -V 2>&1 | grep -Fq -- '--with-http_v3_module'; then
+  edge_capabilities+=",http3_v1"
+fi
 ensure_nginx_temp_directories
 
 transaction_dir=$(mktemp -d "$(root_path /tmp/cdn-edge-install.XXXXXX)")
@@ -620,7 +624,7 @@ NGINX_EVENTS_CONFIG_PATH=/opt/cdn-edge/config/nginx/cdn-platform-events.conf
 EDGE_CERT_DIR=/opt/cdn-edge/config/certs
 EDGE_ACCESS_LOG=/opt/cdn-edge/logs/access.json
 EDGE_SECURITY_LOG=/opt/cdn-edge/logs/security.json
-EDGE_CAPABILITIES=tcp_stream_v1,edge_rate_limit_v1,nginx_capacity_v1
+EDGE_CAPABILITIES=${edge_capabilities}
 EOF
 chmod 0600 "$edge_root/config/edge.env"
 

@@ -2,10 +2,32 @@ package edge
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"simple_cdn/internal/domain"
 )
+
+func TestNginxRunnerInspectsUDPListeners(t *testing.T) {
+	var command string
+	runner := NginxRunner{command: func(name string, arguments ...string) ([]byte, error) {
+		command = name + " " + strings.Join(arguments, " ")
+		return []byte(`UNCONN 0 0 0.0.0.0:443 0.0.0.0:* users:(("nginx",pid=42,fd=7))`), nil
+	}}
+	listeners, err := runner.UDPPortListeners([]int{443})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []domain.PortConflict{{Protocol: "udp", Port: 443, PID: 42, Process: "nginx"}}
+	if !reflect.DeepEqual(listeners, want) {
+		t.Fatalf("UDP listeners = %#v, want %#v", listeners, want)
+	}
+	if !strings.Contains(command, "ss -H -lunp ( sport = :443 )") {
+		t.Fatalf("UDP listener command = %q", command)
+	}
+}
 
 func TestNginxRunnerReloadWaitsForNewWorker(t *testing.T) {
 	snapshots := []nginxProcessSnapshot{

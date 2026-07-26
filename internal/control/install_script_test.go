@@ -133,6 +133,20 @@ func TestInstallEdgeScriptCreatesOptLayout(t *testing.T) {
 	}
 }
 
+func TestInstallEdgeScriptAdvertisesHTTP3OnlyWhenNginxSupportsIt(t *testing.T) {
+	harness := newInstallHarness(t)
+	harness.nginxVersion = "nginx version: nginx/1.26.3 configure arguments: --with-http_v2_module --with-http_v3_module"
+
+	output, err := harness.run(t, "first-token", "edge-binary-v1", "")
+	if err != nil {
+		t.Fatalf("install failed: %v\n%s", err, output)
+	}
+	environment := harness.read(t, "opt/cdn-edge/config/edge.env")
+	if !strings.Contains(environment, "EDGE_CAPABILITIES=tcp_stream_v1,edge_rate_limit_v1,nginx_capacity_v1,http3_v1") {
+		t.Fatalf("HTTP/3-capable Nginx was not advertised:\n%s", environment)
+	}
+}
+
 func TestInstallEdgeScriptUsesLargeTCPBuffersAboveFourGiB(t *testing.T) {
 	harness := newInstallHarness(t)
 	harness.write("proc/meminfo", "MemTotal:        8388608 kB\n")
@@ -460,6 +474,7 @@ type installHarness struct {
 	binaryPath         string
 	servicePath        string
 	updaterServicePath string
+	nginxVersion       string
 }
 
 func newInstallHarness(t *testing.T) *installHarness {
@@ -519,6 +534,10 @@ esac
 `)
 	harness.writeMock(t, "nginx", `#!/usr/bin/env bash
 printf 'nginx %s\n' "$*" >>"$MOCK_LOG"
+if [[ "${1:-}" == "-V" ]]; then
+  printf '%s\n' "${MOCK_NGINX_VERSION:-nginx version: nginx/1.22.1}" >&2
+  exit 0
+fi
 if [[ "${MOCK_FAILURE:-}" == "nginx" && "${1:-}" == "-t" ]]; then exit 1; fi
 exit 0
 `)
@@ -705,6 +724,7 @@ func (h *installHarness) run(t *testing.T, token, binary, failure string) (strin
 		"MOCK_UPDATER_SERVICE=" + h.updaterServicePath,
 		"MOCK_READINESS_FILE=",
 		"MOCK_FAILURE=" + failure,
+		"MOCK_NGINX_VERSION=" + h.nginxVersion,
 	}
 	output, err := command.CombinedOutput()
 	return string(output), err
@@ -740,6 +760,7 @@ func (h *installHarness) runOnline(t *testing.T, binary, failure string) (string
 		"MOCK_UPDATER_SERVICE=" + h.updaterServicePath,
 		"MOCK_READINESS_FILE=" + readinessPath,
 		"MOCK_FAILURE=" + failure,
+		"MOCK_NGINX_VERSION=" + h.nginxVersion,
 	}
 	output, err := command.CombinedOutput()
 	return string(output), err

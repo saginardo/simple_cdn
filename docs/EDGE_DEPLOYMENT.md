@@ -1,6 +1,6 @@
 # Edge deployment and migration
 
-Edge nodes use the Debian Nginx package and a host systemd service. Docker is not used. simple_cdn-owned binaries, configuration, persistent state, access logs, and cache are kept below one operational root:
+Edge nodes use the Debian Nginx package and a host systemd service. Docker is not used. Debian 13 is recommended when HTTP/3 is required; Debian 12 remains a compatible HTTP/1.1 and HTTP/2 edge. simple_cdn-owned binaries, configuration, persistent state, access logs, and cache are kept below one operational root:
 
 ```text
 /opt/cdn-edge/
@@ -56,7 +56,7 @@ The second Nginx integration file owns a top-level `stream { include ...; }` blo
 
 ## Fresh installation and upgrades
 
-Use **获取部署/升级命令** on the node page and run the generated command as root on the target Debian 12 node. The command is bound to the configured HTTPS control and binary URLs and verifies the edge binary and both systemd units by SHA-256 before installing them.
+Use **获取部署/升级命令** on the node page and run the generated command as root on the target Debian node. The command is bound to the configured HTTPS control and binary URLs and verifies the edge binary and both systemd units by SHA-256 before installing them.
 
 The installer is idempotent and recognizes these states:
 
@@ -64,11 +64,36 @@ The installer is idempotent and recognizes these states:
 - Legacy deployment: migrates `/usr/local/bin/cdn-edge-agent`, `/etc/cdn-platform`, `/var/lib/cdn-platform`, `/var/log/cdn-platform`, `/var/cache/cdn-platform`, the Nginx include, and the systemd unit.
 - Existing `/opt/cdn-edge`: replaces the checksum-verified binary and service definition, adds missing stream and worker-capacity integrations, and preserves configuration data, identity, logs, and cache.
 
-The installed environment advertises `tcp_stream_v1`, `edge_rate_limit_v1`, `nginx_capacity_v1`, `online_upgrade_v1`, `nginx_fragments_v1`, `cache_usage_v1`, `machine_status_v1`, `control_manifest_v1`, and, when nftables is available, `edge_security_v1` in every authenticated heartbeat. The controller refuses to publish a TCP rule to a node until the stream capability is present, renders malicious-path policies only for nodes with the access-security capability, renders Lua rate policies only for nodes with the rate-limit capability, and renders rate-to-ban escalation only when both rate-limit and access-security capabilities are present. `control_manifest_v1` lets the heartbeat carry desired-state, monitoring, security-ban, and upgrade revisions; the Agent keeps cached targets and fetches only changed resources. `nginx_capacity_v1` is advertised only by layouts with the Nginx main/events include hooks, so older nodes can save a capacity setting but need one generated deployment before it can apply. Desired state carries both the full generated configuration and its split representation: fragment-capable Agents apply the split files, while older Agents ignore the new field and keep using the full configuration. Rerun the node's generated deployment/upgrade command before its first TCP, access-security, rate-limit, capacity, fragment, cache-usage, machine-status, or manifest-driven publication.
+The installed environment advertises `tcp_stream_v1`, `edge_rate_limit_v1`, `nginx_capacity_v1`, `online_upgrade_v1`, `nginx_fragments_v1`, `cache_usage_v1`, `machine_status_v1`, `control_manifest_v1`, and, when nftables is available, `edge_security_v1` in every authenticated heartbeat. It additionally advertises `http3_v1` only when `nginx -V` contains `--with-http_v3_module`. The controller refuses to publish a TCP rule to a node until the stream capability is present, renders QUIC only for HTTP/3-capable nodes, renders malicious-path policies only for nodes with the access-security capability, renders Lua rate policies only for nodes with the rate-limit capability, and renders rate-to-ban escalation only when both rate-limit and access-security capabilities are present. `control_manifest_v1` lets the heartbeat carry desired-state, monitoring, security-ban, and upgrade revisions; the Agent keeps cached targets and fetches only changed resources. `nginx_capacity_v1` is advertised only by layouts with the Nginx main/events include hooks, so older nodes can save a capacity setting but need one generated deployment before it can apply. Desired state carries both the full generated configuration and its split representation: fragment-capable Agents apply the split files, while older Agents ignore the new field and keep using the full configuration. Rerun the node's generated deployment/upgrade command before its first TCP, HTTP/3, access-security, rate-limit, capacity, fragment, cache-usage, machine-status, or manifest-driven publication.
 
 For a node that already has a control-plane certificate fingerprint, the generated upgrade command contains no new enrollment token. The installer requires the complete local mTLS key/certificate/CA set instead. This preserves the node identity and avoids leaving an unused valid enrollment token after an upgrade.
 
 A valid layout marker and the platform integration links determine ownership. If unrelated or ambiguous files exist in both the old and new layouts, the installer stops instead of merging them.
+
+## HTTP/3 and QUIC
+
+An `http3_v1` node keeps `listen 443 ssl` plus `http2 on` on TCP and adds `listen 443 quic` on UDP. HTTPS responses advertise `h3` through `Alt-Svc` for 24 hours. `quic_retry on` limits address-spoofing amplification, while TLS 0-RTT remains disabled to avoid replay semantics. A node without the capability receives none of these directives, so mixed Debian 12/13 fleets can roll forward safely. Nginx upstream still labels `ngx_http_v3_module` experimental, so keep the TCP fallback and roll out one edge at a time.
+
+The Agent treats UDP 443 as desired state rather than an incidental Nginx socket. Before applying a configuration it rejects foreign UDP owners, after reload it waits for Nginx to own the socket, and on failure it restores the previous fragments, certificates, and applied version. Capability changes are reconciled from subsequent heartbeats, including the first heartbeat after an online upgrade. The project-owned nftables ban table drops banned IPv4 sources on UDP 443 as well as TCP 80/443.
+
+Allow inbound UDP 443 in both the operating-system firewall and the VPS/provider security group. The controller's DNS health gate deliberately continues to test HTTPS over TCP, preserving fallback availability; it cannot prove that an external UDP firewall passes QUIC. Verify from another host with an HTTP/3-capable curl:
+
+```bash
+domain=cdn.example.com
+edge_ip=203.0.113.20
+
+sudo nginx -V 2>&1 | grep -F -- '--with-http_v3_module'
+sudo grep -F http3_v1 /opt/cdn-edge/config/edge.env
+sudo nginx -T 2>/dev/null | grep -E 'listen 443 quic|Alt-Svc|quic_retry'
+sudo ss -H -lunp '( sport = :443 )'
+
+curl --http3-only --fail --silent --show-error \
+  --resolve "$domain:443:$edge_ip" \
+  --write-out '\nHTTP %{http_version}\n' \
+  "https://$domain/"
+```
+
+The final line must report HTTP version `3`. If `nginx -V` lacks the module, use Debian 13 or another package that provides an ABI-compatible HTTP/3 build together with the required Debian Lua and stream modules; do not force `http3_v1` into `edge.env`. If the local UDP socket exists but the external request fails, inspect the provider firewall before changing Nginx.
 
 ## Online upgrades
 
@@ -104,6 +129,7 @@ sudo systemctl is-active cdn-edge-agent nginx
 sudo systemctl cat cdn-edge-agent
 sudo nginx -t
 curl -fsS http://127.0.0.1/__cdn_health
+sudo ss -H -lunp '( sport = :443 )'
 sudo find /opt/cdn-edge -maxdepth 3 -type f -o -type l
 ```
 

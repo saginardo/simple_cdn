@@ -295,11 +295,15 @@ func (p Publisher) renderNodeStateUpdates(materials []publicationMaterial, affec
 			nodeSecurityPolicies = securityPolicies
 		}
 		nodeRateLimitPolicies := rateLimitPoliciesForCapabilities(rateLimitPolicies, node.Capabilities)
+		http3Enabled := slices.Contains(node.Capabilities, domain.EdgeCapabilityHTTP3)
 		cacheSizeGB, err := domain.EffectiveNodeCacheMaxSizeGB(node, settings.CacheDefaultSizeGB)
 		if err != nil {
 			return nil, nil, fmt.Errorf("node %s: %w", node.Name, err)
 		}
-		config, err := nginx.RenderWithOptions(nodeSites, nodeSecurityPolicies, nodeRateLimitPolicies, cacheSizeGB)
+		config, err := nginx.RenderWithRuntimeOptions(nodeSites, nodeSecurityPolicies, nodeRateLimitPolicies, nginx.RenderRuntimeOptions{
+			DefaultCacheSizeGB: cacheSizeGB,
+			HTTP3Enabled:       http3Enabled,
+		})
 		if err != nil {
 			return nil, nil, err
 		}
@@ -313,18 +317,19 @@ func (p Publisher) renderNodeStateUpdates(materials []publicationMaterial, affec
 			return nil, nil, fmt.Errorf("split Nginx configuration for node %s: %w", node.Name, err)
 		}
 		ports := requiredPublicPorts(nodeSites)
+		udpPorts := requiredPublicUDPPorts(nodeSites, http3Enabled)
 		mainConfig, eventsConfig, err := nginx.RenderCapacity(node.NginxCapacity)
 		if err != nil {
 			return nil, nil, fmt.Errorf("node %s capacity: %w", node.Name, err)
 		}
 		version := int64(1)
 		if stateErr == nil {
-			if p.nodeStateMatches(previous, previousCertificates, config, streamConfig, mainConfig, eventsConfig, fragments, ports, cacheMaxBytes, certificates) {
+			if p.nodeStateMatches(previous, previousCertificates, config, streamConfig, mainConfig, eventsConfig, fragments, ports, udpPorts, cacheMaxBytes, certificates) {
 				continue
 			}
 			version = previous.Version + 1
 		}
-		state := domain.DesiredState{Version: version, NginxConfig: config, NginxStreamConfig: streamConfig, NginxMainConfig: mainConfig, NginxEventsConfig: eventsConfig, NginxFragments: fragments, PublicPorts: ports, CacheMaxBytes: cacheMaxBytes, Certificates: certificates}
+		state := domain.DesiredState{Version: version, NginxConfig: config, NginxStreamConfig: streamConfig, NginxMainConfig: mainConfig, NginxEventsConfig: eventsConfig, NginxFragments: fragments, PublicPorts: ports, PublicUDPPorts: udpPorts, CacheMaxBytes: cacheMaxBytes, Certificates: certificates}
 		serialized, err := json.Marshal(state.Certificates)
 		if err != nil {
 			return nil, nil, err
@@ -393,9 +398,9 @@ func (p Publisher) decryptPublicationMaterials(materials []publicationMaterial, 
 	return rendered, nil
 }
 
-func (p Publisher) nodeStateMatches(previous domain.DesiredState, encryptedCertificates []byte, config, streamConfig, mainConfig, eventsConfig string, fragments *domain.NginxConfigFragments, ports []int, cacheMaxBytes int64, certificates map[string]domain.TLSBundle) bool {
+func (p Publisher) nodeStateMatches(previous domain.DesiredState, encryptedCertificates []byte, config, streamConfig, mainConfig, eventsConfig string, fragments *domain.NginxConfigFragments, ports, udpPorts []int, cacheMaxBytes int64, certificates map[string]domain.TLSBundle) bool {
 	if previous.NginxConfig != config || previous.NginxStreamConfig != streamConfig || previous.NginxMainConfig != mainConfig || previous.NginxEventsConfig != eventsConfig ||
-		!nginxConfigFragmentsEqual(previous.NginxFragments, fragments) || !slices.Equal(previous.PublicPorts, ports) || previous.CacheMaxBytes != cacheMaxBytes {
+		!nginxConfigFragmentsEqual(previous.NginxFragments, fragments) || !slices.Equal(previous.PublicPorts, ports) || !slices.Equal(previous.PublicUDPPorts, udpPorts) || previous.CacheMaxBytes != cacheMaxBytes {
 		return false
 	}
 	previousBundles := make(map[string]domain.TLSBundle)
@@ -452,6 +457,18 @@ func requiredPublicPorts(sites []domain.Site) []int {
 	}
 	sort.Ints(result)
 	return result
+}
+
+func requiredPublicUDPPorts(sites []domain.Site, http3Enabled bool) []int {
+	if !http3Enabled {
+		return nil
+	}
+	for _, site := range sites {
+		if site.Enabled && !site.TCPOnly {
+			return []int{443}
+		}
+	}
+	return nil
 }
 
 func siteRequiresTCPStream(sites []domain.Site) bool {

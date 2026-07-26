@@ -93,7 +93,7 @@ func TestDecodeSecurityLogRejectsPrivateIPAndDuration(t *testing.T) {
 func TestNftablesRulesetSyntax(t *testing.T) {
 	now := time.Now().UTC()
 	ruleset := nftablesRuleset([]domain.SecurityBan{{IP: "8.8.8.8", ExpiresAt: now.Add(time.Hour)}}, false, true, now)
-	for _, wanted := range []string{"delete table inet " + project.LegacyNftablesTable, "table inet " + project.NftablesTable, "flags timeout", "8.8.8.8 timeout 3600s", "tcp dport { 80, 443 }", "@banned_ipv4 drop"} {
+	for _, wanted := range []string{"delete table inet " + project.LegacyNftablesTable, "table inet " + project.NftablesTable, "flags timeout", "8.8.8.8 timeout 3600s", "tcp dport { 80, 443 }", "udp dport 443", "@banned_ipv4 drop"} {
 		if !strings.Contains(ruleset, wanted) {
 			t.Fatalf("ruleset lacks %q:\n%s", wanted, ruleset)
 		}
@@ -103,7 +103,7 @@ func TestNftablesRulesetSyntax(t *testing.T) {
 		t.Skip("nft is not installed")
 	}
 	command := exec.Command(binary, "--check", "--file", "-")
-	command.Stdin = strings.NewReader(ruleset)
+	command.Stdin = strings.NewReader(nftablesRuleset([]domain.SecurityBan{{IP: "8.8.8.8", ExpiresAt: now.Add(time.Hour)}}, false, false, now))
 	if output, err := command.CombinedOutput(); err != nil && !strings.Contains(string(output), "Operation not permitted") {
 		t.Fatalf("nft --check: %v\n%s\n%s", err, output, ruleset)
 	}

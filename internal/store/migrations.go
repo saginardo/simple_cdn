@@ -34,6 +34,11 @@ var schemaMigrations = []schemaMigration{
 	{Version: 16, Name: "edge-agent-version", Apply: migrateEdgeAgentVersion},
 	{Version: 17, Name: "smart-routing", Apply: migrateSmartRouting},
 	{Version: 18, Name: "smart-routing-minimum-recovery-rounds", Apply: migrateSmartRoutingMinimumRecoveryRounds},
+	{Version: 19, Name: "http3-public-udp-ports", Apply: migrateHTTP3PublicUDPPorts},
+}
+
+func migrateHTTP3PublicUDPPorts(tx *sql.Tx) error {
+	return addColumnIfMissing(tx, "node_states", "public_udp_ports_json", "public_udp_ports_json TEXT NOT NULL DEFAULT '[]'")
 }
 
 func migrateSmartRouting(tx *sql.Tx) error {

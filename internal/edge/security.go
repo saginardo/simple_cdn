@@ -102,7 +102,7 @@ func nftablesRuleset(bans []domain.SecurityBan, currentExists, legacyExists bool
 		}
 		script.WriteString(" }\n")
 	}
-	script.WriteString("  }\n  chain input {\n    type filter hook input priority -10; policy accept;\n    tcp dport { 80, 443 } ip saddr @banned_ipv4 drop\n  }\n}\n")
+	script.WriteString("  }\n  chain input {\n    type filter hook input priority -10; policy accept;\n    tcp dport { 80, 443 } ip saddr @banned_ipv4 drop\n    udp dport 443 ip saddr @banned_ipv4 drop\n  }\n}\n")
 	return script.String()
 }
 

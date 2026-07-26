@@ -4,7 +4,7 @@
 
 ## 1. 项目目标与边界
 
-这是一个面向单管理员、小规模自用场景的自托管 CDN：一个控制面 VPS 管理约 3-10 台 Debian 12 边缘 VPS。Cloudflare 只作为权威 DNS 和 DNS-01 API 提供方，业务域名保持 DNS-only；终端用户直接连接边缘节点。
+这是一个面向单管理员、小规模自用场景的自托管 CDN：一个控制面 VPS 管理约 3-10 台 Debian 边缘 VPS。需要 HTTP/3 的边缘推荐 Debian 13；Debian 12 继续使用 HTTP/1.1 与 HTTP/2。Cloudflare 只作为权威 DNS 和 DNS-01 API 提供方，业务域名保持 DNS-only；终端用户直接连接边缘节点。
 
 当前设计边界：单管理员、IPv4、单 Cloudflare 账户、无租户/RBAC、无控制面高可用、无 GeoDNS、无 WAF/DDoS 服务、无 URL 级删除缓存。控制面故障不会中断已经下发到边缘的流量，但会阻止新发布、DNS 调整和证书续期。
 
@@ -39,7 +39,7 @@ edge-a 上的 cdn-edge-agent ── HTTPS ${CONTROL_MTLS_PORT} ──> cdn-contr
        └─ 上报心跳、5 秒机器状态、应用版本、代理摘要、日志
 
                          业务请求路径
-客户端 ── Cloudflare DNS-only A ──> Edge Nginx :80/:443
+客户端 ── Cloudflare DNS-only A ──> Edge Nginx TCP :80/:443、QUIC UDP :443
                                           │
                                           ├─ 磁盘缓存 / stale 回退
                                           ├─ WebSocket / SSE 流式代理
@@ -64,8 +64,8 @@ edge-a 上的 cdn-edge-agent ── HTTPS ${CONTROL_MTLS_PORT} ──> cdn-contr
 - Agent 默认每 30 秒发送一次独立心跳，并每 5 秒通过同一个 mTLS HTTP/2 Transport 上报机器状态。主控在心跳响应中合并返回期望状态、监控目标、安全封禁和升级任务修订；边缘仅拉取变化项，慢速配置、拨测和升级任务不会阻塞心跳或机器状态采集。配置或证书写入采用原子替换，先执行 `nginx -t`，仅在成功时 reload，失败会恢复上一个已知可用版本。
 - 主控仅接受采集时间更新的机器快照，只在内存中保存每节点最新值，并通过受管理员会话保护的 SSE 推送到节点详情页，不写入持久化存储。SSE 每 15 秒复核会话并发送保活，前端以 30 秒 GET 作为断线回退，且按采集时间避免旧响应覆盖新事件；没有快照时不显示机器状态区域。
 - Agent 上报自身 SHA-256 和 `online_upgrade_v1` 能力；主控可对单节点下发当前制品，独立 updater 在替换主进程后等待新 Agent 完成 mTLS 心跳，失败恢复旧二进制和 systemd/Nginx 集成。
-- 安全工作台管理全局请求路径策略、活动 IP 封禁和最近命中；Nginx 在回源前按正则返回 444，Agent 使用自有 nftables 表即时封禁 80/443，并通过 mTLS 在节点间同步和自动过期。
-- Nginx 为 HTTP 与 stream 分别生成共享 `00-base.conf` 和每站点 `site-<id>.conf`；Agent 使用版本与内容摘要目录同时暂存两个配置族，再原子切换稳定索引。每个站点仍拥有独立 `server` 和 `upstream`：80 强制跳转 HTTPS，443 使用 TLS 1.2/1.3，并通过独立的 `http2 on` 指令启用 HTTP/2。节点级 `worker_processes`、`worker_connections` 和 `worker_rlimit_nofile` 分别由主配置与 `events` include 管理。
+- 安全工作台管理全局请求路径策略、活动 IP 封禁和最近命中；Nginx 在回源前按正则返回 444，Agent 使用自有 nftables 表即时封禁 TCP 80/443 与 QUIC UDP 443，并通过 mTLS 在节点间同步和自动过期。
+- Nginx 为 HTTP 与 stream 分别生成共享 `00-base.conf` 和每站点 `site-<id>.conf`；Agent 使用版本与内容摘要目录同时暂存两个配置族，再原子切换稳定索引。每个站点仍拥有独立 `server` 和 `upstream`：80 强制跳转 HTTPS，TCP 443 保留 TLS 1.2/1.3 与 HTTP/1.1/2；报告 `http3_v1` 的节点额外监听 UDP 443、广告 `Alt-Svc` 并启用 QUIC 地址验证重试。Agent 在应用前后分别检查 TCP/UDP 端口归属，能力变化会触发节点期望状态自动重建。节点级 `worker_processes`、`worker_connections` 和 `worker_rlimit_nofile` 分别由主配置与 `events` include 管理。
 - CDN 业务 HTTP/HTTPS server 默认显式使用 `keepalive_timeout 120s` 和 `keepalive_requests 1000`，并可按站点覆盖客户端保活秒数；每个 upstream、每个 worker 的空闲回源连接池为 `keepalive 30`，HTTP/gRPC 回源连接超时统一为 10 秒。普通 HTTP 代理显式清空 `Upgrade`/`Connection`，确保 HTTP/1.1 上游连接可以复用；WebSocket、SSE 和 POST 由请求特征自动进入独立无缓存分支。
 
 ### 3.3 请求处理策略
@@ -180,7 +180,7 @@ edge-a 上的 cdn-edge-agent ── HTTPS ${CONTROL_MTLS_PORT} ──> cdn-contr
 ### P2：连接与容量调优
 
 - 节点默认使用 `worker_processes auto`、`worker_connections 4096` 和 `worker_rlimit_nofile 65536`；Node 详情可按 VPS 的文件描述符、内存和源站能力调整三项值。`sendfile on`、`tcp_nopush on` 等发行版 HTTP 参数仍由 Debian Nginx 主配置管理。
-- 已启用 HTTP/2，但尚未在生成配置中启用 HTTP/3/QUIC；是否增加取决于客户端覆盖、UDP 443 防火墙和运维复杂度。
+- HTTP/3/QUIC 已按运行时能力启用：安装器仅在 Nginx 包含 `ngx_http_v3_module` 时声明能力，配置保留 HTTP/1.1/2 回退，并将 UDP 443 冲突、监听确认、回滚和 IP 封禁纳入既有事务。上线仍需逐节点确认云厂商与主机防火墙开放 UDP 443，并从外部执行 `curl --http3-only` 验收。
 - 可配置的客户端保活和 2-60 分钟回源读写空闲超时不能代替应用层保活。WebSocket 应发送 ping/pong，SSE 应定期发送注释或事件心跳；持续有数据的连接总时长不受该档位限制。
 
 ### P3：产品与安全边界

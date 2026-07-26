@@ -18,7 +18,7 @@ cache "cdn_cache" uses the "/opt/cdn-edge/cache" cache path while previously it 
 
 1. 旧布局迁移改变 `cdn_cache` 路径时，安装脚本使用 `systemctl restart nginx.service`。迁移失败并恢复旧配置时同样冷重启，确保恢复后的 master 与磁盘配置一致。
 2. 已经位于 `/opt/cdn-edge` 的普通升级保持缓存路径不变，仍使用 reload，避免不必要的连接中断。首次接入节点容量管理时，安装器会原子加入带标记的主配置和 `events` include，并在同一事务内验证；失败会恢复原始主配置。
-3. Edge Agent reload 后最多等待 5 秒，必须看到 master 产生至少一个新的 Nginx worker PID。没有新 worker 就把应用标记为失败，恢复上一份配置和证书，并且不写入新的 applied version。
+3. Edge Agent reload 后最多等待 5 秒，必须看到 master 产生至少一个新的 Nginx worker PID。没有新 worker 就把应用标记为失败，恢复上一份配置和证书，并且不写入新的 applied version。对于 `http3_v1` 状态，Agent 还会在应用前检查 UDP 443 占用者，并在 reload 后确认 Nginx 同时持有 TCP 与 UDP 监听；任一检查失败都走同一回滚路径。
 4. 控制面保留节点级 HTTP 探测，同时对已包含新能力的每个站点配置执行直连 Edge IP:443 的 HTTPS 探测。请求 URL、HTTP Host、TLS SNI 和证书主机名校验都使用站点真实域名，响应体必须精确标识该站点。
 5. 站点与节点的 DNS 资格分别使用 3 次失败摘除、5 次成功恢复的滞回。多节点站点只摘除失败节点；如果所有已分配节点都不合格，系统保留现有 DNS 并发送告警，避免主动发布空记录集。
 6. 滚动发布期间，尚未包含站点探针端点的旧 desired state 暂时只使用节点级健康结果。执行 `publish-all` 并由 Edge 应用新配置后，控制面自动切换到站点级判断。
@@ -59,6 +59,8 @@ sudo nginx -t
 sudo nginx -T 2>/dev/null | grep -F '/opt/cdn-edge/cache'
 test -z "$(sudo nginx -T 2>/dev/null | grep -F '/var/cache/cdn-platform')"
 curl -fsS http://127.0.0.1/__cdn_health
+sudo ss -H -ltnp '( sport = :443 )'
+sudo ss -H -lunp '( sport = :443 )'
 ```
 
 ## 站点验证
@@ -82,6 +84,17 @@ curl --silent --show-error --output /dev/null \
   --resolve "$domain:443:$edge_ip" \
   "https://$domain/"
 ```
+
+若节点报告 `http3_v1`，还应从另一台主机验证真实 QUIC 握手。该检查需要 curl 自身包含 HTTP/3 支持；输出必须为 `HTTP 3`：
+
+```bash
+curl --http3-only --fail --silent --show-error \
+  --resolve "$domain:443:$edge_ip" \
+  --write-out '\nHTTP %{http_version}\n' \
+  "https://$domain/"
+```
+
+控制面健康对账有意继续使用 TCP HTTPS 回退路径，因此 TCP 健康不能证明 UDP 443 已通过云厂商防火墙。若本机 `ss -lunp` 显示 Nginx，但外部 QUIC 请求失败，应先检查主机与云安全组的 UDP 443 入站规则。
 
 控制面可用以下查询核对站点级滞回状态；`last_error` 会保留最近一次域名、TLS 或响应体错误：
 

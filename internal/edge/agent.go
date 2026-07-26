@@ -649,6 +649,10 @@ func (a *Agent) apply(state domain.DesiredState) error {
 	if err != nil {
 		return a.applyFailed(state.Version, "invalid_desired_state", err, nil)
 	}
+	udpPorts, err := desiredPublicUDPPorts(state)
+	if err != nil {
+		return a.applyFailed(state.Version, "invalid_desired_state", err, nil)
+	}
 	configurationBackups := make(map[string]fileBackup)
 	for _, path := range []string{a.Config.NginxConfigPath, a.Config.NginxStreamConfigPath, a.Config.NginxMainConfigPath, a.Config.NginxEventsConfigPath} {
 		backup, backupErr := readBackup(path)
@@ -664,7 +668,13 @@ func (a *Agent) apply(state domain.DesiredState) error {
 	if err != nil {
 		return a.applyFailed(state.Version, "port_check_failed", err, nil)
 	}
-	if conflicts := unmanagedListeners(listeners, managedListenerPorts(configurationBackups, ports)); len(conflicts) > 0 {
+	udpListeners, err := inspectUDPListeners(a.Config.Runner, udpPorts)
+	if err != nil {
+		return a.applyFailed(state.Version, "port_check_failed", err, nil)
+	}
+	conflicts := unmanagedListeners(listeners, managedListenerPorts(configurationBackups, ports))
+	conflicts = append(conflicts, unmanagedListeners(udpListeners, managedQUICListenerPorts(configurationBackups, udpPorts))...)
+	if len(conflicts) > 0 {
 		return a.applyFailed(state.Version, "port_conflict", fmt.Errorf("public port is already held by another service: %s", formatPortConflicts(conflicts)), conflicts)
 	}
 	backups, code, err := a.stageCertificates(state.Certificates)
@@ -731,10 +741,15 @@ func (a *Agent) apply(state domain.DesiredState) error {
 	if err := a.Config.Runner.Apply(); err != nil {
 		restoreBackups(backups)
 		a.restorePreviousConfigs(configurationBackups)
+		conflicts := make([]domain.PortConflict, 0)
 		if listeners, inspectErr := a.Config.Runner.PortListeners(ports); inspectErr == nil {
-			if conflicts := foreignListeners(listeners); len(conflicts) > 0 {
-				return a.applyFailed(state.Version, "port_conflict", fmt.Errorf("public port is already held by another service: %s", formatPortConflicts(conflicts)), conflicts)
-			}
+			conflicts = append(conflicts, foreignListeners(listeners)...)
+		}
+		if listeners, inspectErr := inspectUDPListeners(a.Config.Runner, udpPorts); inspectErr == nil {
+			conflicts = append(conflicts, foreignListeners(listeners)...)
+		}
+		if len(conflicts) > 0 {
+			return a.applyFailed(state.Version, "port_conflict", fmt.Errorf("public port is already held by another service: %s", formatPortConflicts(conflicts)), conflicts)
 		}
 		return a.applyFailed(state.Version, "nginx_apply_failed", err, nil)
 	}
@@ -749,10 +764,21 @@ func (a *Agent) apply(state domain.DesiredState) error {
 		a.restorePreviousConfigs(configurationBackups)
 		return a.applyFailed(state.Version, "port_conflict", fmt.Errorf("public port is already held by another service: %s", formatPortConflicts(conflicts)), conflicts)
 	}
-	if !nginxOwnsPorts(listeners, ports) {
+	udpListeners, err = a.waitForNginxUDPListeners(udpPorts)
+	if err != nil {
 		restoreBackups(backups)
 		a.restorePreviousConfigs(configurationBackups)
-		return a.applyFailed(state.Version, "nginx_not_listening", fmt.Errorf("Nginx did not retain all required public listeners after applying configuration: %s", formatPorts(ports)), nil)
+		return a.applyFailed(state.Version, "port_check_failed", err, nil)
+	}
+	if conflicts := foreignListeners(udpListeners); len(conflicts) > 0 {
+		restoreBackups(backups)
+		a.restorePreviousConfigs(configurationBackups)
+		return a.applyFailed(state.Version, "port_conflict", fmt.Errorf("public port is already held by another service: %s", formatPortConflicts(conflicts)), conflicts)
+	}
+	if !nginxOwnsPorts(listeners, ports) || !nginxOwnsPorts(udpListeners, udpPorts) {
+		restoreBackups(backups)
+		a.restorePreviousConfigs(configurationBackups)
+		return a.applyFailed(state.Version, "nginx_not_listening", fmt.Errorf("Nginx did not retain all required public listeners after applying configuration: %s", formatPublicPorts(ports, udpPorts)), nil)
 	}
 	fragmentsActivated = true
 	if a.cacheUsage != nil {
@@ -763,7 +789,7 @@ func (a *Agent) apply(state domain.DesiredState) error {
 		return a.applyFailed(state.Version, "applied_version_write_failed", err, nil)
 	}
 	a.cleanupOldFragmentDirectories(activeFragmentDirectories)
-	detail := "Nginx is listening on " + formatPorts(ports)
+	detail := "Nginx is listening on " + formatPublicPorts(ports, udpPorts)
 	if cacheCleanupErr != nil {
 		detail += "; cache cleanup warning: " + cacheCleanupErr.Error()
 	}
@@ -946,6 +972,45 @@ func (a *Agent) waitForNginxListeners(ports []int) ([]domain.PortConflict, error
 	}
 }
 
+func (a *Agent) waitForNginxUDPListeners(ports []int) ([]domain.PortConflict, error) {
+	if len(ports) == 0 {
+		return nil, nil
+	}
+	deadline := time.Now().Add(a.Config.ListenerSettleTimeout)
+	for {
+		listeners, err := inspectUDPListeners(a.Config.Runner, ports)
+		if err != nil {
+			return nil, err
+		}
+		if len(foreignListeners(listeners)) > 0 || nginxOwnsPorts(listeners, ports) {
+			return listeners, nil
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return listeners, nil
+		}
+		delay := a.Config.ListenerPollInterval
+		if delay > remaining {
+			delay = remaining
+		}
+		time.Sleep(delay)
+	}
+}
+
+func inspectUDPListeners(runner Runner, ports []int) ([]domain.PortConflict, error) {
+	if len(ports) == 0 {
+		return nil, nil
+	}
+	listeners, err := runner.UDPPortListeners(ports)
+	if err != nil {
+		return nil, err
+	}
+	for index := range listeners {
+		listeners[index].Protocol = "udp"
+	}
+	return listeners, nil
+}
+
 func desiredPublicPorts(state domain.DesiredState) ([]int, error) {
 	if state.PublicPorts == nil {
 		// Desired states emitted before this field was introduced all represented
@@ -958,6 +1023,23 @@ func desiredPublicPorts(state domain.DesiredState) ([]int, error) {
 	for _, port := range state.PublicPorts {
 		if port < 1 || port > 65535 {
 			return nil, fmt.Errorf("invalid public TCP port %d", port)
+		}
+		if seen[port] {
+			continue
+		}
+		seen[port] = true
+		ports = append(ports, port)
+	}
+	sort.Ints(ports)
+	return ports, nil
+}
+
+func desiredPublicUDPPorts(state domain.DesiredState) ([]int, error) {
+	ports := make([]int, 0, len(state.PublicUDPPorts))
+	seen := make(map[int]bool, len(state.PublicUDPPorts))
+	for _, port := range state.PublicUDPPorts {
+		if port < 1 || port > 65535 {
+			return nil, fmt.Errorf("invalid public UDP port %d", port)
 		}
 		if seen[port] {
 			continue
@@ -1053,6 +1135,20 @@ func managedListenerPorts(backups map[string]fileBackup, desiredPorts []int) map
 	return managed
 }
 
+func managedQUICListenerPorts(backups map[string]fileBackup, desiredPorts []int) map[int]bool {
+	managed := make(map[int]bool, len(desiredPorts))
+	for _, port := range desiredPorts {
+		needle := []byte(fmt.Sprintf("listen %d quic", port))
+		for _, backup := range backups {
+			if backup.exists && bytes.Contains(backup.contents, needle) {
+				managed[port] = true
+				break
+			}
+		}
+	}
+	return managed
+}
+
 func unmanagedListeners(listeners []domain.PortConflict, managedPorts map[int]bool) []domain.PortConflict {
 	conflicts := make([]domain.PortConflict, 0)
 	for _, listener := range listeners {
@@ -1087,7 +1183,11 @@ func nginxOwnsPorts(listeners []domain.PortConflict, ports []int) bool {
 func formatPortConflicts(conflicts []domain.PortConflict) string {
 	parts := make([]string, 0, len(conflicts))
 	for _, conflict := range conflicts {
-		value := fmt.Sprintf("TCP %d: %s", conflict.Port, conflict.Process)
+		protocol := strings.ToUpper(strings.TrimSpace(conflict.Protocol))
+		if protocol == "" {
+			protocol = "TCP"
+		}
+		value := fmt.Sprintf("%s %d: %s", protocol, conflict.Port, conflict.Process)
 		if conflict.PID > 0 {
 			value += fmt.Sprintf(" (PID %d)", conflict.PID)
 		}
@@ -1096,13 +1196,16 @@ func formatPortConflicts(conflicts []domain.PortConflict) string {
 	return strings.Join(parts, ", ")
 }
 
-func formatPorts(ports []int) string {
-	if len(ports) == 0 {
-		return "no public TCP ports"
-	}
-	values := make([]string, 0, len(ports))
-	for _, port := range ports {
+func formatPublicPorts(tcpPorts, udpPorts []int) string {
+	values := make([]string, 0, len(tcpPorts)+len(udpPorts))
+	for _, port := range tcpPorts {
 		values = append(values, fmt.Sprintf("TCP %d", port))
+	}
+	for _, port := range udpPorts {
+		values = append(values, fmt.Sprintf("UDP %d", port))
+	}
+	if len(values) == 0 {
+		return "no public ports"
 	}
 	return strings.Join(values, " and ")
 }

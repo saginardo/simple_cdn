@@ -36,6 +36,27 @@ func TestMigrationsRecordCurrentVersionAndRemainIdempotent(t *testing.T) {
 	}
 }
 
+func TestHTTP3MigrationAddsPublicUDPPorts(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err := database.db.Exec(`ALTER TABLE node_states DROP COLUMN public_udp_ports_json`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`DELETE FROM schema_migrations WHERE version = 19`); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	found, err := columnExists(database.db, "node_states", "public_udp_ports_json")
+	if err != nil || !found {
+		t.Fatalf("public UDP ports column = %v, %v", found, err)
+	}
+}
+
 func TestSmartRoutingMigrationBackfillsExistingNodeOwnership(t *testing.T) {
 	database, err := Open(filepath.Join(t.TempDir(), "control.db"))
 	if err != nil {
@@ -90,7 +111,7 @@ func TestSmartRoutingMinimumRecoveryRoundsMigrationUpgradesExistingPolicies(t *t
 	if _, err := database.db.Exec(`UPDATE node_smart_routing SET score_resume_rounds = 1, score_recovery_streak = 1 WHERE node_id = ?`, node.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.db.Exec(`DELETE FROM schema_migrations WHERE version = 18`); err != nil {
+	if _, err := database.db.Exec(`DELETE FROM schema_migrations WHERE version >= 18`); err != nil {
 		t.Fatal(err)
 	}
 	if err := database.Migrate(); err != nil {

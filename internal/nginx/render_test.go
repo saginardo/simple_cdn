@@ -55,6 +55,48 @@ func TestRenderIncludesCacheAndFailoverPolicy(t *testing.T) {
 	}
 }
 
+func TestRenderHTTP3IsCapabilityGated(t *testing.T) {
+	site := domain.Site{
+		ID: "site-h3", Name: "HTTP/3 site", Domains: []string{"h3.example.test"},
+		PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, Enabled: true,
+	}
+	legacyConfiguration, err := Render([]domain.Site{site})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, unexpected := range []string{"listen 443 quic", "http3 on;", "quic_retry on;", "Alt-Svc"} {
+		if strings.Contains(legacyConfiguration, unexpected) {
+			t.Fatalf("legacy configuration unexpectedly contains %q:\n%s", unexpected, legacyConfiguration)
+		}
+	}
+
+	configuration, err := RenderWithRuntimeOptions([]domain.Site{site}, nil, nil, RenderRuntimeOptions{
+		DefaultCacheSizeGB: domain.DefaultCacheMaxSizeGB,
+		HTTP3Enabled:       true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"listen 443 ssl default_server;",
+		"listen 443 quic reuseport default_server;",
+		"listen 443 ssl;",
+		"listen 443 quic;",
+		"http2 on;",
+		"http3 on;",
+		"quic_retry on;",
+		`add_header Alt-Svc 'h3=":443"; ma=86400' always;`,
+		"ssl_protocols TLSv1.2 TLSv1.3;",
+	} {
+		if !strings.Contains(configuration, expected) {
+			t.Fatalf("HTTP/3 configuration is missing %q:\n%s", expected, configuration)
+		}
+	}
+	if strings.Contains(configuration, "ssl_early_data") {
+		t.Fatalf("HTTP/3 configuration unexpectedly enables replayable 0-RTT data:\n%s", configuration)
+	}
+}
+
 func TestRenderUsesOneNodeCacheLimitAcrossSites(t *testing.T) {
 	override := 7
 	sites := []domain.Site{
