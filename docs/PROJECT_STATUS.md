@@ -36,7 +36,7 @@ edge-a 上的 cdn-edge-agent ── HTTPS ${CONTROL_MTLS_PORT} ──> cdn-contr
        ├─ 拉取 desired state / 升级任务       ├─ 节点注册/CSR 签发内部客户端证书
        ├─ 原子写入 Nginx 配置与站点证书       ├─ 心跳、健康/DNS 对账
        ├─ nginx -t -> reload / 失败回滚       └─ 接收批量访问日志
-       └─ 上报心跳、应用版本、代理摘要、日志
+       └─ 上报心跳、5 秒机器状态、应用版本、代理摘要、日志
 
                          业务请求路径
 客户端 ── Cloudflare DNS-only A ──> Edge Nginx :80/:443
@@ -54,14 +54,15 @@ edge-a 上的 cdn-edge-agent ── HTTPS ${CONTROL_MTLS_PORT} ──> cdn-contr
 - 部署模型：站点先创建和签发证书，再显式发布；发布生成每个边缘节点的 desired state，不直接 SSH 修改边缘。
 - 证书：Certbot `dns-cloudflare` DNS-01，私钥以 `CONTROL_ENCRYPTION_KEY` 进行 AES-GCM 加密后保存在 SQLite，向边缘仅通过 mTLS 下发。
 - 节点健康：每 15 秒启动一轮有截止时间的对账，以固定上限 worker 并发探测并串行写入状态；连续 3 次失败从 DNS 池移除，连续 5 次成功恢复；所有节点均不健康时保留现有 DNS，不发布空记录。每轮聚合全部错误、记录耗时并通过诊断 API 暴露最近结果，上一轮未结束时不会重叠启动下一轮。
-- 日志：ClickHouse 原始请求日志保留 7 天，分钟级聚合保留 30 天；边缘控制面不可达时，本地队列暂存日志。
+- 日志与指标：ClickHouse 原始请求日志保留 7 天，分钟级聚合保留 30 天；边缘控制面不可达时，本地队列暂存访问日志。5 秒机器状态仅在主控内存中保留最新值，不持久化历史。
 - TCP 监测与智能路由：拨测目标支持唯一名称；SQLite 保存最新评分、目标结果及每节点智能路由策略。评分门控支持双阈值和独立连续轮数，时间门控支持 `Asia/Shanghai` 每周重复窗口，两者同时启用时采用 AND 关系。每轮目标明细在 SQLite 事务提交后进入有界内存队列，由后台批量写入 ClickHouse 并保留 7 天；ClickHouse 写入或查询故障不会阻塞节点上报，也不会清空 SQLite 当前状态。具体规则见 [SMART_ROUTING.md](SMART_ROUTING.md)。
 
 ### 3.2 边缘面
 
 - Edge agent 用 15 分钟的一次性注册令牌提交 CSR，获得控制面内部 CA 签发的 mTLS 客户端证书；后续所有状态拉取、心跳、日志上传均使用该证书。
 - 边缘自有文件统一位于 `/opt/cdn-edge`：`bin/`、`config/`、`data/`、`logs/`、`cache/` 和 `systemd/`。系统路径仅保留 systemd 与 Nginx 的发现链接；Nginx 包、全局配置和 journald 仍由 Debian 管理。
-- Agent 默认每 30 秒发送一次独立心跳，主控在响应中合并返回期望状态、监控目标、安全封禁和升级任务修订；边缘仅拉取变化项，慢速配置、拨测和升级任务不会阻塞心跳。配置或证书写入采用原子替换，先执行 `nginx -t`，仅在成功时 reload，失败会恢复上一个已知可用版本。
+- Agent 默认每 30 秒发送一次独立心跳，并每 5 秒通过同一个 mTLS HTTP/2 Transport 上报机器状态。主控在心跳响应中合并返回期望状态、监控目标、安全封禁和升级任务修订；边缘仅拉取变化项，慢速配置、拨测和升级任务不会阻塞心跳或机器状态采集。配置或证书写入采用原子替换，先执行 `nginx -t`，仅在成功时 reload，失败会恢复上一个已知可用版本。
+- 主控仅接受采集时间更新的机器快照，只在内存中保存每节点最新值，并通过受管理员会话保护的 SSE 推送到节点详情页，不写入持久化存储。SSE 每 15 秒复核会话并发送保活，前端以 30 秒 GET 作为断线回退，且按采集时间避免旧响应覆盖新事件；没有快照时不显示机器状态区域。
 - Agent 上报自身 SHA-256 和 `online_upgrade_v1` 能力；主控可对单节点下发当前制品，独立 updater 在替换主进程后等待新 Agent 完成 mTLS 心跳，失败恢复旧二进制和 systemd/Nginx 集成。
 - 安全工作台管理全局请求路径策略、活动 IP 封禁和最近命中；Nginx 在回源前按正则返回 444，Agent 使用自有 nftables 表即时封禁 80/443，并通过 mTLS 在节点间同步和自动过期。
 - Nginx 为 HTTP 与 stream 分别生成共享 `00-base.conf` 和每站点 `site-<id>.conf`；Agent 使用版本与内容摘要目录同时暂存两个配置族，再原子切换稳定索引。每个站点仍拥有独立 `server` 和 `upstream`：80 强制跳转 HTTPS，443 使用 TLS 1.2/1.3，并通过独立的 `http2 on` 指令启用 HTTP/2。节点级 `worker_processes`、`worker_connections` 和 `worker_rlimit_nofile` 分别由主配置与 `events` include 管理。
@@ -86,10 +87,10 @@ edge-a 上的 cdn-edge-agent ── HTTPS ${CONTROL_MTLS_PORT} ──> cdn-contr
 | `cmd/control` | 已实现 | 控制面进程；支持 `keygen` 和仅本机使用的 `publish-all`。 |
 | `internal/control` | 已实现 | HTTP API、认证、证书任务、发布、DNS 健康对账、审计、嵌入式管理界面。 |
 | `internal/store` | 已实现 | 版本化事务迁移、SQLite schema、站点/节点/任务/消息/会话/证书/状态持久化。 |
-| `internal/edge` | 已实现 | 注册、mTLS、配置同步、原子应用、Nginx 回滚、心跳、日志转发、机器状态和低频缓存磁盘占用采集。 |
+| `internal/edge` | 已实现 | 注册、mTLS、配置同步、原子应用、Nginx 回滚、心跳、日志转发、5 秒机器状态和低频缓存磁盘占用采集。 |
 | `internal/nginx` | 已实现 | HTTP 缓存、整站透传、回源、TLS、WebSocket/SSE、gRPC、备用源站与客户端 IP 限速配置渲染。 |
 | `internal/integrations` | 已实现 | Cloudflare、Certbot、SMTP 等外部适配器。 |
-| `internal/logstore` | 已实现 | ClickHouse 原始日志、分钟指标、节点缓存状态聚合、7 天 TCP 拨测历史及其异步批量写入。 |
+| `internal/logstore` | 已实现 | ClickHouse 原始日志、分钟指标、节点缓存状态聚合，以及 7 天 TCP 拨测历史及异步批量写入。 |
 | `frontend/` 与 `internal/control/web/dist` | 已实现 | React 19、Vite、TypeScript、Tailwind CSS v4 和 shadcn/ui 简体中文管理台；Vite 哈希产物通过 `//go:embed web/dist` 编入控制面二进制。 |
 | `deploy/` 与 `scripts/` | 已实现 | Compose 主控安装、证书续期、Restic 重试/状态/告警、隔离恢复与切换、发布构建和 ClickHouse 配置。边缘安装资源由控制面从 `internal/control` 嵌入提供。 |
 
@@ -118,7 +119,7 @@ edge-a 上的 cdn-edge-agent ── HTTPS ${CONTROL_MTLS_PORT} ──> cdn-contr
 | 控制服务 | Compose `control`、`clickhouse`、`control-cert-renew` 应保持运行并通过健康检查。 |
 | 数据目录 | 统一根目录 `/opt/cdn-platform`；配置、control 数据、ClickHouse、证书、日志、备份和 rollback 均在其下。 |
 | ClickHouse | Compose `clickhouse` 使用 `26.6` 分支浮动标签，跟随该分支的最新补丁；待 `26.8` 正式标记为 LTS 并通过升级验证后切换。HTTP 仅映射到 `127.0.0.1:${CLICKHOUSE_HTTP_PORT}`。 |
-| ClickHouse 验收 | 原始访问日志、分钟聚合和 `cdn_tcp_monitoring_history` 应持续写入；拨测历史 TTL 为 7 天，具体数量不记录在仓库中。 |
+| ClickHouse 验收 | 原始访问日志、分钟聚合和 `cdn_tcp_monitoring_history` 应持续写入；拨测历史 TTL 为 7 天，具体数量不记录在仓库中。机器状态不写入 ClickHouse。 |
 | TLS | Compose 内使用 Cloudflare DNS-01 独立签发并每 12 小时检查续期；主控支持无重启热加载。 |
 | 备份 | SQLite、ClickHouse 和 Restic 工作流应通过隔离恢复演练；凭据只保存在部署环境。 |
 | 边缘节点 | `edge-a`（`203.0.113.10`）、`edge-b`（`203.0.113.11`）、`edge-c`（`203.0.113.12`）、`edge-d`（`203.0.113.13`）代表 RFC 5737 示例节点。 |

@@ -215,14 +215,16 @@ export interface MachineReport {
   collected_at: string;
 }
 
+export interface NodeMachineStatus {
+  available: boolean;
+  unavailable_reason?: string;
+  stale: boolean;
+  report?: MachineReport;
+}
+
 export interface NodeDetail {
   node: Node;
-  machine: {
-    available: boolean;
-    unavailable_reason?: string;
-    stale: boolean;
-    report?: MachineReport;
-  };
+  machine: NodeMachineStatus;
   cache: NodeCacheSettings;
   sites: Array<{
     id: string;

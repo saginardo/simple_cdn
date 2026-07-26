@@ -15,9 +15,10 @@ import (
 )
 
 const (
-	nodeCacheWindow           = 24 * time.Hour
-	nodeCacheStorageFreshness = 15 * time.Minute
-	nodeMachineFreshness      = 10 * time.Minute
+	nodeCacheWindow              = 24 * time.Hour
+	nodeCacheStorageFreshness    = 15 * time.Minute
+	nodeMachineLegacyFreshness   = 10 * time.Minute
+	nodeMachineRealtimeFreshness = 15 * time.Second
 )
 
 type nodeCacheStatusBucket struct {
@@ -212,8 +213,15 @@ func (s *Server) nodeMachineStatus(node domain.Node, at time.Time) nodeMachineSt
 	s.machineStatusMu.RUnlock()
 	if found {
 		report.CollectedAt = report.CollectedAt.UTC()
+		freshness := nodeMachineLegacyFreshness
+		for _, capability := range node.Capabilities {
+			if capability == domain.EdgeCapabilityMachineStatusStream {
+				freshness = nodeMachineRealtimeFreshness
+				break
+			}
+		}
 		return nodeMachineStatusResponse{
-			Available: true, Stale: report.CollectedAt.Before(at.Add(-nodeMachineFreshness)), Report: &report,
+			Available: true, Stale: report.CollectedAt.Before(at.Add(-freshness)), Report: &report,
 		}
 	}
 	for _, capability := range node.Capabilities {
@@ -222,19 +230,6 @@ func (s *Server) nodeMachineStatus(node domain.Node, at time.Time) nodeMachineSt
 		}
 	}
 	return nodeMachineStatusResponse{UnavailableReason: "升级边缘代理后可查看机器状态"}
-}
-
-func (s *Server) recordNodeMachineStatus(nodeID string, report domain.MachineStatus) {
-	report.CollectedAt = report.CollectedAt.UTC()
-	s.machineStatusMu.Lock()
-	defer s.machineStatusMu.Unlock()
-	if current, found := s.machineStatuses[nodeID]; found && report.CollectedAt.Before(current.CollectedAt) {
-		return
-	}
-	if s.machineStatuses == nil {
-		s.machineStatuses = make(map[string]domain.MachineStatus)
-	}
-	s.machineStatuses[nodeID] = report
 }
 
 func (s *Server) nodeCacheStatus(response http.ResponseWriter, request *http.Request) {

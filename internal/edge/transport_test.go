@@ -266,7 +266,7 @@ func TestHeartbeatStoresControlManifest(t *testing.T) {
 	}
 }
 
-func TestHeartbeatUsesOneHTTP2MTLSConnection(t *testing.T) {
+func TestHeartbeatAndMachineStatusUseOneHTTP2MTLSConnection(t *testing.T) {
 	identity := newTransportTestIdentity(t)
 	serverCertificate, err := tls.X509KeyPair(identity.serverCertPEM, identity.serverKeyPEM)
 	if err != nil {
@@ -281,6 +281,10 @@ func TestHeartbeatUsesOneHTTP2MTLSConnection(t *testing.T) {
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		protocols = append(protocols, request.Proto)
 		remoteAddresses = append(remoteAddresses, request.RemoteAddr)
+		if request.URL.Path == "/api/edge/v1/machine-status" {
+			response.WriteHeader(http.StatusAccepted)
+			return
+		}
 		response.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(response, `{"ok":true}`)
 	}))
@@ -296,15 +300,30 @@ func TestHeartbeatUsesOneHTTP2MTLSConnection(t *testing.T) {
 
 	agent := newTransportTestAgent(t, server.URL, t.TempDir(), identity)
 	defer agent.resetControlClient()
-	for range 2 {
-		if err := agent.Heartbeat(t.Context(), 1, "", nil); err != nil {
-			t.Fatal(err)
+	if err := agent.Heartbeat(t.Context(), 1, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	report := domain.MachineStatus{
+		Distribution: "Debian", Version: "13", UptimeSeconds: 60,
+		Load1: 0.1, Load5: 0.2, Load15: 0.3, CPUUsagePercent: 25, CPULogicalCores: 2,
+		MemoryUsedBytes: 1, MemoryTotalBytes: 2, DiskUsedBytes: 1, DiskTotalBytes: 2,
+		NetworkInterface: "eth0", SampleSeconds: 5, CollectedAt: time.Now().UTC(),
+	}
+	if err := agent.ReportMachineStatus(t.Context(), report); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.Heartbeat(t.Context(), 1, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(protocols) != 3 {
+		t.Fatalf("request protocols = %#v, want three HTTP/2.0 requests", protocols)
+	}
+	for _, protocol := range protocols {
+		if protocol != "HTTP/2.0" {
+			t.Fatalf("request protocols = %#v, want HTTP/2.0", protocols)
 		}
 	}
-	if len(protocols) != 2 || protocols[0] != "HTTP/2.0" || protocols[1] != "HTTP/2.0" {
-		t.Fatalf("request protocols = %#v, want two HTTP/2.0 requests", protocols)
-	}
-	if len(remoteAddresses) != 2 || remoteAddresses[0] != remoteAddresses[1] {
+	if remoteAddresses[0] != remoteAddresses[1] || remoteAddresses[1] != remoteAddresses[2] {
 		t.Fatalf("remote addresses = %#v, want one reused connection", remoteAddresses)
 	}
 }

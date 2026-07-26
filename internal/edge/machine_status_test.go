@@ -1,6 +1,7 @@
 package edge
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -73,7 +74,7 @@ func TestMachineStatusCollectorReportsLinuxHostAndIntervalRates(t *testing.T) {
 	}
 }
 
-func TestHeartbeatIncludesMachineStatusAndCapability(t *testing.T) {
+func TestMachineStatusRoundReportsStatusAndHeartbeatCarriesLatestSnapshot(t *testing.T) {
 	report := &domain.MachineStatus{
 		Distribution: "Debian GNU/Linux", Version: "13.5", UptimeSeconds: 60,
 		Load1: 0.1, Load5: 0.2, Load15: 0.3, CPUUsagePercent: 25, CPULogicalCores: 4,
@@ -86,14 +87,29 @@ func TestHeartbeatIncludesMachineStatusAndCapability(t *testing.T) {
 		Capabilities []string              `json:"capabilities"`
 		Machine      *domain.MachineStatus `json:"machine_status"`
 	}
+	var reported *domain.MachineStatus
 	client := &http.Client{Transport: upgradeRoundTripFunc(func(request *http.Request) (*http.Response, error) {
-		if err := json.NewDecoder(request.Body).Decode(&heartbeat); err != nil {
-			return nil, err
+		switch request.URL.Path {
+		case "/api/edge/v1/machine-status":
+			var status domain.MachineStatus
+			if err := json.NewDecoder(request.Body).Decode(&status); err != nil {
+				return nil, err
+			}
+			reported = &status
+			return &http.Response{
+				StatusCode: http.StatusAccepted, Status: "202 Accepted", Header: make(http.Header), Body: http.NoBody,
+			}, nil
+		case "/api/edge/v1/heartbeat":
+			if err := json.NewDecoder(request.Body).Decode(&heartbeat); err != nil {
+				return nil, err
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header),
+				Body: io.NopCloser(strings.NewReader(`{"ok":true}`)),
+			}, nil
+		default:
+			return nil, errors.New("unexpected request path " + request.URL.Path)
 		}
-		return &http.Response{
-			StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header),
-			Body: io.NopCloser(strings.NewReader(`{"ok":true}`)),
-		}, nil
 	})}
 	agent, err := New(Config{
 		ControlURL: "https://control.example.test", StateDir: t.TempDir(), CertificateDir: t.TempDir(),
@@ -106,27 +122,103 @@ func TestHeartbeatIncludesMachineStatusAndCapability(t *testing.T) {
 		copy := *report
 		return &copy, nil
 	})
+	agent.runMachineStatusRound(t.Context())
+	if reported == nil || reported.Version != "13.5" || reported.NetworkRXBytesPerSec != 1000 {
+		t.Fatalf("reported machine status = %#v", reported)
+	}
 	if err := agent.Heartbeat(t.Context(), 1, "", nil); err != nil {
 		t.Fatal(err)
 	}
 	if heartbeat.Machine == nil || heartbeat.Machine.Version != "13.5" || heartbeat.Machine.NetworkRXBytesPerSec != 1000 {
 		t.Fatalf("heartbeat machine status = %#v", heartbeat.Machine)
 	}
-	found := false
+	found, foundStream := false, false
 	for _, capability := range heartbeat.Capabilities {
 		found = found || capability == domain.EdgeCapabilityMachineStatus
+		foundStream = foundStream || capability == domain.EdgeCapabilityMachineStatusStream
 	}
-	if !found {
+	if !found || !foundStream {
 		t.Fatalf("heartbeat capabilities = %#v", heartbeat.Capabilities)
 	}
-	heartbeat.Machine = report
+	heartbeat.Machine = nil
 	agent.machineStatus = machineStatusReporterFunc(func() (*domain.MachineStatus, error) {
 		return nil, errors.New("procfs unavailable")
 	})
+	agent.runMachineStatusRound(t.Context())
 	if err := agent.Heartbeat(t.Context(), 1, "", nil); err != nil {
 		t.Fatalf("optional machine collection blocked heartbeat: %v", err)
 	}
-	if heartbeat.Machine != nil {
-		t.Fatalf("failed collection sent stale machine status: %#v", heartbeat.Machine)
+	if heartbeat.Machine == nil || heartbeat.Machine.CollectedAt != report.CollectedAt {
+		t.Fatalf("failed collection discarded latest machine status: %#v", heartbeat.Machine)
+	}
+}
+
+func TestMachineStatusDefaultsToFiveSecondSampling(t *testing.T) {
+	agent, err := New(Config{
+		ControlURL: "https://control.example.test", StateDir: t.TempDir(), CertificateDir: t.TempDir(),
+		AgentSHA256: strings.Repeat("c", 64), HTTPClient: &http.Client{Transport: upgradeRoundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusAccepted, Status: "202 Accepted", Header: make(http.Header), Body: http.NoBody}, nil
+		})}, Runner: &fakeRunner{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agent.Config.MachineStatusInterval != 5*time.Second {
+		t.Fatalf("machine status interval = %s", agent.Config.MachineStatusInterval)
+	}
+}
+
+func TestMachineStatusLoopUsesConfiguredSamplingInterval(t *testing.T) {
+	reports := make(chan time.Time, 4)
+	client := &http.Client{Transport: upgradeRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path != "/api/edge/v1/machine-status" {
+			return nil, errors.New("unexpected request path " + request.URL.Path)
+		}
+		reports <- time.Now()
+		return &http.Response{StatusCode: http.StatusAccepted, Status: "202 Accepted", Header: make(http.Header), Body: http.NoBody}, nil
+	})}
+	agent, err := New(Config{
+		ControlURL: "https://control.example.test", StateDir: t.TempDir(), CertificateDir: t.TempDir(),
+		AgentSHA256: strings.Repeat("d", 64), HTTPClient: client, Runner: &fakeRunner{}, MachineStatusInterval: 10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent.machineStatus = machineStatusReporterFunc(func() (*domain.MachineStatus, error) {
+		return &domain.MachineStatus{
+			Distribution: "Debian", Version: "13", UptimeSeconds: 60,
+			Load1: 0.1, Load5: 0.2, Load15: 0.3, CPUUsagePercent: 25, CPULogicalCores: 2,
+			MemoryUsedBytes: 1, MemoryTotalBytes: 2, DiskUsedBytes: 1, DiskTotalBytes: 2,
+			NetworkInterface: "eth0", SampleSeconds: 5, CollectedAt: time.Now().UTC(),
+		}, nil
+	})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		agent.runMachineStatusLoop(ctx)
+		close(done)
+	}()
+	var first, third time.Time
+	for index := range 3 {
+		select {
+		case reportedAt := <-reports:
+			if index == 0 {
+				first = reportedAt
+			}
+			third = reportedAt
+		case <-time.After(time.Second):
+			cancel()
+			t.Fatal("machine status loop did not report three samples")
+		}
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("machine status loop did not stop after cancellation")
+	}
+	if elapsed := third.Sub(first); elapsed < 15*time.Millisecond {
+		t.Fatalf("three machine status reports completed in %s, want configured spacing", elapsed)
 	}
 }

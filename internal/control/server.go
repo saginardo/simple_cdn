@@ -41,44 +41,46 @@ var embeddedWeb embed.FS
 var uninstallEdgeScript string
 
 type Server struct {
-	Store                   *store.Store
-	Cipher                  *Cipher
-	CA                      *InternalCA
-	Publisher               Publisher
-	DNS                     integrations.DNSProvider
-	ZoneResolver            integrations.ZoneResolver
-	Cloudflare              *integrations.CloudflareDNS
-	Issuer                  integrations.CertificateIssuer
-	CertificateManager      *CertificateManager
-	HealthManager           *HealthManager
-	SiteDeleter             *SiteDeletionManager
-	Settings                *SettingsManager
-	BackupValidator         BackupRepositoryValidator
-	BackupStatusPath        string
-	OnlineRestore           *OnlineRestoreManager
-	Notifier                integrations.Notifier
-	Logs                    logstore.Store
-	MonitoringHistory       logstore.MonitoringHistoryReader
-	MonitoringWriter        logstore.MonitoringHistoryEnqueuer
-	smtpNotifierFactory     func(SMTPProfile, string) integrations.Notifier
-	ControlURL              string
-	EdgeControlURL          string
-	EdgeBinaryURL           string
-	EdgeBinarySHA256        string
-	EdgeBinaryPath          string
-	InitializationTokenPath string
-	SetupAllowCIDRs         []*net.IPNet
-	TrustedProxyCIDRs       []*net.IPNet
-	Logger                  *slog.Logger
-	RestartControl          func()
-	machineStatusMu         sync.RWMutex
-	machineStatuses         map[string]domain.MachineStatus
-	loginMu                 sync.Mutex
-	loginHits               map[string][]time.Time
-	edgeSecurityRevisionMu  sync.Mutex
-	edgeSecurityRevision    string
-	edgeSecurityExpiresAt   time.Time
-	edgeSecurityRevisionSet bool
+	Store                     *store.Store
+	Cipher                    *Cipher
+	CA                        *InternalCA
+	Publisher                 Publisher
+	DNS                       integrations.DNSProvider
+	ZoneResolver              integrations.ZoneResolver
+	Cloudflare                *integrations.CloudflareDNS
+	Issuer                    integrations.CertificateIssuer
+	CertificateManager        *CertificateManager
+	HealthManager             *HealthManager
+	SiteDeleter               *SiteDeletionManager
+	Settings                  *SettingsManager
+	BackupValidator           BackupRepositoryValidator
+	BackupStatusPath          string
+	OnlineRestore             *OnlineRestoreManager
+	Notifier                  integrations.Notifier
+	Logs                      logstore.Store
+	MonitoringHistory         logstore.MonitoringHistoryReader
+	MonitoringWriter          logstore.MonitoringHistoryEnqueuer
+	smtpNotifierFactory       func(SMTPProfile, string) integrations.Notifier
+	ControlURL                string
+	EdgeControlURL            string
+	EdgeBinaryURL             string
+	EdgeBinarySHA256          string
+	EdgeBinaryPath            string
+	InitializationTokenPath   string
+	SetupAllowCIDRs           []*net.IPNet
+	TrustedProxyCIDRs         []*net.IPNet
+	Logger                    *slog.Logger
+	RestartControl            func()
+	machineStatusMu           sync.RWMutex
+	machineStatuses           map[string]domain.MachineStatus
+	machineStatusSubscribers  map[string]map[uint64]chan domain.MachineStatus
+	machineStatusSubscriberID uint64
+	loginMu                   sync.Mutex
+	loginHits                 map[string][]time.Time
+	edgeSecurityRevisionMu    sync.Mutex
+	edgeSecurityRevision      string
+	edgeSecurityExpiresAt     time.Time
+	edgeSecurityRevisionSet   bool
 }
 
 func (s *Server) Handler() http.Handler {
@@ -144,6 +146,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/nodes", s.requireAdmin(s.createNode))
 	mux.HandleFunc("POST /api/nodes/upgrade-all", s.requireAdmin(s.startAllNodeUpgrades))
 	mux.HandleFunc("GET /api/nodes/{id}", s.requireAdmin(s.nodeDetail))
+	mux.HandleFunc("GET /api/nodes/{id}/machine-status/events", s.requireAdmin(s.machineStatusEvents))
 	mux.HandleFunc("GET /api/nodes/{id}/cache-status", s.requireAdmin(s.nodeCacheStatus))
 	mux.HandleFunc("PUT /api/nodes/{id}/cache", s.requireAdmin(s.updateNodeCacheSettings))
 	mux.HandleFunc("PUT /api/nodes/{id}/nginx-capacity", s.requireAdmin(s.updateNodeNginxCapacity))
@@ -178,6 +181,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/edge/v1/renew", s.requireEdge(s.renew))
 	mux.HandleFunc("GET /api/edge/v1/desired-state", s.requireEdge(s.desiredState))
 	mux.HandleFunc("POST /api/edge/v1/heartbeat", s.requireEdge(s.heartbeat))
+	mux.HandleFunc("POST /api/edge/v1/machine-status", s.requireEdge(s.edgeMachineStatus))
 	mux.HandleFunc("GET /api/edge/v1/monitoring-targets", s.requireEdge(s.edgeMonitoringTargets))
 	mux.HandleFunc("POST /api/edge/v1/monitoring-results", s.requireEdge(s.edgeMonitoringReport))
 	mux.HandleFunc("GET /api/edge/v1/upgrade", s.requireEdge(s.edgeUpgradeInstruction))

@@ -60,6 +60,7 @@ type Config struct {
 	MonitoringTimeout     time.Duration
 	MonitoringAttempts    int
 	MonitoringWorkers     int
+	MachineStatusInterval time.Duration
 }
 
 type Agent struct {
@@ -76,6 +77,8 @@ type Agent struct {
 
 	manifestMu sync.RWMutex
 	manifest   *domain.EdgeControlManifest
+	machineMu  sync.RWMutex
+	machine    *domain.MachineStatus
 
 	monitoringMu       sync.RWMutex
 	monitoringTargets  []domain.MonitoringTarget
@@ -132,6 +135,9 @@ func New(config Config) (*Agent, error) {
 	if config.PollInterval == 0 {
 		config.PollInterval = 30 * time.Second
 	}
+	if config.MachineStatusInterval <= 0 {
+		config.MachineStatusInterval = 5 * time.Second
+	}
 	if config.ListenerSettleTimeout <= 0 {
 		config.ListenerSettleTimeout = 5 * time.Second
 	}
@@ -158,6 +164,7 @@ func New(config Config) (*Agent, error) {
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityOnlineUpgrade)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityCacheUsage)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityMachineStatus)
+	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityMachineStatusStream)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityNginxFragments)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityControlManifest)
 	configureMonitoring(&config)
@@ -199,6 +206,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		}()
 	}
 	start(func() { a.cacheUsage.Run(ctx) })
+	start(func() { a.runMachineStatusLoop(ctx) })
 	start(func() { a.logs.Run(ctx, a.Config.ControlURL, a.client) })
 	if a.security != nil {
 		start(func() { a.security.Run(ctx, a.Config.ControlURL, a.client) })
@@ -228,6 +236,31 @@ func (a *Agent) runHeartbeatLoop(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
+}
+
+func (a *Agent) runMachineStatusLoop(ctx context.Context) {
+	for {
+		a.runMachineStatusRound(ctx)
+		if !waitContext(ctx, a.Config.MachineStatusInterval) {
+			return
+		}
+	}
+}
+
+func (a *Agent) runMachineStatusRound(ctx context.Context) {
+	if a.machineStatus == nil {
+		return
+	}
+	report, err := a.machineStatus.Collect()
+	action := "collect machine status"
+	if err == nil && report != nil {
+		a.setLatestMachineStatus(report)
+		action = "report machine status"
+		requestCtx, cancel := context.WithTimeout(ctx, min(10*time.Second, a.Config.MachineStatusInterval))
+		err = a.ReportMachineStatus(requestCtx, *report)
+		cancel()
+	}
+	a.setComponentFailure("machine_status", action, err)
 }
 
 func (a *Agent) runPeriodic(ctx context.Context, name string, run func(context.Context)) {
@@ -314,7 +347,7 @@ func (a *Agent) setComponentFailure(component, action string, err error) {
 func (a *Agent) heartbeatError() string {
 	a.statusMu.Lock()
 	defer a.statusMu.Unlock()
-	for _, component := range []string{"certificate", "configuration", "monitoring", "upgrade"} {
+	for _, component := range []string{"certificate", "configuration", "monitoring", "upgrade", "machine_status"} {
 		if detail := a.componentFailures[component]; detail != "" {
 			return detail
 		}
@@ -381,6 +414,27 @@ func (a *Agent) setControlManifest(manifest *domain.EdgeControlManifest) {
 	if manifest != nil && a.security != nil {
 		a.security.NotifyRevision(manifest.SecurityRevision)
 	}
+}
+
+func (a *Agent) setLatestMachineStatus(report *domain.MachineStatus) {
+	a.machineMu.Lock()
+	defer a.machineMu.Unlock()
+	if report == nil {
+		a.machine = nil
+		return
+	}
+	copyOfReport := *report
+	a.machine = &copyOfReport
+}
+
+func (a *Agent) latestMachineStatus() *domain.MachineStatus {
+	a.machineMu.RLock()
+	defer a.machineMu.RUnlock()
+	if a.machine == nil {
+		return nil
+	}
+	copyOfReport := *a.machine
+	return &copyOfReport
 }
 
 func (a *Agent) EnsureEnrollment(ctx context.Context) error {
@@ -519,16 +573,12 @@ func (a *Agent) Sync(ctx context.Context) error {
 }
 
 func (a *Agent) Heartbeat(ctx context.Context, appliedVersion int64, lastError string, report *domain.ApplyReport) error {
-	var machineStatus *domain.MachineStatus
-	if a.machineStatus != nil {
-		machineStatus, _ = a.machineStatus.Collect()
-	}
 	payload, err := json.Marshal(map[string]any{
 		"last_error": lastError, "applied_version": appliedVersion, "apply_report": report,
 		"capabilities":  append([]string(nil), a.Config.Capabilities...),
 		"agent_version": a.Config.AgentVersion, "agent_sha256": a.Config.AgentSHA256, "active_upgrade_task_id": a.activeUpgradeID(),
 		"cache_storage":  a.cacheUsage.Snapshot(),
-		"machine_status": machineStatus,
+		"machine_status": a.latestMachineStatus(),
 	})
 	if err != nil {
 		return err
@@ -567,6 +617,30 @@ func (a *Agent) Heartbeat(ctx context.Context, appliedVersion int64, lastError s
 		}
 	}
 	a.setControlManifest(result.Control)
+	return nil
+}
+
+func (a *Agent) ReportMachineStatus(ctx context.Context, report domain.MachineStatus) error {
+	if !domain.ValidMachineStatus(report) {
+		return errors.New("machine status is invalid")
+	}
+	payload, err := json.Marshal(report)
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, a.Config.ControlURL+"/api/edge/v1/machine-status", bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := a.client().Do(request)
+	if err != nil {
+		return err
+	}
+	defer drainAndClose(response.Body)
+	if response.StatusCode != http.StatusAccepted {
+		return fmt.Errorf("machine status: %s", response.Status)
+	}
 	return nil
 }
 

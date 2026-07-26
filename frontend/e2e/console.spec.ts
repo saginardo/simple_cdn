@@ -439,11 +439,27 @@ async function mockAPI(page: Page, overrides: Record<string, unknown> = {}) {
   };
   let cacheDefaultSizeGB = 1;
   let nodeCacheOverrideGB: number | null = null;
+  const deliveredMachineEvents = new Set<string>();
   let backupSnapshots = Array.isArray(overrides["/api/backups/snapshots"])
     ? [...overrides["/api/backups/snapshots"]]
     : [];
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
+    if (/^\/api\/nodes\/[^/]+\/machine-status\/events$/.test(url.pathname)) {
+      const event = overrides[url.pathname];
+      if (event === undefined || deliveredMachineEvents.has(url.pathname)) {
+        await route.fulfill({ status: 204 });
+        return;
+      }
+      deliveredMachineEvents.add(url.pathname);
+      await route.fulfill({
+        status: 200,
+        contentType: "text/event-stream",
+        headers: { "cache-control": "no-store" },
+        body: `event: machine-status\ndata: ${JSON.stringify(event)}\n\n`,
+      });
+      return;
+    }
     const snapshotDeleteMatch = url.pathname.match(
       /^\/api\/backups\/snapshots\/([^/]+)$/,
     );
@@ -1714,6 +1730,111 @@ test("log rows truncate long paths, color errors, and open request details", asy
   await expect(page.getByText("bytes=0-4095", { exact: true })).toBeVisible();
 });
 
+test("node machine status updates from the realtime event stream", async ({
+  page,
+}) => {
+  const errors = trackPageErrors(page);
+  const node = {
+    id: "node-1",
+    name: "realtime-edge",
+    public_ipv4: "203.0.113.40",
+    status: "active",
+    nginx_capacity: {
+      worker_processes: 0,
+      worker_connections: 4096,
+      worker_rlimit_nofile: 65536,
+    },
+    capabilities: ["machine_status_v1", "machine_status_stream_v1"],
+    agent_version: "0.1.14",
+    target_agent_version: "0.1.14",
+    applied_version: 9,
+    last_heartbeat_at: now.toISOString(),
+    created_at: now.toISOString(),
+    updated_at: now.toISOString(),
+    upgrade_capable: true,
+    upgrade_up_to_date: true,
+    can_upgrade: false,
+  };
+  const machineReport = {
+    distribution: "Debian GNU/Linux",
+    version: "13.5",
+    uptime_seconds: 86_400,
+    load_1: 0.1,
+    load_5: 0.2,
+    load_15: 0.3,
+    cpu_usage_percent: 12,
+    cpu_logical_cores: 4,
+    memory_used_bytes: 2_147_483_648,
+    memory_total_bytes: 4_294_967_296,
+    disk_used_bytes: 10_737_418_240,
+    disk_total_bytes: 53_687_091_200,
+    network_interface: "eth0",
+    network_rx_bytes_per_second: 2_000,
+    network_tx_bytes_per_second: 1_000,
+    sample_seconds: 5,
+    collected_at: now.toISOString(),
+  };
+  await mockAPI(page, {
+    "/api/nodes/node-1": {
+      node,
+      machine: { available: true, stale: false, report: machineReport },
+      cache: {
+        default_size_gb: 1,
+        override_size_gb: null,
+        effective_size_gb: 1,
+      },
+      sites: [],
+    },
+    "/api/nodes/node-1/machine-status/events": {
+      available: true,
+      stale: false,
+      report: {
+        ...machineReport,
+        cpu_usage_percent: 73,
+        network_rx_bytes_per_second: 8_192,
+        collected_at: new Date(now.getTime() + 5_000).toISOString(),
+      },
+    },
+    "/api/nodes/node-1/cache-status": {
+      available: false,
+      unavailable_reason: "暂无缓存访问记录",
+      from: series[0].time,
+      to: now.toISOString(),
+      requests: 0,
+      bytes: 0,
+      cache_lookups: 0,
+      cache_hits: 0,
+      cache_misses: 0,
+      bypasses: 0,
+      uncached: 0,
+      hit_rate: 0,
+      statuses: [],
+      storage: {
+        available: false,
+        unavailable_reason: "暂无缓存空间数据",
+        used_bytes: 0,
+        total_bytes: 0,
+        stale: false,
+      },
+    },
+    "/api/nodes/node-1/uninstall": {
+      node,
+      job: null,
+      blockers: [],
+      can_generate_command: false,
+      ready_in_seconds: 0,
+    },
+  });
+  await page.goto("/#/nodes/node-1");
+
+  await expect(
+    page.getByRole("heading", { name: "realtime-edge", level: 1 }),
+  ).toBeVisible();
+  await expect(page.getByText("73.0%", { exact: true })).toBeVisible();
+  await expect(page.getByText(/接收\s*8\.0 KiB\/s/)).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
 test("cache defaults are configurable and overridden by individual nodes", async ({
   page,
 }) => {
@@ -1795,6 +1916,7 @@ test("cache defaults are configurable and overridden by individual nodes", async
   await page.goto("/#/nodes/node-1");
   await expect(page.getByText("v0.1.2", { exact: true })).toBeVisible();
   await expect(page.getByText("v9.9.9", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "机器状态" })).toHaveCount(0);
   await expect(page.getByText("全局默认 4 GB")).toBeVisible();
   const override = page.getByLabel("覆写全局缓存配额");
   const nodeCacheSize = page.getByLabel("节点缓存总上限（GB）");

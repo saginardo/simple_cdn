@@ -62,6 +62,10 @@ import {
 import { api, errorMessage } from "@/lib/api";
 import { useListPagination } from "@/hooks/use-list-pagination";
 import {
+  machineStatusTime,
+  useMachineStatusStream,
+} from "@/hooks/use-machine-status-stream";
+import {
   formatBytes,
   formatDateTime,
   formatDuration,
@@ -91,11 +95,13 @@ export function NodeDetailPage() {
   const navigate = useNavigate();
   const [command, setCommand] = useState("");
   const [confirm, setConfirm] = useState<"force" | "delete" | null>(null);
-  const detail = useQuery({
+  const detail = useQuery<NodeDetail>({
     queryKey: ["node", nodeId],
     queryFn: () => api<NodeDetail>(`/api/nodes/${encodeURIComponent(nodeId)}`),
-    refetchInterval: 10_000,
+    refetchInterval: 30_000,
+    structuralSharing: preserveLatestMachineStatus,
   });
+  useMachineStatusStream(nodeId, detail.isSuccess);
   const cache = useQuery({
     queryKey: ["node-cache", nodeId],
     queryFn: () =>
@@ -416,6 +422,25 @@ export function NodeDetailPage() {
     </>
   );
 }
+
+function preserveLatestMachineStatus(
+  previousValue: unknown,
+  incomingValue: unknown,
+): NodeDetail {
+  const previous = previousValue as NodeDetail | undefined;
+  const incoming = incomingValue as NodeDetail;
+  if (!previous) return incoming;
+  const previousCollectedAt = machineStatusTime(previous.machine);
+  const incomingCollectedAt = machineStatusTime(incoming.machine);
+  if (
+    previousCollectedAt !== undefined &&
+    incomingCollectedAt !== undefined &&
+    previousCollectedAt > incomingCollectedAt
+  ) {
+    return { ...incoming, machine: previous.machine };
+  }
+  return incoming;
+}
 function CacheQuotaSettings({
   nodeId,
   settings,
@@ -683,17 +708,7 @@ function NodeSummary({ detail }: { detail: NodeDetail }) {
 }
 function MachineStatus({ detail }: { detail: NodeDetail }) {
   const machine = detail.machine;
-  if (!machine.available || !machine.report)
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle>{t("机器状态")}</CardTitle>
-          <CardDescription>
-            {machine.unavailable_reason || t("暂无机器指标")}
-          </CardDescription>
-        </CardHeader>
-      </Card>
-    );
+  if (!machine.available || !machine.report) return null;
   const report = machine.report;
   const memory = report.memory_total_bytes
     ? (report.memory_used_bytes / report.memory_total_bytes) * 100

@@ -96,14 +96,15 @@ const (
 )
 
 const (
-	EdgeCapabilityTCPStream       = "tcp_stream_v1"
-	EdgeCapabilityOnlineUpgrade   = "online_upgrade_v1"
-	EdgeCapabilityCacheUsage      = "cache_usage_v1"
-	EdgeCapabilityMachineStatus   = "machine_status_v1"
-	EdgeCapabilityNginxFragments  = "nginx_fragments_v1"
-	EdgeCapabilityNginxCapacity   = "nginx_capacity_v1"
-	EdgeCapabilityTCPMonitoring   = "tcp_monitoring_v1"
-	EdgeCapabilityControlManifest = "control_manifest_v1"
+	EdgeCapabilityTCPStream           = "tcp_stream_v1"
+	EdgeCapabilityOnlineUpgrade       = "online_upgrade_v1"
+	EdgeCapabilityCacheUsage          = "cache_usage_v1"
+	EdgeCapabilityMachineStatus       = "machine_status_v1"
+	EdgeCapabilityMachineStatusStream = "machine_status_stream_v1"
+	EdgeCapabilityNginxFragments      = "nginx_fragments_v1"
+	EdgeCapabilityNginxCapacity       = "nginx_capacity_v1"
+	EdgeCapabilityTCPMonitoring       = "tcp_monitoring_v1"
+	EdgeCapabilityControlManifest     = "control_manifest_v1"
 )
 
 // EdgeControlManifest is a compact change manifest returned with a heartbeat.
