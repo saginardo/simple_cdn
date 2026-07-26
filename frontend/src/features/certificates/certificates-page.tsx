@@ -8,7 +8,7 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { useMemo, type ComponentType } from "react";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import { toast } from "sonner";
 import { ListPagination } from "@/components/list-pagination";
 import {

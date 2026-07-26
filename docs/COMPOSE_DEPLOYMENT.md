@@ -73,6 +73,8 @@ sudo docker compose ps
 curl -fsS https://control.example.com/healthz
 ```
 
+The first controller start writes a one-time initialization token to `/var/lib/cdn-platform/initialization-token` with `0600` permissions. Read it locally and supply it in the console when setting the initial administrator password. Set `CONTROL_INITIALIZATION_TOKEN_FILE` only when a different local path is required. The file is removed after successful setup and must not be copied into version control, browser storage, or a reverse-proxy configuration.
+
 The default image is `ghcr.io/saginardo/simple_cdn:main`. For a repeatable installation, pass a `sha-<commit>` tag or `@sha256:<digest>` as the installer's second argument. The control image contains the exact edge-agent binary it serves. The controller calculates its SHA-256 from `EDGE_BINARY_PATH` at startup and uses that digest for enrollment and online-upgrade verification; no separate checksum setting is required.
 
 The authenticated **Settings** view stores runtime overrides in SQLite. Cloudflare Token, SMTP password, S3 secret access key, and Restic repository password values are encrypted with `CONTROL_ENCRYPTION_KEY`; API responses never return them. Database overrides take precedence over their environment fallbacks, while reset actions restore those fallbacks. Retain the environment Cloudflare token because a fresh installation needs it before the UI and database exist. Control-certificate bootstrap and renewal containers mount the control database read-only and refresh their temporary Certbot credentials before each certificate operation.

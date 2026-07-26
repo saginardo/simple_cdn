@@ -10,7 +10,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { useMemo } from "react";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
 import {
   EmptyState,
@@ -51,7 +51,13 @@ import {
   formatNumber,
   formatPercent,
 } from "@/lib/format";
-import { httpStatusTone, toneFill, toneText, type Tone } from "@/lib/tones";
+import {
+  httpStatusTone,
+  toneFill,
+  toneSurface,
+  toneText,
+  type Tone,
+} from "@/lib/tones";
 import type { Overview, OverviewPoint, OverviewSite } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { useListPagination } from "@/hooks/use-list-pagination";
@@ -213,8 +219,8 @@ export function OverviewPage() {
             </section>
 
             <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
-              <Card>
-                <CardHeader className="flex-row items-start justify-between gap-4">
+              <Card className="border-t-2 border-t-info">
+                <CardHeader className="flex-col gap-3 border-b border-border/70 pb-4 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
                   <div>
                     <CardTitle>{t("流量趋势")}</CardTitle>
                     <CardDescription>
@@ -222,10 +228,11 @@ export function OverviewPage() {
                     </CardDescription>
                   </div>
                   <Tabs
+                    className="w-full sm:w-auto"
                     value={metric}
                     onValueChange={(value) => setMetric(value as Metric)}
                   >
-                    <TabsList>
+                    <TabsList className="w-full sm:w-auto">
                       <TabsTrigger value="requests">{t("请求")}</TabsTrigger>
                       <TabsTrigger value="bytes">{t("流量")}</TabsTrigger>
                       <TabsTrigger value="error_requests">
@@ -239,7 +246,7 @@ export function OverviewPage() {
                 </CardContent>
               </Card>
 
-              <Card>
+              <Card className="border-t-2 border-t-success">
                 <CardHeader>
                   <CardTitle>{t("状态码分布")}</CardTitle>
                   <CardDescription>
@@ -287,8 +294,8 @@ export function OverviewPage() {
               </Card>
             </section>
 
-            <Card>
-              <CardHeader>
+            <Card className="border-t-2 border-t-primary">
+              <CardHeader className="border-b border-border/70 pb-4">
                 <CardTitle>{t("站点流量")}</CardTitle>
                 <CardDescription>
                   {t("最近 24 小时聚合，可进入站点分析详情")}
@@ -589,19 +596,29 @@ function MetricCard({
   tone: Tone;
 }) {
   return (
-    <Card>
-      <CardContent className="flex items-start justify-between gap-3 p-5">
+    <Card className="relative min-h-[7.75rem]">
+      <span
+        className={cn("absolute inset-y-0 left-0 w-1", toneFill[tone])}
+        aria-hidden="true"
+      />
+      <CardContent className="flex min-h-[7.75rem] items-start justify-between gap-3 py-4 pl-5 pr-4">
         <div>
-          <p className="text-sm text-muted-foreground">{label}</p>
-          <p className="mt-2 text-2xl font-semibold tracking-normal tabular-nums">
+          <p className="font-mono text-[0.6875rem] font-medium text-muted-foreground">
+            {label}
+          </p>
+          <p className="mt-2 text-[1.65rem] font-semibold leading-none tracking-normal tabular-nums">
             {value}
           </p>
-          <p className="mt-1 text-xs text-muted-foreground">{meta}</p>
+          <p className="mt-2 text-xs text-muted-foreground">{meta}</p>
         </div>
-        <Icon
-          className={cn("mt-0.5 size-4", toneText[tone])}
-          aria-hidden="true"
-        />
+        <span
+          className={cn(
+            "grid size-8 shrink-0 place-items-center rounded-md",
+            toneSurface[tone],
+          )}
+        >
+          <Icon className={cn("size-4", toneText[tone])} aria-hidden="true" />
+        </span>
       </CardContent>
     </Card>
   );

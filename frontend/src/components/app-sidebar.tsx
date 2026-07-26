@@ -10,7 +10,7 @@ import {
   ShieldCheck,
   Waypoints,
 } from "lucide-react";
-import { Link, useLocation } from "react-router-dom";
+import { Link, useLocation } from "react-router";
 
 import { BrandMark } from "@/components/brand-mark";
 import {
@@ -78,16 +78,16 @@ export function AppSidebar({
     ? productVersion
     : `v${productVersion}`;
   return (
-    <Sidebar collapsible="icon">
-      <SidebarHeader className="px-2 py-3">
+    <Sidebar collapsible="icon" className="bg-sidebar">
+      <SidebarHeader className="px-3 py-4">
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton
               size="lg"
               tooltip={brandName || t("控制面板")}
-              className="h-11 justify-start px-2"
+              className="h-12 justify-start rounded-lg px-2"
             >
-              <BrandMark logoDataURL={brandLogoDataURL} className="size-8" />
+              <BrandMark logoDataURL={brandLogoDataURL} className="size-9" />
               {brandPending ? (
                 <span
                   className="grid min-w-0 gap-1.5"
@@ -113,8 +113,8 @@ export function AppSidebar({
       <SidebarSeparator />
       <SidebarContent>
         {groups.map((group) => (
-          <SidebarGroup key={group.label} className="px-2 py-2">
-            <SidebarGroupLabel className="h-7 justify-start px-2">
+          <SidebarGroup key={group.label} className="px-2 py-2.5">
+            <SidebarGroupLabel className="h-7 justify-start px-2.5 font-mono text-[0.6875rem] text-sidebar-foreground/55">
               {t(group.label)}
             </SidebarGroupLabel>
             <SidebarGroupContent>
@@ -129,7 +129,7 @@ export function AppSidebar({
                         asChild
                         tooltip={t(item.label)}
                         isActive={active}
-                        className="justify-start px-2"
+                        className="relative h-9 justify-start rounded-md px-2.5 text-[0.8125rem] data-[active=true]:before:absolute data-[active=true]:before:inset-y-2 data-[active=true]:before:left-0 data-[active=true]:before:w-0.5 data-[active=true]:before:rounded-r data-[active=true]:before:bg-sidebar-primary group-data-[collapsible=icon]:data-[active=true]:before:left-0.5"
                       >
                         <Link
                           to={item.to}
@@ -156,7 +156,7 @@ export function AppSidebar({
             <SidebarMenuButton
               tooltip={t("退出登录")}
               onClick={onLogout}
-              className="justify-start px-2 text-muted-foreground hover:text-foreground"
+              className="h-9 justify-start rounded-md px-2.5 text-muted-foreground hover:text-foreground"
             >
               <LogOut />
               <span>{t("退出登录")}</span>
@@ -166,7 +166,7 @@ export function AppSidebar({
         {productVersion ? (
           <div
             aria-label={`${productName} ${t("版本")} ${versionLabel}`}
-            className="flex h-6 min-w-0 items-center justify-between gap-2 px-2 text-[11px] leading-none text-sidebar-foreground/50 group-data-[collapsible=icon]:hidden"
+            className="flex h-7 min-w-0 items-center justify-between gap-2 px-2.5 font-mono text-[11px] leading-none text-sidebar-foreground/50 group-data-[collapsible=icon]:hidden"
           >
             <span className="truncate">{productName}</span>
             <span className="shrink-0 font-mono tabular-nums">

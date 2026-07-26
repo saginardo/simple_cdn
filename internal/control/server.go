@@ -38,39 +38,40 @@ var embeddedWeb embed.FS
 var uninstallEdgeScript string
 
 type Server struct {
-	Store               *store.Store
-	Cipher              *Cipher
-	CA                  *InternalCA
-	Publisher           Publisher
-	DNS                 integrations.DNSProvider
-	ZoneResolver        integrations.ZoneResolver
-	Cloudflare          *integrations.CloudflareDNS
-	Issuer              integrations.CertificateIssuer
-	CertificateManager  *CertificateManager
-	HealthManager       *HealthManager
-	SiteDeleter         *SiteDeletionManager
-	Settings            *SettingsManager
-	BackupValidator     BackupRepositoryValidator
-	BackupStatusPath    string
-	OnlineRestore       *OnlineRestoreManager
-	Notifier            integrations.Notifier
-	Logs                logstore.Store
-	MonitoringHistory   logstore.MonitoringHistoryReader
-	MonitoringWriter    logstore.MonitoringHistoryEnqueuer
-	smtpNotifierFactory func(SMTPProfile, string) integrations.Notifier
-	ControlURL          string
-	EdgeControlURL      string
-	EdgeBinaryURL       string
-	EdgeBinarySHA256    string
-	EdgeBinaryPath      string
-	SetupAllowCIDRs     []*net.IPNet
-	TrustedProxyCIDRs   []*net.IPNet
-	Logger              *slog.Logger
-	RestartControl      func()
-	machineStatusMu     sync.RWMutex
-	machineStatuses     map[string]domain.MachineStatus
-	loginMu             sync.Mutex
-	loginHits           map[string][]time.Time
+	Store                   *store.Store
+	Cipher                  *Cipher
+	CA                      *InternalCA
+	Publisher               Publisher
+	DNS                     integrations.DNSProvider
+	ZoneResolver            integrations.ZoneResolver
+	Cloudflare              *integrations.CloudflareDNS
+	Issuer                  integrations.CertificateIssuer
+	CertificateManager      *CertificateManager
+	HealthManager           *HealthManager
+	SiteDeleter             *SiteDeletionManager
+	Settings                *SettingsManager
+	BackupValidator         BackupRepositoryValidator
+	BackupStatusPath        string
+	OnlineRestore           *OnlineRestoreManager
+	Notifier                integrations.Notifier
+	Logs                    logstore.Store
+	MonitoringHistory       logstore.MonitoringHistoryReader
+	MonitoringWriter        logstore.MonitoringHistoryEnqueuer
+	smtpNotifierFactory     func(SMTPProfile, string) integrations.Notifier
+	ControlURL              string
+	EdgeControlURL          string
+	EdgeBinaryURL           string
+	EdgeBinarySHA256        string
+	EdgeBinaryPath          string
+	InitializationTokenPath string
+	SetupAllowCIDRs         []*net.IPNet
+	TrustedProxyCIDRs       []*net.IPNet
+	Logger                  *slog.Logger
+	RestartControl          func()
+	machineStatusMu         sync.RWMutex
+	machineStatuses         map[string]domain.MachineStatus
+	loginMu                 sync.Mutex
+	loginHits               map[string][]time.Time
 }
 
 func (s *Server) Handler() http.Handler {
@@ -184,7 +185,7 @@ func (s *Server) Handler() http.Handler {
 	if err == nil {
 		mux.Handle("/", staticWebHandler(http.FileServer(http.FS(web))))
 	}
-	return s.withSecurityHeaders(s.withRequestLog(mux))
+	return s.withSecurityHeaders(s.withRequestLog(s.withAPICacheControl(mux)))
 }
 
 func staticWebHandler(next http.Handler) http.Handler {
@@ -257,8 +258,9 @@ func (s *Server) setupStatus(response http.ResponseWriter, request *http.Request
 }
 
 type setupRequest struct {
-	Password   string `json:"password"`
-	TOTPSecret string `json:"totp_secret"`
+	InitializationToken string `json:"initialization_token"`
+	Password            string `json:"password"`
+	TOTPSecret          string `json:"totp_secret"`
 }
 
 func (s *Server) setup(response http.ResponseWriter, request *http.Request) {
@@ -279,6 +281,17 @@ func (s *Server) setup(response http.ResponseWriter, request *http.Request) {
 	if !readJSON(response, request, &input) {
 		return
 	}
+	if strings.TrimSpace(s.InitializationTokenPath) == "" {
+		writeError(response, http.StatusServiceUnavailable, errors.New("initialization token is not configured"))
+		return
+	}
+	if err := VerifyInitializationToken(s.InitializationTokenPath, input.InitializationToken); err != nil {
+		if s.Logger != nil {
+			s.Logger.Warn("initialization token rejected", "remote", s.requestIP(request))
+		}
+		writeError(response, http.StatusForbidden, errors.New("invalid initialization token"))
+		return
+	}
 	if input.TOTPSecret == "" {
 		input.TOTPSecret, err = auth.NewTOTPSecret()
 		if err != nil {
@@ -297,8 +310,9 @@ func (s *Server) setup(response http.ResponseWriter, request *http.Request) {
 		writeError(response, http.StatusBadRequest, err)
 		return
 	}
-	if err := s.Store.CreateInitialAdmin(passwordHash, input.TOTPSecret); err != nil {
-		writeError(response, http.StatusInternalServerError, err)
+	encryptedTOTPSecret, err := s.encryptTOTPSecret(input.TOTPSecret)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, errors.New("encrypt TOTP secret"))
 		return
 	}
 	recoveryCodes, err := newRecoveryCodes(10)
@@ -310,8 +324,15 @@ func (s *Server) setup(response http.ResponseWriter, request *http.Request) {
 	for _, code := range recoveryCodes {
 		hashes = append(hashes, auth.RecoveryCodeHash(code))
 	}
-	if err := s.Store.ReplaceRecoveryCodes("admin", hashes); err != nil {
+	if err := s.Store.CreateInitialAdminWithRecoveryCodes(passwordHash, encryptedTOTPSecret, hashes); err != nil {
 		writeError(response, http.StatusInternalServerError, err)
+		return
+	}
+	if err := ConsumeInitializationToken(s.InitializationTokenPath, input.InitializationToken); err != nil {
+		if s.Logger != nil {
+			s.Logger.Error("remove initialization token", "error", err)
+		}
+		writeError(response, http.StatusInternalServerError, errors.New("initialization token could not be removed"))
 		return
 	}
 	s.audit(request, "bootstrap", "admin", "admin", "admin", "created initial admin")
@@ -355,7 +376,15 @@ func (s *Server) login(response http.ResponseWriter, request *http.Request) {
 		writeError(response, http.StatusUnauthorized, errors.New("invalid credentials"))
 		return
 	}
-	validSecondFactor := auth.VerifyTOTP(admin.TOTPSecret, input.TOTP, time.Now())
+	totpSecret, err := s.adminTOTPSecret(admin)
+	if err != nil {
+		if s.Logger != nil {
+			s.Logger.Error("load administrator TOTP secret", "error", err)
+		}
+		writeError(response, http.StatusInternalServerError, errors.New("two-factor authentication is unavailable"))
+		return
+	}
+	validSecondFactor := auth.VerifyTOTP(totpSecret, input.TOTP, time.Now())
 	if !validSecondFactor && input.RecoveryCode != "" {
 		userID, recoveryErr := s.Store.ConsumeRecoveryCode(auth.RecoveryCodeHash(input.RecoveryCode))
 		validSecondFactor = recoveryErr == nil && userID == admin.ID
@@ -1597,6 +1626,15 @@ func (s *Server) withSecurityHeaders(next http.Handler) http.Handler {
 		response.Header().Set("X-Frame-Options", "DENY")
 		response.Header().Set("Referrer-Policy", "same-origin")
 		response.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
+		next.ServeHTTP(response, request)
+	})
+}
+
+func (s *Server) withAPICacheControl(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if strings.HasPrefix(request.URL.Path, "/api/") {
+			response.Header().Set("Cache-Control", "no-store, private")
+		}
 		next.ServeHTTP(response, request)
 	})
 }

@@ -43,7 +43,7 @@ export function AuthScreen({
   error: string;
   setupResult: SetupResult | null;
   onRetry: () => Promise<void>;
-  onSetup: (password: string) => Promise<void>;
+  onSetup: (initializationToken: string, password: string) => Promise<void>;
   onSetupComplete: () => void;
   onLogin: (input: {
     password: string;
@@ -54,6 +54,7 @@ export function AuthScreen({
   useI18n();
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
+  const [initializationToken, setInitializationToken] = useState("");
   const [password, setPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [totp, setTotp] = useState("");
@@ -71,7 +72,7 @@ export function AuthScreen({
     setBusy(true);
     setNotice("");
     try {
-      await onSetup(password);
+      await onSetup(initializationToken, password);
     } catch (caught) {
       setNotice(errorMessage(caught));
     } finally {
@@ -160,6 +161,22 @@ export function AuthScreen({
             </CardHeader>
             <CardContent>
               <form className="grid gap-4" onSubmit={submitSetup}>
+                <div className="grid gap-2">
+                  <Label htmlFor="setup-initialization-token">
+                    {t("一次性初始化令牌")}
+                  </Label>
+                  <Input
+                    id="setup-initialization-token"
+                    type="password"
+                    required
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={initializationToken}
+                    onChange={(event) =>
+                      setInitializationToken(event.target.value)
+                    }
+                  />
+                </div>
                 <div className="grid gap-2">
                   <Label htmlFor="setup-password">{t("管理员密码")}</Label>
                   <Input

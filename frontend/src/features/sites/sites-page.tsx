@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { ArrowRight, CirclePlus, RefreshCw } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import {
   EmptyState,
   PageBody,

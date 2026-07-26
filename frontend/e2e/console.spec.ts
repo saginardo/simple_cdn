@@ -833,6 +833,38 @@ test("desktop overview renders shadcn chart and aligned navigation", async ({
   });
 });
 
+test("mobile overview keeps metric controls within the viewport", async ({
+  page,
+}, testInfo) => {
+  const errors = trackPageErrors(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mockAPI(page);
+  await page.goto("/#/overview");
+
+  await expect(
+    page.getByRole("heading", { name: "概览", level: 1 }),
+  ).toBeVisible();
+  await expect(page.getByLabel("关键指标")).toBeVisible();
+  const tabs = page.locator('[data-slot="tabs-list"]');
+  await expect(tabs).toBeVisible();
+  expect(
+    await tabs.evaluate(
+      (element) => element.scrollWidth <= element.clientWidth + 1,
+    ),
+  ).toBe(true);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth + 1,
+    ),
+  ).toBe(true);
+  expect(errors).toEqual([]);
+
+  await page.screenshot({
+    path: testInfo.outputPath("overview-mobile.png"),
+    fullPage: true,
+  });
+});
+
 test("list pagination renders at most 20 entries per page", async ({
   page,
 }) => {
@@ -2254,6 +2286,65 @@ test("login screen renders without an authenticated session", async ({
     page.getByRole("heading", { name: "Sign in to the control plane" }),
   ).toBeVisible();
   await expect(page.getByLabel("Administrator password")).toBeVisible();
+});
+
+test("initial setup requires the local one-time token", async ({
+  page,
+}, testInfo) => {
+  const errors = trackPageErrors(page);
+  await page.route("**/api/session", (route) =>
+    route.fulfill({
+      status: 401,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "authentication required" }),
+    }),
+  );
+  await page.route("**/api/setup/status", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ initialized: false }),
+    }),
+  );
+  await page.route("**/api/branding", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        name: "simple_cdn",
+        subtitle: "控制面板",
+        logo_data_url: "",
+      }),
+    }),
+  );
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+  await expect(
+    page.getByRole("heading", { name: "初始化控制面" }),
+  ).toBeVisible();
+  await expect(page.getByLabel("一次性初始化令牌")).toBeVisible();
+  await expect(page.getByLabel("管理员密码")).toBeVisible();
+  await expect(page.getByLabel("确认密码")).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("initial-setup-desktop.png"),
+    fullPage: true,
+  });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth + 1,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: testInfo.outputPath("initial-setup-mobile.png"),
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "切换语言" }).click();
+  await page.getByRole("menuitemradio", { name: "English" }).click();
+  await expect(page.getByLabel("One-time initialization token")).toBeVisible();
+  expect(errors).toEqual([]);
 });
 
 function trackPageErrors(page: Page) {

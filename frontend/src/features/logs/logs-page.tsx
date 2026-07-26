@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, RotateCcw, Search } from "lucide-react";
 import { useId, useMemo, useState, type FormEvent } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import { HTTPStatusBadge } from "@/components/http-status-badge";
 import {
   EmptyState,

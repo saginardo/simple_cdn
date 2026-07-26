@@ -543,6 +543,10 @@ func (s *Store) HasAdmin() (bool, error) {
 }
 
 func (s *Store) CreateInitialAdmin(passwordHash, totpSecret string) error {
+	return s.CreateInitialAdminWithRecoveryCodes(passwordHash, totpSecret, nil)
+}
+
+func (s *Store) CreateInitialAdminWithRecoveryCodes(passwordHash, totpSecret string, recoveryCodeHashes []string) error {
 	if passwordHash == "" || totpSecret == "" {
 		return errors.New("password hash and totp secret are required")
 	}
@@ -563,11 +567,37 @@ func (s *Store) CreateInitialAdmin(passwordHash, totpSecret string) error {
 	if err != nil {
 		return err
 	}
+	for _, hash := range recoveryCodeHashes {
+		if strings.TrimSpace(hash) == "" {
+			return errors.New("recovery code hash is required")
+		}
+		if _, err := tx.Exec(`INSERT INTO recovery_codes(code_hash, user_id, created_at) VALUES (?, ?, ?)`, hash, "admin", ts); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
 }
 
 func (s *Store) ReplacePassword(userID, passwordHash string) error {
 	result, err := s.db.Exec(`UPDATE admin_users SET password_hash = ?, updated_at = ? WHERE id = ?`, passwordHash, stamp(now()), userID)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) ReplaceAdminTOTPSecret(userID, totpSecret string) error {
+	if strings.TrimSpace(totpSecret) == "" {
+		return errors.New("TOTP secret is required")
+	}
+	result, err := s.db.Exec(`UPDATE admin_users SET totp_secret = ?, updated_at = ? WHERE id = ?`, totpSecret, stamp(now()), userID)
 	if err != nil {
 		return err
 	}

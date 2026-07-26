@@ -107,15 +107,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setStage("login");
     }
   }, [queryClient]);
-  const setup = useCallback(async (password: string) => {
-    const result = await api<SetupResult>("/api/setup", {
-      method: "POST",
-      body: JSON.stringify({
-        password,
-      }),
-    });
-    setSetupResult(result);
-  }, []);
+  const setup = useCallback(
+    async (initializationToken: string, password: string) => {
+      const result = await api<SetupResult>("/api/setup", {
+        method: "POST",
+        body: JSON.stringify({
+          initialization_token: initializationToken,
+          password,
+        }),
+      });
+      setSetupResult(result);
+    },
+    [],
+  );
   const value = useMemo(
     () => ({
       user,

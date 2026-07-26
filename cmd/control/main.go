@@ -182,12 +182,35 @@ func main() {
 		fatal("TRUSTED_PROXY_CIDRS: " + err.Error())
 	}
 	controlURL := env("CONTROL_PUBLIC_URL", "https://control.example.invalid")
+	initializationTokenPath := env("CONTROL_INITIALIZATION_TOKEN_FILE", filepath.Join(dataDir, "initialization-token"))
 	edgeBinaryPath := os.Getenv("EDGE_BINARY_PATH")
 	edgeBinarySHA256, err := control.ResolveEdgeBinarySHA256(edgeBinaryPath)
 	if err != nil {
 		fatal(err.Error())
 	}
-	server := &control.Server{Store: database, Cipher: cipher, CA: ca, Publisher: publisher, DNS: dns, ZoneResolver: dns, Cloudflare: dns, Issuer: issuer, CertificateManager: certificateManager, SiteDeleter: siteDeleter, Settings: settings, BackupValidator: control.ResticBackupRepositoryValidator{}, BackupStatusPath: env("BACKUP_STATUS_FILE", "/var/lib/cdn-platform-operations/backup.json"), OnlineRestore: onlineRestore, Notifier: notifier, Logs: logs, MonitoringHistory: monitoringHistory, ControlURL: controlURL, EdgeControlURL: env("EDGE_CONTROL_URL", controlURL), EdgeBinaryURL: os.Getenv("EDGE_BINARY_URL"), EdgeBinarySHA256: edgeBinarySHA256, EdgeBinaryPath: edgeBinaryPath, SetupAllowCIDRs: setupCIDRs, TrustedProxyCIDRs: trustedProxyCIDRs, Logger: logger}
+	server := &control.Server{Store: database, Cipher: cipher, CA: ca, Publisher: publisher, DNS: dns, ZoneResolver: dns, Cloudflare: dns, Issuer: issuer, CertificateManager: certificateManager, SiteDeleter: siteDeleter, Settings: settings, BackupValidator: control.ResticBackupRepositoryValidator{}, BackupStatusPath: env("BACKUP_STATUS_FILE", "/var/lib/cdn-platform-operations/backup.json"), OnlineRestore: onlineRestore, Notifier: notifier, Logs: logs, MonitoringHistory: monitoringHistory, ControlURL: controlURL, EdgeControlURL: env("EDGE_CONTROL_URL", controlURL), EdgeBinaryURL: os.Getenv("EDGE_BINARY_URL"), EdgeBinarySHA256: edgeBinarySHA256, EdgeBinaryPath: edgeBinaryPath, InitializationTokenPath: initializationTokenPath, SetupAllowCIDRs: setupCIDRs, TrustedProxyCIDRs: trustedProxyCIDRs, Logger: logger}
+	if err := server.MigrateAdminTOTPSecret(); err != nil {
+		fatal(err.Error())
+	}
+	hasAdmin, err := database.HasAdmin()
+	if err != nil {
+		fatal("check administrator setup: " + err.Error())
+	}
+	if hasAdmin {
+		if err := control.RemoveInitializationToken(initializationTokenPath); err != nil {
+			fatal("remove stale initialization token: " + err.Error())
+		}
+	} else {
+		created, err := control.EnsureInitializationToken(initializationTokenPath)
+		if err != nil {
+			fatal("prepare initialization token: " + err.Error())
+		}
+		if created {
+			logger.Info("initialization token created", "path", initializationTokenPath)
+		} else {
+			logger.Info("initialization token is ready", "path", initializationTokenPath)
+		}
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	var monitoringWriter *logstore.AsyncMonitoringWriter
 	var stopMonitoringWriter context.CancelFunc

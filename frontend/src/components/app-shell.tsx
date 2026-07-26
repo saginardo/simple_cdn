@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Bell, ChevronRight } from "lucide-react";
 import { Suspense, useEffect, useState } from "react";
-import { Link, Outlet, useLocation } from "react-router-dom";
+import { Link, Outlet, useLocation } from "react-router";
 
 import { AppSidebar } from "@/components/app-sidebar";
 import { LanguageToggle } from "@/components/language-toggle";
@@ -77,12 +77,12 @@ export function AppShell() {
         productVersion={systemInfoQuery.data?.version ?? ""}
         onLogout={() => void logout()}
       />
-      <SidebarInset className="min-w-0">
-        <header className="sticky top-0 z-20 flex h-12 shrink-0 items-center gap-2 border-b bg-background/95 px-3 backdrop-blur supports-[backdrop-filter]:bg-background/80 sm:px-5">
+      <SidebarInset className="min-w-0 bg-background">
+        <header className="sticky top-0 z-20 flex h-14 shrink-0 items-center gap-2 border-b bg-background/95 px-3 backdrop-blur supports-[backdrop-filter]:bg-background/80 sm:px-5">
           <SidebarTrigger aria-label={t("切换侧边栏")} />
-          <Separator orientation="vertical" className="mx-1 h-4" />
+          <Separator orientation="vertical" className="mx-1 h-5" />
           <nav
-            className="flex min-w-0 items-center gap-1 text-sm"
+            className="flex min-w-0 items-center gap-1 font-mono text-xs"
             aria-label={t("面包屑")}
           >
             <Link

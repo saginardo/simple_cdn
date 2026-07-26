@@ -158,6 +158,7 @@ const english = {
   操作失败: "Operation failed",
   初始化: "Initialize",
   初始化控制面: "Initialize control plane",
+  一次性初始化令牌: "One-time initialization token",
   创建唯一的管理员账户: "Create the sole administrator account",
   登录: "Sign in",
   登录控制面: "Sign in to the control plane",

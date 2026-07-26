@@ -8,7 +8,7 @@ import {
   Server,
 } from "lucide-react";
 import type { ReactNode } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router";
 import { CopyButton } from "@/components/copy-button";
 import { HTTPStatusBadge } from "@/components/http-status-badge";
 import {

@@ -107,7 +107,7 @@ Firewall policy on the control VPS:
 
 When a conventional HTTPS reverse proxy terminates the management UI, do not send edge mTLS through that proxy. Bind the controller to a second direct TLS port, set `EDGE_CONTROL_URL` to that port, and keep `CONTROL_PUBLIC_URL` on the proxy's standard HTTPS port. Set `TRUSTED_PROXY_CIDRS` to the proxy's loopback or private address so setup restrictions, audits, and login rate limits use its `X-Real-IP` header safely.
 
-Open `https://control.example.com/`, initialize the single administrator, add the TOTP secret to an authenticator, and store the returned recovery codes offline. The setup route becomes unavailable after the first account is created.
+On the first startup, the controller creates a 32-byte one-time initialization token at `/var/lib/cdn-platform/initialization-token` (or `CONTROL_INITIALIZATION_TOKEN_FILE`) with `0600` permissions. Read that local file as an operator, enter its value in the initialization screen, set the administrator password, add the returned TOTP secret to an authenticator, and store the recovery codes offline. The token file is removed only after the administrator account is created successfully; the setup route then becomes unavailable.
 
 Before first public startup, set `SETUP_ALLOW_CIDRS` to your administrator egress CIDR whenever possible. This prevents another Internet user from racing the one-time setup endpoint.
 

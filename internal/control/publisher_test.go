@@ -783,7 +783,8 @@ func testCertificate(t *testing.T, domains ...string) ([]byte, []byte, time.Time
 }
 
 func TestLoginAndEnrollmentCommandGuard(t *testing.T) {
-	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	directory := t.TempDir()
+	database, err := store.Open(filepath.Join(directory, "control.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -796,8 +797,16 @@ func TestLoginAndEnrollmentCommandGuard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := &Server{Store: database, Cipher: cipher, ControlURL: "https://control.example.test", EdgeControlURL: "https://edge-control.example.test:8443"}
-	setup := httptest.NewRequest(http.MethodPost, "/api/setup", bytes.NewBufferString(`{"password":"correct horse battery staple","totp_secret":"JBSWY3DPEHPK3PXP"}`))
+	tokenPath := filepath.Join(directory, "initialization-token")
+	if _, err := EnsureInitializationToken(tokenPath); err != nil {
+		t.Fatal(err)
+	}
+	token, err := os.ReadFile(tokenPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{Store: database, Cipher: cipher, ControlURL: "https://control.example.test", EdgeControlURL: "https://edge-control.example.test:8443", InitializationTokenPath: tokenPath}
+	setup := httptest.NewRequest(http.MethodPost, "/api/setup", bytes.NewBufferString(`{"initialization_token":"`+strings.TrimSpace(string(token))+`","password":"correct horse battery staple","totp_secret":"JBSWY3DPEHPK3PXP"}`))
 	setup.Header.Set("Content-Type", "application/json")
 	setupResponse := httptest.NewRecorder()
 	server.Handler().ServeHTTP(setupResponse, setup)

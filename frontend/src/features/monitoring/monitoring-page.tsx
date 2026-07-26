@@ -12,7 +12,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { useMemo, useState, type FormEvent, type ReactNode } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router";
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { ListPagination } from "@/components/list-pagination";
