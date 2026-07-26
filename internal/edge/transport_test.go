@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -239,6 +240,29 @@ func TestHeartbeatDrainsResponseBodyForTransportReuse(t *testing.T) {
 	}
 	if !body.eof || !body.closed {
 		t.Fatalf("heartbeat response body eof=%v closed=%v", body.eof, body.closed)
+	}
+}
+
+func TestHeartbeatStoresControlManifest(t *testing.T) {
+	revision := strings.Repeat("c", 64)
+	taskID := "11111111-1111-4111-8111-111111111111"
+	body := fmt.Sprintf(`{"ok":true,"control":{"desired_state_version":9,"monitoring_revision":%q,"security_revision":%q,"upgrade_task_id":%q,"access_log_gzip":true}}`, revision, revision, taskID)
+	client := &http.Client{Transport: transportTestRoundTripper(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	agent, err := New(Config{
+		ControlURL: "https://control.example.test", StateDir: t.TempDir(), CertificateDir: t.TempDir(),
+		AgentSHA256: strings.Repeat("d", 64), HTTPClient: client, Runner: &fakeRunner{}, SecurityFirewall: transportTestFirewall{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.Heartbeat(t.Context(), 3, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	manifest, ok := agent.controlManifest()
+	if !ok || manifest.DesiredStateVersion != 9 || manifest.MonitoringRevision != revision || manifest.UpgradeTaskID != taskID || !agent.logs.compressionEnabled.Load() {
+		t.Fatalf("stored manifest = %#v, ok=%v", manifest, ok)
 	}
 }
 

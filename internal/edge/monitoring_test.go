@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -123,5 +124,40 @@ func TestMonitorSkipsReportWhenNoTargetsAreConfigured(t *testing.T) {
 	}
 	if postCount != 0 {
 		t.Fatalf("empty target set generated %d reports", postCount)
+	}
+}
+
+func TestMonitorReusesTargetsUntilManifestRevisionChanges(t *testing.T) {
+	revision := strings.Repeat("c", 64)
+	targets := []domain.MonitoringTarget{{ID: "target-ok", Address: "ok.example.test:443", Enabled: true}}
+	dialer := &fakeMonitoringDialer{calls: make(map[string]int)}
+	getCount, reportCount := 0, 0
+	client := &http.Client{Transport: monitoringRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch request.URL.Path {
+		case "/api/edge/v1/monitoring-targets":
+			getCount++
+			encoded, _ := json.Marshal(targets)
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(string(encoded))), Header: http.Header{"ETag": {`"` + revision + `"`}}}, nil
+		case "/api/edge/v1/monitoring-results":
+			reportCount++
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"accepted":true}`)), Header: make(http.Header)}, nil
+		default:
+			return nil, fmt.Errorf("unexpected request %s", request.URL.Path)
+		}
+	})}
+	agent, err := New(Config{
+		ControlURL: "https://control.example.test", StateDir: t.TempDir(), CertificateDir: filepath.Join(t.TempDir(), "certs"),
+		AgentSHA256: strings.Repeat("d", 64), HTTPClient: client, Runner: &fakeRunner{}, MonitoringDialer: dialer,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := agent.monitor(context.Background(), revision, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if getCount != 1 || reportCount != 2 || dialer.calls[targets[0].Address] != 6 {
+		t.Fatalf("requests: target_get=%d reports=%d probes=%d", getCount, reportCount, dialer.calls[targets[0].Address])
 	}
 }

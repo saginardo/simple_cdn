@@ -2,10 +2,12 @@ package edge
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -358,6 +360,61 @@ func TestLogForwarderRunContinuouslyDrainsBacklog(t *testing.T) {
 	}
 }
 
+func TestLogForwarderAdaptiveBatchingAndCompression(t *testing.T) {
+	newQueuedForwarder := func(count int) *LogForwarder {
+		directory := t.TempDir()
+		logPath := filepath.Join(directory, "access.json")
+		ids := make([]string, count)
+		for index := range ids {
+			ids[index] = fmt.Sprintf("adaptive-%03d", index)
+		}
+		writeAccessLog(t, logPath, ids...)
+		forwarder := NewLogForwarder(directory, logPath)
+		if collected, err := forwarder.Collect(); err != nil || collected != count {
+			t.Fatalf("collected=%d err=%v", collected, err)
+		}
+		return forwarder
+	}
+	uploads := 0
+	compressed := false
+	client := &http.Client{Transport: accessLogRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		uploads++
+		compressed = request.Header.Get("Content-Encoding") == "gzip"
+		reader := io.Reader(request.Body)
+		if compressed {
+			gzipReader, err := gzip.NewReader(request.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer gzipReader.Close()
+			reader = gzipReader
+		}
+		var events []domain.AccessLogEvent
+		if err := json.NewDecoder(reader).Decode(&events); err != nil {
+			t.Fatal(err)
+		}
+		return &http.Response{StatusCode: http.StatusAccepted, Status: "202 Accepted", Header: make(http.Header), Body: http.NoBody}, nil
+	})}
+
+	lowTraffic := newQueuedForwarder(logAdaptiveBatchSize - 1)
+	lowTraffic.SetCompressionEnabled(true)
+	progressed, deferred, err := lowTraffic.flushBatchReady(t.Context(), "https://control.example.test", client, false)
+	if err != nil || progressed || !deferred || uploads != 0 {
+		t.Fatalf("low-traffic decision: progressed=%v deferred=%v uploads=%d err=%v", progressed, deferred, uploads, err)
+	}
+	progressed, deferred, err = lowTraffic.flushBatchReady(t.Context(), "https://control.example.test", client, true)
+	if err != nil || !progressed || deferred || uploads != 1 || !compressed {
+		t.Fatalf("forced upload: progressed=%v deferred=%v uploads=%d compressed=%v err=%v", progressed, deferred, uploads, compressed, err)
+	}
+
+	thresholdTraffic := newQueuedForwarder(logAdaptiveBatchSize)
+	thresholdTraffic.SetCompressionEnabled(true)
+	progressed, deferred, err = thresholdTraffic.flushBatchReady(t.Context(), "https://control.example.test", client, false)
+	if err != nil || !progressed || deferred || uploads != 2 {
+		t.Fatalf("threshold upload: progressed=%v deferred=%v uploads=%d err=%v", progressed, deferred, uploads, err)
+	}
+}
+
 func TestLogForwarderWaitsForCompleteSourceLine(t *testing.T) {
 	directory := t.TempDir()
 	logPath := filepath.Join(directory, "access.json")
@@ -413,8 +470,18 @@ func newAccessLogClient(t *testing.T, receive func([]domain.AccessLogEvent) int)
 		if request.URL.Path != "/api/edge/v1/logs" {
 			t.Errorf("upload path = %q", request.URL.Path)
 		}
+		reader := io.Reader(request.Body)
+		if request.Header.Get("Content-Encoding") == "gzip" {
+			compressed, err := gzip.NewReader(request.Body)
+			if err != nil {
+				t.Errorf("open compressed upload: %v", err)
+			} else {
+				defer compressed.Close()
+				reader = compressed
+			}
+		}
 		var events []domain.AccessLogEvent
-		if err := json.NewDecoder(request.Body).Decode(&events); err != nil {
+		if err := json.NewDecoder(reader).Decode(&events); err != nil {
 			t.Errorf("decode uploaded events: %v", err)
 		}
 		status := receive(events)

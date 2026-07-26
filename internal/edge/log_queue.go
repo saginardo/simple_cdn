@@ -29,9 +29,10 @@ type logQueueCursor struct {
 }
 
 type logQueueBatch struct {
-	segment logQueueSegment
-	end     int64
-	events  []domain.AccessLogEvent
+	segment    logQueueSegment
+	end        int64
+	events     []domain.AccessLogEvent
+	eventBytes int64
 }
 
 func (f *LogForwarder) nextBatch() (*logQueueBatch, error) {
@@ -100,6 +101,7 @@ func (f *LogForwarder) nextBatch() (*logQueueBatch, error) {
 		}
 		batch.events = append(batch.events, event)
 		eventBytes += consumed
+		batch.eventBytes = eventBytes
 		records++
 	}
 	if batch.end == start {

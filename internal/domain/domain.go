@@ -96,14 +96,31 @@ const (
 )
 
 const (
-	EdgeCapabilityTCPStream      = "tcp_stream_v1"
-	EdgeCapabilityOnlineUpgrade  = "online_upgrade_v1"
-	EdgeCapabilityCacheUsage     = "cache_usage_v1"
-	EdgeCapabilityMachineStatus  = "machine_status_v1"
-	EdgeCapabilityNginxFragments = "nginx_fragments_v1"
-	EdgeCapabilityNginxCapacity  = "nginx_capacity_v1"
-	EdgeCapabilityTCPMonitoring  = "tcp_monitoring_v1"
+	EdgeCapabilityTCPStream       = "tcp_stream_v1"
+	EdgeCapabilityOnlineUpgrade   = "online_upgrade_v1"
+	EdgeCapabilityCacheUsage      = "cache_usage_v1"
+	EdgeCapabilityMachineStatus   = "machine_status_v1"
+	EdgeCapabilityNginxFragments  = "nginx_fragments_v1"
+	EdgeCapabilityNginxCapacity   = "nginx_capacity_v1"
+	EdgeCapabilityTCPMonitoring   = "tcp_monitoring_v1"
+	EdgeCapabilityControlManifest = "control_manifest_v1"
 )
+
+// EdgeControlManifest is a compact change manifest returned with a heartbeat.
+// Pointer use in EdgeHeartbeatResponse keeps the response compatible with
+// control planes that predate manifest-driven polling.
+type EdgeControlManifest struct {
+	DesiredStateVersion int64  `json:"desired_state_version"`
+	MonitoringRevision  string `json:"monitoring_revision"`
+	SecurityRevision    string `json:"security_revision"`
+	UpgradeTaskID       string `json:"upgrade_task_id,omitempty"`
+	AccessLogGzip       bool   `json:"access_log_gzip,omitempty"`
+}
+
+type EdgeHeartbeatResponse struct {
+	OK      bool                 `json:"ok"`
+	Control *EdgeControlManifest `json:"control,omitempty"`
+}
 
 type TCPForward struct {
 	Name                  string `json:"name"`

@@ -3,6 +3,7 @@ package edge
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,13 +23,17 @@ import (
 )
 
 const (
-	maxLogQueueBytes     int64 = 256 << 20
-	logQueueSegmentBytes int64 = 4 << 20
-	logUploadBatchSize         = 500
-	logUploadBatchBytes  int64 = 4 << 20
-	logQueueRecordBytes        = 2 << 20
-	logForwarderInterval       = time.Second
-	logDrainBudget             = 900 * time.Millisecond
+	maxLogQueueBytes        int64 = 256 << 20
+	logQueueSegmentBytes    int64 = 4 << 20
+	logUploadBatchSize            = 500
+	logUploadBatchBytes     int64 = 4 << 20
+	logQueueRecordBytes           = 2 << 20
+	logForwarderInterval          = time.Second
+	logDrainBudget                = 900 * time.Millisecond
+	logAdaptiveBatchSize          = 200
+	logAdaptiveBatchBytes   int64 = 512 << 10
+	logAdaptiveMaxWait            = 2 * time.Second
+	logCompressionThreshold       = 1 << 10
 )
 
 var errAccessLogQueueFull = errors.New("access-log queue is full")
@@ -46,8 +52,13 @@ type LogForwarder struct {
 	interval      time.Duration
 	drainBudget   time.Duration
 
-	errorMu   sync.RWMutex
-	lastError string
+	errorMu            sync.RWMutex
+	lastError          string
+	compressionEnabled atomic.Bool
+}
+
+func (f *LogForwarder) SetCompressionEnabled(enabled bool) {
+	f.compressionEnabled.Store(enabled)
 }
 
 func NewLogForwarder(stateDir, logPath string) *LogForwarder {
@@ -73,11 +84,15 @@ func (f *LogForwarder) Run(ctx context.Context, controlURL string, clientFactory
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	var pendingSince time.Time
 
 	runCycle := func() {
 		_, collectErr := f.Collect()
 		pending, uploadErr := f.hasPending()
 		if uploadErr == nil && pending {
+			if pendingSince.IsZero() {
+				pendingSince = time.Now()
+			}
 			var client *http.Client
 			if clientFactory == nil {
 				uploadErr = errors.New("access-log HTTP client factory is not configured")
@@ -88,7 +103,14 @@ func (f *LogForwarder) Run(ctx context.Context, controlURL string, clientFactory
 				}
 			}
 			if uploadErr == nil {
-				uploadErr = f.drain(ctx, controlURL, client)
+				uploadErr = f.drainReady(ctx, controlURL, client, time.Since(pendingSince) >= logAdaptiveMaxWait)
+			}
+		}
+		if uploadErr == nil {
+			if stillPending, pendingErr := f.hasPending(); pendingErr != nil {
+				uploadErr = pendingErr
+			} else if !stillPending {
+				pendingSince = time.Time{}
 			}
 		}
 		f.setErrors(collectErr, uploadErr)
@@ -217,20 +239,30 @@ func (f *LogForwarder) Flush(ctx context.Context, controlURL string, client *htt
 	return err
 }
 
+func (f *LogForwarder) flushBatch(ctx context.Context, controlURL string, client *http.Client) (bool, error) {
+	progressed, _, err := f.flushBatchReady(ctx, controlURL, client, true)
+	return progressed, err
+}
+
 func (f *LogForwarder) drain(ctx context.Context, controlURL string, client *http.Client) error {
+	return f.drainReady(ctx, controlURL, client, true)
+}
+
+func (f *LogForwarder) drainReady(ctx context.Context, controlURL string, client *http.Client, force bool) error {
 	budget := f.drainBudget
 	if budget <= 0 {
 		budget = logDrainBudget
 	}
 	deadline := time.Now().Add(budget)
 	for {
-		progressed, err := f.flushBatch(ctx, controlURL, client)
+		progressed, deferred, err := f.flushBatchReady(ctx, controlURL, client, force)
 		if err != nil {
 			return err
 		}
-		if !progressed {
+		if deferred || !progressed {
 			return nil
 		}
+		force = true
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -240,42 +272,64 @@ func (f *LogForwarder) drain(ctx context.Context, controlURL string, client *htt
 	}
 }
 
-func (f *LogForwarder) flushBatch(ctx context.Context, controlURL string, client *http.Client) (bool, error) {
+func (f *LogForwarder) flushBatchReady(ctx context.Context, controlURL string, client *http.Client, force bool) (bool, bool, error) {
 	batch, err := f.nextBatch()
 	if err != nil || batch == nil {
-		return false, err
+		return false, false, err
+	}
+	if !force && len(batch.events) > 0 && len(batch.events) < logAdaptiveBatchSize && batch.eventBytes < logAdaptiveBatchBytes {
+		return false, true, nil
 	}
 	if len(batch.events) > 0 {
 		if client == nil {
-			return false, errors.New("access-log HTTP client is not configured")
+			return false, false, errors.New("access-log HTTP client is not configured")
 		}
 		payload, err := json.Marshal(batch.events)
 		if err != nil {
-			return false, err
+			return false, false, err
+		}
+		contentEncoding := ""
+		if f.compressionEnabled.Load() && len(payload) >= logCompressionThreshold {
+			var compressed bytes.Buffer
+			writer, err := gzip.NewWriterLevel(&compressed, gzip.BestSpeed)
+			if err != nil {
+				return false, false, err
+			}
+			if _, err := writer.Write(payload); err != nil {
+				return false, false, err
+			}
+			if err := writer.Close(); err != nil {
+				return false, false, err
+			}
+			payload = compressed.Bytes()
+			contentEncoding = "gzip"
 		}
 		request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(controlURL, "/")+"/api/edge/v1/logs", bytes.NewReader(payload))
 		if err != nil {
-			return false, err
+			return false, false, err
 		}
 		request.Header.Set("Content-Type", "application/json")
+		if contentEncoding != "" {
+			request.Header.Set("Content-Encoding", contentEncoding)
+		}
 		response, err := client.Do(request)
 		if err != nil {
-			return false, err
+			return false, false, err
 		}
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 		_, _ = io.Copy(io.Discard, response.Body)
 		closeErr := response.Body.Close()
 		if response.StatusCode != http.StatusAccepted {
-			return false, fmt.Errorf("log upload: %s: %s", response.Status, strings.TrimSpace(string(body)))
+			return false, false, fmt.Errorf("log upload: %s: %s", response.Status, strings.TrimSpace(string(body)))
 		}
 		if closeErr != nil {
-			return false, closeErr
+			return false, false, closeErr
 		}
 	}
 	if err := f.ackBatch(batch); err != nil {
-		return false, err
+		return false, false, err
 	}
-	return true, nil
+	return true, false, nil
 }
 
 func (f *LogForwarder) offset() int64 {

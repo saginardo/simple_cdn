@@ -1,6 +1,8 @@
 package control
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
@@ -18,6 +20,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -72,6 +75,10 @@ type Server struct {
 	machineStatuses         map[string]domain.MachineStatus
 	loginMu                 sync.Mutex
 	loginHits               map[string][]time.Time
+	edgeSecurityRevisionMu  sync.Mutex
+	edgeSecurityRevision    string
+	edgeSecurityExpiresAt   time.Time
+	edgeSecurityRevisionSet bool
 }
 
 func (s *Server) Handler() http.Handler {
@@ -1398,6 +1405,17 @@ func (s *Server) renew(response http.ResponseWriter, request *http.Request) {
 
 func (s *Server) desiredState(response http.ResponseWriter, request *http.Request) {
 	nodeID := edgeNodeID(request.Context())
+	desiredVersion, err := s.Store.DesiredVersion(nodeID)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, err)
+		return
+	}
+	revision := "desired-" + strconv.FormatInt(desiredVersion, 10)
+	if requestHasRevision(request, revision) {
+		writeRevisionNotModified(response, revision)
+		return
+	}
+	response.Header().Set("ETag", revisionETag(revision))
 	state, encryptedCertificates, err := s.Store.NodeState(nodeID)
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(response, http.StatusOK, domain.DesiredState{Version: 0, NginxConfig: ""})
@@ -1493,7 +1511,16 @@ func (s *Server) heartbeat(response http.ResponseWriter, request *http.Request) 
 	if input.MachineStatus != nil {
 		s.recordNodeMachineStatus(nodeID, *input.MachineStatus)
 	}
-	writeJSON(response, http.StatusOK, map[string]bool{"ok": true})
+	result := domain.EdgeHeartbeatResponse{OK: true}
+	if slices.Contains(input.Capabilities, domain.EdgeCapabilityControlManifest) {
+		manifest, err := s.edgeControlManifest(nodeID)
+		if err != nil {
+			writeError(response, http.StatusInternalServerError, err)
+			return
+		}
+		result.Control = &manifest
+	}
+	writeJSON(response, http.StatusOK, result)
 }
 
 func (s *Server) writeLogs(response http.ResponseWriter, request *http.Request) {
@@ -1501,8 +1528,41 @@ func (s *Server) writeLogs(response http.ResponseWriter, request *http.Request) 
 		writeJSON(response, http.StatusAccepted, map[string]bool{"ok": true})
 		return
 	}
+	const maximumLogPayload = 8 << 20
+	wirePayload, err := io.ReadAll(io.LimitReader(request.Body, maximumLogPayload+1))
+	if err != nil {
+		writeError(response, http.StatusBadRequest, err)
+		return
+	}
+	if len(wirePayload) > maximumLogPayload {
+		writeError(response, http.StatusRequestEntityTooLarge, errors.New("compressed log payload exceeds 8 MiB"))
+		return
+	}
+	payload := wirePayload
+	switch strings.ToLower(strings.TrimSpace(request.Header.Get("Content-Encoding"))) {
+	case "", "identity":
+	case "gzip":
+		reader, err := gzip.NewReader(bytes.NewReader(wirePayload))
+		if err != nil {
+			writeError(response, http.StatusBadRequest, errors.New("invalid gzip log payload"))
+			return
+		}
+		payload, err = io.ReadAll(io.LimitReader(reader, maximumLogPayload+1))
+		closeErr := reader.Close()
+		if err != nil || closeErr != nil {
+			writeError(response, http.StatusBadRequest, errors.New("invalid gzip log payload"))
+			return
+		}
+		if len(payload) > maximumLogPayload {
+			writeError(response, http.StatusRequestEntityTooLarge, errors.New("decompressed log payload exceeds 8 MiB"))
+			return
+		}
+	default:
+		writeError(response, http.StatusUnsupportedMediaType, errors.New("unsupported log content encoding"))
+		return
+	}
 	var events []domain.AccessLogEvent
-	decoder := json.NewDecoder(io.LimitReader(request.Body, 8<<20))
+	decoder := json.NewDecoder(bytes.NewReader(payload))
 	if err := decoder.Decode(&events); err != nil {
 		writeError(response, http.StatusBadRequest, err)
 		return

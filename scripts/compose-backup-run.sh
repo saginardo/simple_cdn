@@ -50,11 +50,21 @@ for ((attempt = 1; attempt <= max_attempts; attempt++)); do
   if ((retention_only)); then
     command+=(retention)
   fi
-  if "${command[@]}" 2> >(tee "$error_file" >&2); then
-    record_status succeeded "$attempt"
-    exit 0
+  exec {error_writer_fd}> >(tee "$error_file" >&2)
+  error_writer_pid=$!
+  if "${command[@]}" 2>&"$error_writer_fd"; then
+    exit_code=0
   else
     exit_code=$?
+  fi
+  exec {error_writer_fd}>&-
+  unset error_writer_fd
+  if ! wait "$error_writer_pid"; then
+    echo "warning: could not capture backup command error output" >&2
+  fi
+  if ((exit_code == 0)); then
+    record_status succeeded "$attempt"
+    exit 0
   fi
 	if ((exit_code == 75)); then
 		record_status skipped "$attempt"

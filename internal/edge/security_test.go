@@ -133,6 +133,49 @@ func TestSecuritySyncUsesFreshClientFactory(t *testing.T) {
 	}
 }
 
+func TestSecuritySyncOnlyPullsChangedRevision(t *testing.T) {
+	directory := t.TempDir()
+	manager := NewSecurityManager(directory, filepath.Join(directory, "security.json"), time.Second, &fakeSecurityFirewall{})
+	firstRevision := strings.Repeat("a", 64)
+	secondRevision := strings.Repeat("b", 64)
+	if err := manager.saveState(localSecurityState{Bans: []localSecurityBan{}, Revision: firstRevision}); err != nil {
+		t.Fatal(err)
+	}
+	manager.NotifyRevision(firstRevision)
+	if err := manager.initialize(); err != nil {
+		t.Fatal(err)
+	}
+	factoryCalls := 0
+	factory := func() *http.Client {
+		factoryCalls++
+		return &http.Client{Transport: securityRoundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body:       io.NopCloser(strings.NewReader(`{"bans":[],"generated_at":"2026-07-16T00:00:00Z"}`)),
+				Header:     http.Header{"ETag": {`"` + secondRevision + `"`}},
+			}, nil
+		})}
+	}
+	if err := manager.syncBansIfChanged(context.Background(), "https://control.example.test", factory, false); err != nil {
+		t.Fatal(err)
+	}
+	if factoryCalls != 0 {
+		t.Fatalf("unchanged revision made %d requests", factoryCalls)
+	}
+	manager.NotifyRevision(secondRevision)
+	if err := manager.syncBansIfChanged(context.Background(), "https://control.example.test", factory, false); err != nil {
+		t.Fatal(err)
+	}
+	state, err := manager.loadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if factoryCalls != 1 || state.Revision != secondRevision {
+		t.Fatalf("changed revision: requests=%d state=%#v", factoryCalls, state)
+	}
+}
+
 func TestSecurityFirewallFailureAdvancesOffsetAndRetriesState(t *testing.T) {
 	directory := t.TempDir()
 	logPath := filepath.Join(directory, "security.json")
@@ -215,5 +258,45 @@ func TestSecurityFlushDropsOnlyRejectedEvent(t *testing.T) {
 	remaining, err := manager.loadQueue()
 	if err != nil || len(remaining) != 1 || remaining[0].ID != events[0].ID {
 		t.Fatalf("remaining queue = %#v, err=%v", remaining, err)
+	}
+}
+
+func TestSecurityFlushSkipsBanPullWhenRevisionIsUnchanged(t *testing.T) {
+	directory := t.TempDir()
+	manager := NewSecurityManager(directory, filepath.Join(directory, "security.json"), time.Second, &fakeSecurityFirewall{})
+	revision := strings.Repeat("d", 64)
+	if err := manager.saveState(localSecurityState{Bans: []localSecurityBan{}, Revision: revision}); err != nil {
+		t.Fatal(err)
+	}
+	manager.NotifyRevision(revision)
+	if err := manager.initialize(); err != nil {
+		t.Fatal(err)
+	}
+	event := domain.SecurityEvent{ID: uuid.NewString(), ClientIP: "8.8.8.8", Action: domain.SecurityActionBlock}
+	if err := manager.saveQueue([]domain.SecurityEvent{event}); err != nil {
+		t.Fatal(err)
+	}
+	postCount, getCount := 0, 0
+	factory := func() *http.Client {
+		return &http.Client{Transport: securityRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			if request.Method == http.MethodGet {
+				getCount++
+			}
+			if request.Method == http.MethodPost {
+				postCount++
+			}
+			return &http.Response{
+				StatusCode: http.StatusAccepted,
+				Status:     "202 Accepted",
+				Body:       io.NopCloser(strings.NewReader(`{"accepted":1,"security_revision":"` + revision + `"}`)),
+				Header:     make(http.Header),
+			}, nil
+		})}
+	}
+	if err := manager.flush(context.Background(), "https://control.example.test", factory); err != nil {
+		t.Fatal(err)
+	}
+	if postCount != 1 || getCount != 0 {
+		t.Fatalf("security requests: post=%d get=%d", postCount, getCount)
 	}
 }

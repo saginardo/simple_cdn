@@ -502,12 +502,18 @@ func (s *Server) deleteMonitoringTarget(response http.ResponseWriter, request *h
 	writeJSON(response, http.StatusOK, map[string]bool{"ok": true})
 }
 
-func (s *Server) edgeMonitoringTargets(response http.ResponseWriter, _ *http.Request) {
+func (s *Server) edgeMonitoringTargets(response http.ResponseWriter, request *http.Request) {
 	targets, err := s.Store.ListMonitoringTargets(true)
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, err)
 		return
 	}
+	revision := monitoringTargetsRevision(targets)
+	if requestHasRevision(request, revision) {
+		writeRevisionNotModified(response, revision)
+		return
+	}
+	response.Header().Set("ETag", revisionETag(revision))
 	writeJSON(response, http.StatusOK, targets)
 }
 

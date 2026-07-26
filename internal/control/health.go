@@ -26,10 +26,14 @@ type HealthManager struct {
 	WorkerLimit     int
 	RoundTimeout    time.Duration
 	Interval        time.Duration
+	DeepInterval    time.Duration
 	alertMu         sync.Mutex
 	noHealthyAlerts map[string]time.Time
 	statusMu        sync.RWMutex
 	lastRound       HealthRoundStatus
+	clientMu        sync.Mutex
+	probeClient     *http.Client
+	probeTransport  *http.Transport
 }
 
 type HealthRoundStatus struct {
@@ -45,16 +49,23 @@ const (
 	defaultHealthWorkerLimit  = 4
 	defaultHealthRoundTimeout = 45 * time.Second
 	defaultHealthInterval     = 15 * time.Second
+	defaultHealthDeepInterval = 60 * time.Second
 	availabilityAlertCooldown = 5 * time.Minute
 )
 
 func (m *HealthManager) Run(ctx context.Context) {
+	defer m.resetProbeClient()
+	var nextDeepProbe time.Time
 	for {
 		if ctx.Err() != nil {
 			return
 		}
 		roundStarted := time.Now()
-		_ = m.Reconcile(ctx)
+		deepProbe := nextDeepProbe.IsZero() || !roundStarted.Before(nextDeepProbe)
+		if deepProbe {
+			nextDeepProbe = roundStarted.Add(m.deepInterval())
+		}
+		_ = m.reconcile(ctx, deepProbe)
 		delay := m.interval() - time.Since(roundStarted)
 		if delay < 0 {
 			delay = 0
@@ -72,6 +83,10 @@ func (m *HealthManager) Run(ctx context.Context) {
 }
 
 func (m *HealthManager) Reconcile(ctx context.Context) error {
+	return m.reconcile(ctx, true)
+}
+
+func (m *HealthManager) reconcile(ctx context.Context, deepProbe bool) error {
 	started := time.Now().UTC()
 	roundCtx, cancel := context.WithTimeout(ctx, m.roundTimeout())
 	defer cancel()
@@ -114,7 +129,7 @@ func (m *HealthManager) Reconcile(ctx context.Context) error {
 		errorsFound = append(errorsFound, fmt.Errorf("list nodes: %w", err))
 		return finish()
 	}
-	errorsFound = append(errorsFound, m.reconcileNodeHealth(roundCtx, nodes)...)
+	errorsFound = append(errorsFound, m.reconcileNodeHealthTiered(roundCtx, nodes, deepProbe)...)
 	if roundCtx.Err() != nil {
 		errorsFound = append(errorsFound, m.roundContextError(roundCtx))
 		return finish()
@@ -134,7 +149,9 @@ func (m *HealthManager) Reconcile(ctx context.Context) error {
 	for _, publication := range publications {
 		publishedSites = append(publishedSites, publication.Site)
 	}
-	errorsFound = append(errorsFound, m.reconcileSiteHealth(roundCtx, publishedSites, nodes)...)
+	if deepProbe {
+		errorsFound = append(errorsFound, m.reconcileSiteHealth(roundCtx, publishedSites, nodes)...)
+	}
 	if roundCtx.Err() != nil {
 		errorsFound = append(errorsFound, m.roundContextError(roundCtx))
 		return finish()
@@ -226,6 +243,10 @@ type storeNodeHealth struct {
 }
 
 func (m *HealthManager) reconcileNodeHealth(ctx context.Context, nodes []domain.Node) []error {
+	return m.reconcileNodeHealthTiered(ctx, nodes, true)
+}
+
+func (m *HealthManager) reconcileNodeHealthTiered(ctx context.Context, nodes []domain.Node, deepProbe bool) []error {
 	probes := make([]nodeHealthProbe, 0, len(nodes))
 	errorsFound := make([]error, 0)
 	for _, node := range nodes {
@@ -248,7 +269,7 @@ func (m *HealthManager) reconcileNodeHealth(ctx context.Context, nodes []domain.
 		probes = append(probes, nodeHealthProbe{node: node, prior: storeNodeHealth{dnsEligible: prior.DNSEligible}})
 	}
 	m.runBounded(ctx, len(probes), func(index int) {
-		healthy, detail := m.checkNode(ctx, probes[index].node)
+		healthy, detail := m.checkNodeTiered(ctx, probes[index].node, deepProbe)
 		if ctx.Err() != nil {
 			return
 		}
@@ -457,6 +478,13 @@ func (m *HealthManager) interval() time.Duration {
 		return m.Interval
 	}
 	return defaultHealthInterval
+}
+
+func (m *HealthManager) deepInterval() time.Duration {
+	if m.DeepInterval > 0 {
+		return m.DeepInterval
+	}
+	return defaultHealthDeepInterval
 }
 
 func (m *HealthManager) roundContextError(ctx context.Context) error {
@@ -683,13 +711,17 @@ func (m *HealthManager) notifyNoHealthySites(ctx context.Context, sites []domain
 }
 
 func (m *HealthManager) checkNode(ctx context.Context, node domain.Node) (bool, string) {
+	return m.checkNodeTiered(ctx, node, true)
+}
+
+func (m *HealthManager) checkNodeTiered(ctx context.Context, node domain.Node, deepProbe bool) (bool, string) {
 	state, _, err := m.Server.Store.NodeState(node.ID)
 	if err != nil || state.PublicPorts == nil {
-		return m.check(ctx, node.PublicIPv4)
+		return m.checkHTTPNode(ctx, node.PublicIPv4, deepProbe)
 	}
 	for _, port := range state.PublicPorts {
 		if port == 80 {
-			return m.check(ctx, node.PublicIPv4)
+			return m.checkHTTPNode(ctx, node.PublicIPv4, deepProbe)
 		}
 	}
 	if len(state.PublicPorts) == 0 {
@@ -708,18 +740,63 @@ func (m *HealthManager) checkNode(ctx context.Context, node domain.Node) (bool, 
 	return true, ""
 }
 
+func (m *HealthManager) checkHTTPNode(ctx context.Context, address string, deepProbe bool) (bool, string) {
+	healthy, detail := m.check(ctx, address)
+	if !healthy || !deepProbe {
+		return healthy, detail
+	}
+	return m.checkFresh(ctx, address)
+}
+
 func (m *HealthManager) check(ctx context.Context, address string) (bool, string) {
+	return checkHealthEndpoint(ctx, address, m.client())
+}
+
+func (m *HealthManager) checkFresh(ctx context.Context, address string) (bool, string) {
+	if m.Client != nil {
+		return checkHealthEndpoint(ctx, address, m.Client)
+	}
+	dialer := &net.Dialer{Timeout: 3 * time.Second, KeepAlive: -1}
+	transport := &http.Transport{
+		Proxy:                 nil,
+		DialContext:           dialer.DialContext,
+		DisableKeepAlives:     true,
+		ResponseHeaderTimeout: 5 * time.Second,
+		DisableCompression:    true,
+	}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   8 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	return checkHealthEndpoint(ctx, address, client)
+}
+
+func checkHealthEndpoint(ctx context.Context, address string, client *http.Client) (bool, string) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+address+"/__cdn_health", nil)
 	if err != nil {
 		return false, err.Error()
 	}
-	response, err := m.client().Do(request)
+	response, err := client.Do(request)
 	if err != nil {
 		return false, err.Error()
 	}
-	defer response.Body.Close()
+	body, readErr := io.ReadAll(io.LimitReader(response.Body, 4097))
+	closeErr := response.Body.Close()
+	if readErr != nil {
+		return false, "read health endpoint: " + readErr.Error()
+	}
+	if closeErr != nil {
+		return false, "close health endpoint: " + closeErr.Error()
+	}
 	if response.StatusCode != http.StatusOK {
 		return false, "health endpoint returned " + response.Status
+	}
+	if len(body) > 4096 || strings.TrimSpace(string(body)) != "ok" {
+		return false, fmt.Sprintf("health endpoint returned unexpected body %q", strings.TrimSpace(string(body)))
 	}
 	return true, ""
 }
@@ -798,7 +875,43 @@ func (m *HealthManager) client() *http.Client {
 	if m.Client != nil {
 		return m.Client
 	}
-	return &http.Client{Timeout: 8 * time.Second}
+	m.clientMu.Lock()
+	defer m.clientMu.Unlock()
+	if m.probeClient != nil {
+		return m.probeClient
+	}
+	dialer := &net.Dialer{Timeout: 3 * time.Second, KeepAlive: 30 * time.Second}
+	transport := &http.Transport{
+		Proxy:                 nil,
+		DialContext:           dialer.DialContext,
+		MaxIdleConns:          64,
+		MaxIdleConnsPerHost:   2,
+		IdleConnTimeout:       90 * time.Second,
+		ResponseHeaderTimeout: 5 * time.Second,
+		DisableCompression:    true,
+	}
+	m.probeTransport = transport
+	m.probeClient = &http.Client{
+		Transport: transport,
+		Timeout:   8 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	return m.probeClient
+}
+
+func (m *HealthManager) resetProbeClient() {
+	if m.Client != nil {
+		return
+	}
+	m.clientMu.Lock()
+	defer m.clientMu.Unlock()
+	if m.probeTransport != nil {
+		m.probeTransport.CloseIdleConnections()
+	}
+	m.probeClient = nil
+	m.probeTransport = nil
 }
 
 func (m *HealthManager) markNoHealthyAlert(siteID string) bool {

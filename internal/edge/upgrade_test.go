@@ -266,6 +266,35 @@ func TestAgentRejectsUpgradeArtifactWithWrongDigest(t *testing.T) {
 	}
 }
 
+func TestUpgradeDownloadsUseIsolatedCertificateFreeClient(t *testing.T) {
+	directory := t.TempDir()
+	identity := newTransportTestIdentity(t)
+	agent := newTransportTestAgent(t, "https://control.example.test", directory, identity)
+	defer agent.resetControlClient()
+	defer agent.resetArtifactClient()
+	controlClient := agent.client()
+	downloadClient := agent.upgradeClient()
+	if downloadClient == controlClient || downloadClient.Timeout != upgradeDownloadTimeout {
+		t.Fatalf("upgrade client was not isolated: control=%p download=%p timeout=%s", controlClient, downloadClient, downloadClient.Timeout)
+	}
+	transport, ok := downloadClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("upgrade transport type = %T", downloadClient.Transport)
+	}
+	if len(transport.TLSClientConfig.Certificates) != 0 {
+		t.Fatal("upgrade transport exposes the edge mTLS certificate")
+	}
+	original, _ := http.NewRequest(http.MethodGet, "https://control.example.test/artifact", nil)
+	sameOrigin, _ := http.NewRequest(http.MethodGet, "https://control.example.test/releases/artifact", nil)
+	if err := downloadClient.CheckRedirect(sameOrigin, []*http.Request{original}); err != nil {
+		t.Fatalf("same-origin redirect was rejected: %v", err)
+	}
+	crossOrigin, _ := http.NewRequest(http.MethodGet, "https://downloads.example.test/artifact", nil)
+	if err := downloadClient.CheckRedirect(crossOrigin, []*http.Request{original}); err == nil {
+		t.Fatal("cross-origin upgrade redirect was accepted")
+	}
+}
+
 func TestUpgradeHelperRunsStagedInstallerAndPersistsSuccess(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("CDN_EDGE_INSTALL_ROOT", root)

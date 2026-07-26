@@ -51,6 +51,7 @@ type Config struct {
 	ListenerSettleTimeout time.Duration
 	ListenerPollInterval  time.Duration
 	HTTPClient            *http.Client
+	ArtifactHTTPClient    *http.Client
 	Runner                Runner
 	UpgradeRunner         UpgradeRunner
 	SecurityFirewall      SecurityFirewall
@@ -62,17 +63,31 @@ type Config struct {
 }
 
 type Agent struct {
-	Config           Config
-	logs             *LogForwarder
-	security         *SecurityManager
-	cacheUsage       *cacheUsageCollector
-	machineStatus    machineStatusReporter
-	lastApplyReport  *domain.ApplyReport
-	lastUpgradeError string
+	Config        Config
+	logs          *LogForwarder
+	security      *SecurityManager
+	cacheUsage    *cacheUsageCollector
+	machineStatus machineStatusReporter
 
-	clientMu         sync.Mutex
-	controlClient    *http.Client
-	controlTransport *http.Transport
+	statusMu          sync.Mutex
+	lastApplyReport   *domain.ApplyReport
+	applyReportSeq    uint64
+	componentFailures map[string]string
+
+	manifestMu sync.RWMutex
+	manifest   *domain.EdgeControlManifest
+
+	monitoringMu       sync.RWMutex
+	monitoringTargets  []domain.MonitoringTarget
+	monitoringRevision string
+	monitoringLoaded   bool
+
+	clientMu          sync.Mutex
+	controlClient     *http.Client
+	controlTransport  *http.Transport
+	artifactMu        sync.Mutex
+	artifactClient    *http.Client
+	artifactTransport *http.Transport
 }
 
 func New(config Config) (*Agent, error) {
@@ -144,6 +159,7 @@ func New(config Config) (*Agent, error) {
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityCacheUsage)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityMachineStatus)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityNginxFragments)
+	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityControlManifest)
 	configureMonitoring(&config)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityTCPMonitoring)
 	config.SecurityFirewall = defaultSecurityFirewall(config.SecurityFirewall)
@@ -158,8 +174,9 @@ func New(config Config) (*Agent, error) {
 	}
 	agent := &Agent{
 		Config: config, logs: NewLogForwarder(config.StateDir, config.AccessLogPath),
-		cacheUsage:    newCacheUsageCollector(nginx.DefaultCachePath, nginx.DefaultCacheMaxBytes, defaultCacheUsageInterval),
-		machineStatus: newMachineStatusCollector(),
+		cacheUsage:        newCacheUsageCollector(nginx.DefaultCachePath, nginx.DefaultCacheMaxBytes, defaultCacheUsageInterval),
+		machineStatus:     newMachineStatusCollector(),
+		componentFailures: make(map[string]string),
 	}
 	if config.SecurityFirewall != nil {
 		agent.security = NewSecurityManager(config.StateDir, config.SecurityLogPath, config.SecurityPollInterval, config.SecurityFirewall)
@@ -169,53 +186,200 @@ func New(config Config) (*Agent, error) {
 
 func (a *Agent) Run(ctx context.Context) error {
 	defer a.resetControlClient()
+	defer a.resetArtifactClient()
 	if err := a.EnsureEnrollment(ctx); err != nil {
 		return err
 	}
-	go a.cacheUsage.Run(ctx)
-	go a.logs.Run(ctx, a.Config.ControlURL, a.client)
+	var group sync.WaitGroup
+	start := func(run func()) {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			run()
+		}()
+	}
+	start(func() { a.cacheUsage.Run(ctx) })
+	start(func() { a.logs.Run(ctx, a.Config.ControlURL, a.client) })
 	if a.security != nil {
-		go a.security.Run(ctx, a.Config.ControlURL, a.client)
+		start(func() { a.security.Run(ctx, a.Config.ControlURL, a.client) })
+	}
+	start(func() { a.runPeriodic(ctx, "configuration", a.runConfigurationRound) })
+	start(func() { a.runPeriodic(ctx, "monitoring", a.runMonitoringRound) })
+	start(func() { a.runPeriodic(ctx, "upgrade", a.runUpgradeRound) })
+	err := a.runHeartbeatLoop(ctx)
+	group.Wait()
+	return err
+}
+
+func (a *Agent) runHeartbeatLoop(ctx context.Context) error {
+	first := true
+	for {
+		report, reportSeq := a.heartbeatReport()
+		if err := a.Heartbeat(ctx, a.appliedVersion(), a.heartbeatError(), report); err == nil {
+			a.acknowledgeApplyReport(reportSeq, report != nil)
+			_ = a.markUpgradeReady()
+		}
+		delay := a.Config.PollInterval
+		if first {
+			delay += a.stableJitter("heartbeat")
+			first = false
+		}
+		if !waitContext(ctx, delay) {
+			return ctx.Err()
+		}
+	}
+}
+
+func (a *Agent) runPeriodic(ctx context.Context, name string, run func(context.Context)) {
+	if !waitContext(ctx, a.stableJitter(name)) {
+		return
 	}
 	for {
-		roundStarted := time.Now()
-		lastError := a.lastUpgradeError
-		a.lastUpgradeError = ""
-		if err := a.renewIfNeeded(ctx); err != nil {
-			lastError = "renew edge certificate: " + err.Error()
+		run(ctx)
+		if !waitContext(ctx, a.Config.PollInterval) {
+			return
 		}
-		if err := a.Sync(ctx); err != nil && lastError == "" {
-			lastError = err.Error()
+	}
+}
+
+func (a *Agent) runConfigurationRound(ctx context.Context) {
+	a.setComponentFailure("certificate", "renew edge certificate", a.renewIfNeeded(ctx))
+	manifest, supported := a.controlManifest()
+	if supported && manifest.DesiredStateVersion <= a.appliedVersion() {
+		a.setComponentFailure("configuration", "sync desired state", nil)
+		return
+	}
+	a.setComponentFailure("configuration", "sync desired state", a.Sync(ctx))
+}
+
+func (a *Agent) runMonitoringRound(ctx context.Context) {
+	manifest, supported := a.controlManifest()
+	revision := ""
+	if supported {
+		revision = manifest.MonitoringRevision
+	}
+	a.setComponentFailure("monitoring", "TCP monitoring", a.monitor(ctx, revision, supported))
+}
+
+func (a *Agent) runUpgradeRound(ctx context.Context) {
+	manifest, supported := a.controlManifest()
+	if supported && manifest.UpgradeTaskID == "" && a.activeUpgradeID() == "" {
+		a.setComponentFailure("upgrade", "process online upgrade", nil)
+		return
+	}
+	a.setComponentFailure("upgrade", "process online upgrade", a.ProcessUpgrade(ctx))
+}
+
+func (a *Agent) stableJitter(purpose string) time.Duration {
+	maximum := a.Config.PollInterval / 5
+	if maximum > 5*time.Second {
+		maximum = 5 * time.Second
+	}
+	if maximum <= 0 {
+		return 0
+	}
+	identity, _ := os.ReadFile(a.Config.ClientCertPath)
+	digest := sha256.Sum256(append(append(identity, a.Config.ControlURL...), purpose...))
+	value := uint64(0)
+	for _, item := range digest[:8] {
+		value = value<<8 | uint64(item)
+	}
+	return time.Duration(value % uint64(maximum))
+}
+
+func waitContext(ctx context.Context, delay time.Duration) bool {
+	if delay <= 0 {
+		return ctx.Err() == nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func (a *Agent) setComponentFailure(component, action string, err error) {
+	a.statusMu.Lock()
+	defer a.statusMu.Unlock()
+	if err == nil || errors.Is(err, context.Canceled) {
+		delete(a.componentFailures, component)
+		return
+	}
+	a.componentFailures[component] = action + ": " + err.Error()
+}
+
+func (a *Agent) heartbeatError() string {
+	a.statusMu.Lock()
+	defer a.statusMu.Unlock()
+	for _, component := range []string{"certificate", "configuration", "monitoring", "upgrade"} {
+		if detail := a.componentFailures[component]; detail != "" {
+			return detail
 		}
-		if err := a.Monitor(ctx); err != nil && lastError == "" {
-			lastError = "TCP monitoring: " + err.Error()
+	}
+	if detail := a.logs.LastError(); detail != "" {
+		return detail
+	}
+	if a.security != nil {
+		if detail := a.security.LastError(); detail != "" {
+			return "edge security: " + detail
 		}
-		if logError := a.logs.LastError(); logError != "" && lastError == "" {
-			lastError = logError
-		}
-		if a.security != nil && a.security.LastError() != "" && lastError == "" {
-			lastError = "edge security: " + a.security.LastError()
-		}
-		if err := a.Heartbeat(ctx, a.appliedVersion(), lastError, a.lastApplyReport); err == nil {
-			a.lastApplyReport = nil
-			_ = a.markUpgradeReady()
-			if err := a.ProcessUpgrade(ctx); err != nil {
-				a.lastUpgradeError = "process online upgrade: " + err.Error()
-			}
-		}
-		delay := a.Config.PollInterval - time.Since(roundStarted)
-		if delay < 0 {
-			delay = 0
-		}
-		timer := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
-			return ctx.Err()
-		case <-timer.C:
-		}
+	}
+	return ""
+}
+
+func (a *Agent) setApplyReport(report *domain.ApplyReport) {
+	a.statusMu.Lock()
+	a.lastApplyReport = report
+	a.applyReportSeq++
+	a.statusMu.Unlock()
+}
+
+func (a *Agent) heartbeatReport() (*domain.ApplyReport, uint64) {
+	a.statusMu.Lock()
+	defer a.statusMu.Unlock()
+	if a.lastApplyReport == nil {
+		return nil, a.applyReportSeq
+	}
+	report := *a.lastApplyReport
+	report.PortConflicts = append([]domain.PortConflict(nil), report.PortConflicts...)
+	return &report, a.applyReportSeq
+}
+
+func (a *Agent) acknowledgeApplyReport(sequence uint64, sent bool) {
+	if !sent {
+		return
+	}
+	a.statusMu.Lock()
+	if a.applyReportSeq == sequence {
+		a.lastApplyReport = nil
+	}
+	a.statusMu.Unlock()
+}
+
+func (a *Agent) controlManifest() (domain.EdgeControlManifest, bool) {
+	a.manifestMu.RLock()
+	defer a.manifestMu.RUnlock()
+	if a.manifest == nil {
+		return domain.EdgeControlManifest{}, false
+	}
+	return *a.manifest, true
+}
+
+func (a *Agent) setControlManifest(manifest *domain.EdgeControlManifest) {
+	a.manifestMu.Lock()
+	if manifest == nil {
+		a.manifest = nil
+	} else {
+		copyOfManifest := *manifest
+		a.manifest = &copyOfManifest
+	}
+	a.manifestMu.Unlock()
+	a.logs.SetCompressionEnabled(manifest != nil && manifest.AccessLogGzip)
+	if manifest != nil && a.security != nil {
+		a.security.NotifyRevision(manifest.SecurityRevision)
 	}
 }
 
@@ -331,11 +495,15 @@ func (a *Agent) Sync(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	request.Header.Set("If-None-Match", fmt.Sprintf("\"desired-%d\"", a.appliedVersion()))
 	response, err := a.client().Do(request)
 	if err != nil {
 		return fmt.Errorf("pull desired state: %w", err)
 	}
 	defer drainAndClose(response.Body)
+	if response.StatusCode == http.StatusNotModified {
+		return nil
+	}
 	if response.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 		return fmt.Errorf("pull desired state: %s: %s", response.Status, strings.TrimSpace(string(body)))
@@ -378,6 +546,27 @@ func (a *Agent) Heartbeat(ctx context.Context, appliedVersion int64, lastError s
 	if response.StatusCode != http.StatusOK {
 		return fmt.Errorf("heartbeat: %s", response.Status)
 	}
+	var result domain.EdgeHeartbeatResponse
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&result); err != nil {
+		if errors.Is(err, io.EOF) {
+			a.setControlManifest(nil)
+			return nil
+		}
+		return fmt.Errorf("decode heartbeat response: %w", err)
+	}
+	if result.Control != nil {
+		if result.Control.DesiredStateVersion < 0 ||
+			(result.Control.MonitoringRevision != "" && !validDigest(result.Control.MonitoringRevision)) ||
+			(result.Control.SecurityRevision != "" && !validDigest(result.Control.SecurityRevision)) {
+			return errors.New("heartbeat returned an invalid control manifest")
+		}
+		if result.Control.UpgradeTaskID != "" {
+			if _, err := uuid.Parse(result.Control.UpgradeTaskID); err != nil {
+				return errors.New("heartbeat returned an invalid upgrade task ID")
+			}
+		}
+	}
+	a.setControlManifest(result.Control)
 	return nil
 }
 
@@ -504,7 +693,7 @@ func (a *Agent) apply(state domain.DesiredState) error {
 	if cacheCleanupErr != nil {
 		detail += "; cache cleanup warning: " + cacheCleanupErr.Error()
 	}
-	a.lastApplyReport = &domain.ApplyReport{Version: state.Version, Status: domain.ApplySucceeded, Detail: detail}
+	a.setApplyReport(&domain.ApplyReport{Version: state.Version, Status: domain.ApplySucceeded, Detail: detail})
 	return nil
 }
 
@@ -759,7 +948,7 @@ func (a *Agent) restorePreviousConfigs(backups map[string]fileBackup) {
 }
 
 func (a *Agent) applyFailed(version int64, code string, err error, conflicts []domain.PortConflict) error {
-	a.lastApplyReport = &domain.ApplyReport{Version: version, Status: domain.ApplyFailed, Code: code, Detail: err.Error(), PortConflicts: conflicts}
+	a.setApplyReport(&domain.ApplyReport{Version: version, Status: domain.ApplyFailed, Code: code, Detail: err.Error(), PortConflicts: conflicts})
 	return err
 }
 

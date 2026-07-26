@@ -2,6 +2,7 @@ package control
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -205,5 +206,55 @@ func TestEdgeLogsAcceptPublishedAssignmentWhileDraftMoveIsPending(t *testing.T) 
 	}
 	if !validLogEntryID(logs.events[0].ID) || logs.events[0].ID == "invalid/id" || logs.events[0].Path != "/asset.js" || len([]rune(logs.events[0].UserAgent)) != 4096 {
 		t.Fatalf("uploaded log was not normalized: %#v", logs.events[0])
+	}
+}
+
+func TestEdgeLogsAcceptGzipAndRejectUnknownEncoding(t *testing.T) {
+	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	node, err := database.CreateNode("gzip-edge", "203.0.113.72")
+	if err != nil {
+		t.Fatal(err)
+	}
+	site, err := database.CreateSite(domain.Site{
+		Name: "gzip-logs", Domains: []string{"gzip.example.test"}, Nodes: []string{node.ID},
+		PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, Enabled: true,
+	}, "zone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	logs := &appendLogStore{}
+	server := &Server{Store: database, Logs: logs}
+	payload, err := json.Marshal([]domain.AccessLogEvent{{ID: "gzip-request", SiteID: site.ID, Path: "/asset.js"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var compressed bytes.Buffer
+	writer := gzip.NewWriter(&compressed)
+	if _, err := writer.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/edge/v1/logs", bytes.NewReader(compressed.Bytes()))
+	request.Header.Set("Content-Encoding", "gzip")
+	request = request.WithContext(context.WithValue(request.Context(), edgeContextKey{}, node.ID))
+	response := httptest.NewRecorder()
+	server.writeLogs(response, request)
+	if response.Code != http.StatusAccepted || len(logs.events) != 1 || logs.events[0].ID != "gzip-request" {
+		t.Fatalf("gzip response status=%d events=%#v body=%s", response.Code, logs.events, response.Body.String())
+	}
+
+	unsupported := httptest.NewRequest(http.MethodPost, "/api/edge/v1/logs", bytes.NewReader(payload))
+	unsupported.Header.Set("Content-Encoding", "br")
+	unsupported = unsupported.WithContext(context.WithValue(unsupported.Context(), edgeContextKey{}, node.ID))
+	unsupportedResponse := httptest.NewRecorder()
+	server.writeLogs(unsupportedResponse, unsupported)
+	if unsupportedResponse.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("unsupported encoding status=%d body=%s", unsupportedResponse.Code, unsupportedResponse.Body.String())
 	}
 }

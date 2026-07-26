@@ -123,7 +123,8 @@ type localSecurityBan struct {
 }
 
 type localSecurityState struct {
-	Bans []localSecurityBan `json:"bans"`
+	Bans     []localSecurityBan `json:"bans"`
+	Revision string             `json:"revision,omitempty"`
 }
 
 type SecurityManager struct {
@@ -132,16 +133,23 @@ type SecurityManager struct {
 	pollInterval time.Duration
 	firewall     SecurityFirewall
 
-	mu            sync.Mutex
-	lastError     string
-	firewallDirty bool
+	mu              sync.Mutex
+	lastError       string
+	firewallDirty   bool
+	desiredRevision string
+	appliedRevision string
+	revisionSignal  chan struct{}
+	syncMu          sync.Mutex
 }
 
 func NewSecurityManager(stateDir, logPath string, pollInterval time.Duration, firewall SecurityFirewall) *SecurityManager {
 	if pollInterval <= 0 {
 		pollInterval = 500 * time.Millisecond
 	}
-	return &SecurityManager{stateDir: stateDir, logPath: logPath, pollInterval: pollInterval, firewall: firewall}
+	return &SecurityManager{
+		stateDir: stateDir, logPath: logPath, pollInterval: pollInterval, firewall: firewall,
+		revisionSignal: make(chan struct{}, 1),
+	}
 }
 
 func (m *SecurityManager) Run(ctx context.Context, controlURL string, clientFactory func() *http.Client) {
@@ -149,10 +157,12 @@ func (m *SecurityManager) Run(ctx context.Context, controlURL string, clientFact
 		m.setError(err)
 	}
 	collectTicker := time.NewTicker(m.pollInterval)
-	syncTicker := time.NewTicker(30 * time.Second)
+	legacySyncTicker := time.NewTicker(30 * time.Second)
+	fallbackTicker := time.NewTicker(5 * time.Minute)
 	defer collectTicker.Stop()
-	defer syncTicker.Stop()
-	if err := m.syncBansWithFactory(ctx, controlURL, clientFactory); err != nil {
+	defer legacySyncTicker.Stop()
+	defer fallbackTicker.Stop()
+	if err := m.syncBansIfChanged(ctx, controlURL, clientFactory, false); err != nil {
 		m.setError(err)
 	} else {
 		m.setError(nil)
@@ -167,12 +177,48 @@ func (m *SecurityManager) Run(ctx context.Context, controlURL string, clientFact
 			} else {
 				m.setError(nil)
 			}
-		case <-syncTicker.C:
-			if err := m.syncBansWithFactory(ctx, controlURL, clientFactory); err != nil {
+		case <-m.revisionSignal:
+			if err := m.syncBansIfChanged(ctx, controlURL, clientFactory, false); err != nil {
 				m.setError(err)
 			} else {
 				m.setError(nil)
 			}
+		case <-legacySyncTicker.C:
+			if m.usesLegacySync() {
+				if err := m.syncBansIfChanged(ctx, controlURL, clientFactory, true); err != nil {
+					m.setError(err)
+				} else {
+					m.setError(nil)
+				}
+			}
+		case <-fallbackTicker.C:
+			if err := m.syncBansIfChanged(ctx, controlURL, clientFactory, true); err != nil {
+				m.setError(err)
+			} else {
+				m.setError(nil)
+			}
+		}
+	}
+}
+
+func (m *SecurityManager) usesLegacySync() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.desiredRevision == ""
+}
+
+func (m *SecurityManager) NotifyRevision(revision string) {
+	if revision != "" && !validDigest(revision) {
+		return
+	}
+	m.mu.Lock()
+	changed := revision != m.desiredRevision
+	m.desiredRevision = revision
+	m.mu.Unlock()
+	if changed {
+		select {
+		case m.revisionSignal <- struct{}{}:
+		default:
 		}
 	}
 }
@@ -205,6 +251,9 @@ func (m *SecurityManager) initialize() error {
 	if err := m.saveState(state); err != nil {
 		return err
 	}
+	m.mu.Lock()
+	m.appliedRevision = state.Revision
+	m.mu.Unlock()
 	return m.replaceFirewall(localBanValues(state.Bans))
 }
 
@@ -409,9 +458,13 @@ func (m *SecurityManager) flush(ctx context.Context, controlURL string, clientFa
 	if err != nil {
 		return err
 	}
-	defer drainAndClose(response.Body)
+	body, readErr := io.ReadAll(io.LimitReader(response.Body, 4096))
+	_, _ = io.Copy(io.Discard, response.Body)
+	closeErr := response.Body.Close()
+	if readErr != nil {
+		return readErr
+	}
 	if response.StatusCode != http.StatusAccepted {
-		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 		if response.StatusCode >= 400 && response.StatusCode < 500 {
 			var rejection struct {
 				InvalidEventIndex *int `json:"invalid_event_index"`
@@ -427,13 +480,27 @@ func (m *SecurityManager) flush(ctx context.Context, controlURL string, clientFa
 		}
 		return fmt.Errorf("upload security events: %s: %s", response.Status, strings.TrimSpace(string(body)))
 	}
+	if closeErr != nil {
+		return closeErr
+	}
 	if err := m.saveQueue(queued[count:]); err != nil {
 		return err
 	}
 	if err := m.clearPending(queued[:count]); err != nil {
 		return err
 	}
-	return m.syncBans(ctx, controlURL, client)
+	var result struct {
+		SecurityRevision string `json:"security_revision"`
+	}
+	_ = json.Unmarshal(body, &result)
+	if result.SecurityRevision == "" || !validDigest(result.SecurityRevision) {
+		return m.syncBans(ctx, controlURL, client)
+	}
+	m.NotifyRevision(result.SecurityRevision)
+	if m.revisionNeedsSync() {
+		return m.syncBans(ctx, controlURL, client)
+	}
+	return nil
 }
 
 func securityHTTPClient(clientFactory func() *http.Client) (*http.Client, error) {
@@ -455,6 +522,23 @@ func (m *SecurityManager) syncBansWithFactory(ctx context.Context, controlURL st
 	return m.syncBans(ctx, controlURL, client)
 }
 
+func (m *SecurityManager) syncBansIfChanged(ctx context.Context, controlURL string, clientFactory func() *http.Client, force bool) error {
+	if !force && !m.revisionNeedsSync() {
+		return nil
+	}
+	client, err := securityHTTPClient(clientFactory)
+	if err != nil {
+		return err
+	}
+	return m.syncBans(ctx, controlURL, client)
+}
+
+func (m *SecurityManager) revisionNeedsSync() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.firewallDirty || m.desiredRevision == "" || m.desiredRevision != m.appliedRevision
+}
+
 func (m *SecurityManager) clearPending(events []domain.SecurityEvent) error {
 	state, err := m.loadState()
 	if err != nil {
@@ -473,15 +557,39 @@ func (m *SecurityManager) clearPending(events []domain.SecurityEvent) error {
 }
 
 func (m *SecurityManager) syncBans(ctx context.Context, controlURL string, client *http.Client) error {
+	m.syncMu.Lock()
+	defer m.syncMu.Unlock()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(controlURL, "/")+"/api/edge/v1/security-bans", nil)
 	if err != nil {
 		return err
+	}
+	m.mu.Lock()
+	appliedRevision := m.appliedRevision
+	desiredRevision := m.desiredRevision
+	m.mu.Unlock()
+	if appliedRevision != "" {
+		request.Header.Set("If-None-Match", `"`+appliedRevision+`"`)
 	}
 	response, err := client.Do(request)
 	if err != nil {
 		return err
 	}
 	defer drainAndClose(response.Body)
+	responseRevision := revisionFromETag(response.Header.Get("ETag"))
+	if response.StatusCode == http.StatusNotModified {
+		local, loadErr := m.loadState()
+		if loadErr != nil {
+			return loadErr
+		}
+		if responseRevision == "" {
+			responseRevision = appliedRevision
+		}
+		m.setAppliedRevision(responseRevision)
+		if m.firewallNeedsRetry() {
+			return m.replaceFirewall(localBanValues(activeLocalBans(local.Bans, time.Now().UTC())))
+		}
+		return nil
+	}
 	if response.StatusCode != http.StatusOK {
 		return fmt.Errorf("pull security bans: %s", response.Status)
 	}
@@ -497,6 +605,7 @@ func (m *SecurityManager) syncBans(ctx context.Context, controlURL string, clien
 	}
 	now := time.Now().UTC()
 	originalBanCount := len(local.Bans)
+	previousRevision := local.Revision
 	activeByIP := make(map[string]localSecurityBan, originalBanCount)
 	for _, ban := range activeLocalBans(append([]localSecurityBan(nil), local.Bans...), now) {
 		activeByIP[ban.IP] = ban
@@ -516,13 +625,26 @@ func (m *SecurityManager) syncBans(ctx context.Context, controlURL string, clien
 		}
 	}
 	local.Bans = limitLocalSecurityBans(localBanMapValues(byIP))
-	if originalBanCount == len(previousBans) && equivalentLocalBanSets(previousBans, local.Bans) && !m.firewallNeedsRetry() {
+	if responseRevision == "" {
+		responseRevision = desiredRevision
+	}
+	local.Revision = responseRevision
+	if originalBanCount == len(previousBans) && equivalentLocalBanSets(previousBans, local.Bans) &&
+		previousRevision == responseRevision && !m.firewallNeedsRetry() {
+		m.setAppliedRevision(responseRevision)
 		return nil
 	}
 	if err := m.saveState(local); err != nil {
 		return err
 	}
+	m.setAppliedRevision(responseRevision)
 	return m.replaceFirewall(localBanValues(local.Bans))
+}
+
+func (m *SecurityManager) setAppliedRevision(revision string) {
+	m.mu.Lock()
+	m.appliedRevision = revision
+	m.mu.Unlock()
 }
 
 func (m *SecurityManager) replaceFirewall(bans []domain.SecurityBan) error {

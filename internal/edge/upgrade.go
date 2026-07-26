@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -22,9 +24,10 @@ import (
 )
 
 const (
-	upgradeResourceLimit = 1 << 20
-	upgradeBinaryLimit   = 128 << 20
-	upgradeLogLimit      = 64 << 10
+	upgradeResourceLimit   = 1 << 20
+	upgradeBinaryLimit     = 128 << 20
+	upgradeLogLimit        = 64 << 10
+	upgradeDownloadTimeout = 5 * time.Minute
 )
 
 type UpgradeRunner interface {
@@ -226,7 +229,7 @@ func (a *Agent) downloadUpgradeArtifact(ctx context.Context, artifact domain.Upg
 	if err != nil {
 		return err
 	}
-	response, err := a.client().Do(request)
+	response, err := a.upgradeClient().Do(request)
 	if err != nil {
 		return err
 	}
@@ -266,6 +269,67 @@ func (a *Agent) downloadUpgradeArtifact(ctx context.Context, artifact domain.Upg
 		return err
 	}
 	return os.Rename(temporaryPath, destination)
+}
+
+func (a *Agent) upgradeClient() *http.Client {
+	if a.Config.ArtifactHTTPClient != nil {
+		return a.Config.ArtifactHTTPClient
+	}
+	// An injected control client is also used for artifacts in unit tests and
+	// custom embeddings. Production agents leave both injection points nil.
+	if a.Config.HTTPClient != nil {
+		return a.Config.HTTPClient
+	}
+	a.artifactMu.Lock()
+	defer a.artifactMu.Unlock()
+	if a.artifactClient != nil {
+		return a.artifactClient
+	}
+	roots, _ := x509.SystemCertPool()
+	if roots == nil {
+		roots = x509.NewCertPool()
+	}
+	if internalCA, err := os.ReadFile(a.Config.CAPath); err == nil {
+		roots.AppendCertsFromPEM(internalCA)
+	}
+	transport := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots},
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          8,
+		MaxIdleConnsPerHost:   2,
+		IdleConnTimeout:       30 * time.Second,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+	}
+	a.artifactTransport = transport
+	a.artifactClient = &http.Client{
+		Transport: transport,
+		Timeout:   upgradeDownloadTimeout,
+		CheckRedirect: func(request *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return errors.New("online upgrade download exceeded the redirect limit")
+			}
+			if request.URL.Scheme != "https" || len(via) == 0 || !strings.EqualFold(request.URL.Host, via[0].URL.Host) {
+				return errors.New("online upgrade download refused a cross-origin redirect")
+			}
+			return nil
+		},
+	}
+	return a.artifactClient
+}
+
+func (a *Agent) resetArtifactClient() {
+	if a.Config.ArtifactHTTPClient != nil || a.Config.HTTPClient != nil {
+		return
+	}
+	a.artifactMu.Lock()
+	defer a.artifactMu.Unlock()
+	if a.artifactTransport != nil {
+		a.artifactTransport.CloseIdleConnections()
+	}
+	a.artifactClient = nil
+	a.artifactTransport = nil
 }
 
 func (a *Agent) resumeUpgrade(ctx context.Context, taskID string) error {

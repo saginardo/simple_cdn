@@ -284,6 +284,7 @@ func (s *Server) deleteSecurityBan(response http.ResponseWriter, request *http.R
 		writeStoreError(response, err)
 		return
 	}
+	s.invalidateEdgeSecurityRevision()
 	s.audit(request, adminID(request.Context()), "unban", "security_ban", ip, "")
 	result, err := s.securityOverview(nil)
 	if err != nil {
@@ -313,7 +314,17 @@ func (s *Server) edgeSecurityEvents(response http.ResponseWriter, request *http.
 		}
 		return
 	}
-	writeJSON(response, http.StatusAccepted, map[string]int{"accepted": accepted})
+	for _, event := range batch.Events {
+		if event.Action == domain.SecurityActionBan {
+			s.invalidateEdgeSecurityRevision()
+			break
+		}
+	}
+	result := map[string]any{"accepted": accepted}
+	if revision, revisionErr := s.cachedEdgeSecurityRevision(); revisionErr == nil {
+		result["security_revision"] = revision
+	}
+	writeJSON(response, http.StatusAccepted, result)
 }
 
 func (s *Server) edgeSecurityBans(response http.ResponseWriter, request *http.Request) {
@@ -326,5 +337,11 @@ func (s *Server) edgeSecurityBans(response http.ResponseWriter, request *http.Re
 	for _, ban := range bans {
 		edgeBans = append(edgeBans, domain.EdgeSecurityBan{IP: ban.IP, ExpiresAt: ban.ExpiresAt})
 	}
+	revision := securityBansRevision(bans)
+	if requestHasRevision(request, revision) {
+		writeRevisionNotModified(response, revision)
+		return
+	}
+	response.Header().Set("ETag", revisionETag(revision))
 	writeJSON(response, http.StatusOK, domain.EdgeSecurityBanState{Bans: edgeBans, GeneratedAt: time.Now().UTC()})
 }

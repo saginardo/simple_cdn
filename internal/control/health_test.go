@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -38,6 +40,42 @@ func nodeHealthClient(statusCode int) *http.Client {
 			Header:     make(http.Header),
 		}, nil
 	})}
+}
+
+func TestLightweightHealthProbeReusesConnection(t *testing.T) {
+	var connections atomic.Int32
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(response, "ok\n")
+	}))
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			connections.Add(1)
+		}
+	}
+	server.Start()
+	defer server.Close()
+	manager := &HealthManager{}
+	defer manager.resetProbeClient()
+	address := strings.TrimPrefix(server.URL, "http://")
+	for range 2 {
+		if healthy, detail := manager.check(context.Background(), address); !healthy {
+			t.Fatalf("health check failed: %s", detail)
+		}
+	}
+	if connections.Load() != 1 {
+		t.Fatalf("two lightweight probes opened %d TCP connections", connections.Load())
+	}
+	for range 2 {
+		if healthy, detail := manager.checkFresh(context.Background(), address); !healthy {
+			t.Fatalf("fresh health check failed: %s", detail)
+		}
+	}
+	if connections.Load() != 3 {
+		t.Fatalf("fresh probes did not open independent connections: total=%d", connections.Load())
+	}
+	if manager.deepInterval() != defaultHealthDeepInterval {
+		t.Fatalf("deep probe interval = %s", manager.deepInterval())
+	}
 }
 
 func TestDisabledSiteWithdrawsManagedDNSBeforeRepublish(t *testing.T) {
@@ -517,7 +555,7 @@ func TestHealthReconciliationBoundsConcurrentNodeProbes(t *testing.T) {
 		}
 	}
 	var active, maximum atomic.Int32
-	entered := make(chan struct{}, 6)
+	entered := make(chan struct{})
 	release := make(chan struct{})
 	client := &http.Client{Transport: healthRoundTripFunc(func(*http.Request) (*http.Response, error) {
 		current := active.Add(1)
@@ -528,7 +566,10 @@ func TestHealthReconciliationBoundsConcurrentNodeProbes(t *testing.T) {
 				break
 			}
 		}
-		entered <- struct{}{}
+		select {
+		case entered <- struct{}{}:
+		case <-release:
+		}
 		<-release
 		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader("ok\n")), Header: make(http.Header)}, nil
 	})}
