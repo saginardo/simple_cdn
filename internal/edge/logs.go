@@ -74,32 +74,21 @@ func (f *LogForwarder) Run(ctx context.Context, controlURL string, clientFactory
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	var client *http.Client
-	defer func() {
-		if client != nil {
-			client.CloseIdleConnections()
-		}
-	}()
 	runCycle := func() {
 		_, collectErr := f.Collect()
 		pending, uploadErr := f.hasPending()
 		if uploadErr == nil && pending {
-			if client == nil {
-				if clientFactory == nil {
-					uploadErr = errors.New("access-log HTTP client factory is not configured")
-				} else {
-					client = clientFactory()
-					if client == nil {
-						uploadErr = errors.New("access-log HTTP client factory returned nil")
-					}
+			var client *http.Client
+			if clientFactory == nil {
+				uploadErr = errors.New("access-log HTTP client factory is not configured")
+			} else {
+				client = clientFactory()
+				if client == nil {
+					uploadErr = errors.New("access-log HTTP client factory returned nil")
 				}
 			}
 			if uploadErr == nil {
 				uploadErr = f.drain(ctx, controlURL, client)
-				if uploadErr != nil && client != nil {
-					client.CloseIdleConnections()
-					client = nil
-				}
 			}
 		}
 		f.setErrors(collectErr, uploadErr)

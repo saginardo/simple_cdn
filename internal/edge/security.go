@@ -405,12 +405,11 @@ func (m *SecurityManager) flush(ctx context.Context, controlURL string, clientFa
 	if err != nil {
 		return err
 	}
-	defer client.CloseIdleConnections()
 	response, err := client.Do(request)
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
+	defer drainAndClose(response.Body)
 	if response.StatusCode != http.StatusAccepted {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 		if response.StatusCode >= 400 && response.StatusCode < 500 {
@@ -453,7 +452,6 @@ func (m *SecurityManager) syncBansWithFactory(ctx context.Context, controlURL st
 	if err != nil {
 		return err
 	}
-	defer client.CloseIdleConnections()
 	return m.syncBans(ctx, controlURL, client)
 }
 
@@ -483,7 +481,7 @@ func (m *SecurityManager) syncBans(ctx context.Context, controlURL string, clien
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
+	defer drainAndClose(response.Body)
 	if response.StatusCode != http.StatusOK {
 		return fmt.Errorf("pull security bans: %s", response.Status)
 	}

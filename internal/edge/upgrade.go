@@ -108,7 +108,7 @@ func (a *Agent) ProcessUpgrade(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("pull online upgrade: %w", err)
 	}
-	defer response.Body.Close()
+	defer drainAndClose(response.Body)
 	if response.StatusCode == http.StatusNoContent {
 		return nil
 	}
@@ -343,7 +343,7 @@ func (a *Agent) sendUpgradeReport(ctx context.Context, report domain.NodeUpgrade
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
+	defer drainAndClose(response.Body)
 	if response.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 		return fmt.Errorf("report online upgrade: %s: %s", response.Status, strings.TrimSpace(string(body)))

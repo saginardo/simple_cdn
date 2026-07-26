@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -68,6 +69,10 @@ type Agent struct {
 	machineStatus    machineStatusReporter
 	lastApplyReport  *domain.ApplyReport
 	lastUpgradeError string
+
+	clientMu         sync.Mutex
+	controlClient    *http.Client
+	controlTransport *http.Transport
 }
 
 func New(config Config) (*Agent, error) {
@@ -163,6 +168,7 @@ func New(config Config) (*Agent, error) {
 }
 
 func (a *Agent) Run(ctx context.Context) error {
+	defer a.resetControlClient()
 	if err := a.EnsureEnrollment(ctx); err != nil {
 		return err
 	}
@@ -237,7 +243,7 @@ func (a *Agent) EnsureEnrollment(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("enroll edge: %w", err)
 	}
-	defer response.Body.Close()
+	defer drainAndClose(response.Body)
 	if response.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 		return fmt.Errorf("enroll edge: %s: %s", response.Status, strings.TrimSpace(string(body)))
@@ -258,6 +264,7 @@ func (a *Agent) EnsureEnrollment(ctx context.Context) error {
 	if err := atomicWriteFile(a.Config.CAPath, []byte(result.CACertificate), 0o644); err != nil {
 		return err
 	}
+	a.resetControlClient()
 	return nil
 }
 
@@ -294,7 +301,7 @@ func (a *Agent) renewIfNeeded(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("renew edge certificate: %w", err)
 	}
-	defer response.Body.Close()
+	defer drainAndClose(response.Body)
 	if response.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 		return fmt.Errorf("renew edge certificate: %s: %s", response.Status, strings.TrimSpace(string(body)))
@@ -312,7 +319,11 @@ func (a *Agent) renewIfNeeded(ctx context.Context) error {
 	if err := atomicWriteFile(a.Config.ClientCertPath, []byte(result.ClientCertificate), 0o600); err != nil {
 		return err
 	}
-	return atomicWriteFile(a.Config.CAPath, []byte(result.CACertificate), 0o644)
+	if err := atomicWriteFile(a.Config.CAPath, []byte(result.CACertificate), 0o644); err != nil {
+		return err
+	}
+	a.resetControlClient()
+	return nil
 }
 
 func (a *Agent) Sync(ctx context.Context) error {
@@ -324,7 +335,7 @@ func (a *Agent) Sync(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("pull desired state: %w", err)
 	}
-	defer response.Body.Close()
+	defer drainAndClose(response.Body)
 	if response.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 		return fmt.Errorf("pull desired state: %s: %s", response.Status, strings.TrimSpace(string(body)))
@@ -363,7 +374,7 @@ func (a *Agent) Heartbeat(ctx context.Context, appliedVersion int64, lastError s
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
+	defer drainAndClose(response.Body)
 	if response.StatusCode != http.StatusOK {
 		return fmt.Errorf("heartbeat: %s", response.Status)
 	}
@@ -976,6 +987,11 @@ func (a *Agent) client() *http.Client {
 	if a.Config.HTTPClient != nil {
 		return a.Config.HTTPClient
 	}
+	a.clientMu.Lock()
+	defer a.clientMu.Unlock()
+	if a.controlClient != nil {
+		return a.controlClient
+	}
 	certificate, err := tls.LoadX509KeyPair(a.Config.ClientCertPath, a.Config.ClientKeyPath)
 	if err != nil {
 		return &http.Client{Timeout: 30 * time.Second, Transport: rejectingTransport{err: err}}
@@ -987,7 +1003,17 @@ func (a *Agent) client() *http.Client {
 	if internalCA, err := os.ReadFile(a.Config.CAPath); err == nil {
 		roots.AppendCertsFromPEM(internalCA)
 	}
-	return &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{certificate}, RootCAs: roots}}}
+	transport := &http.Transport{
+		TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{certificate}, RootCAs: roots},
+		ForceAttemptHTTP2:   true,
+		MaxIdleConns:        32,
+		MaxIdleConnsPerHost: 8,
+		IdleConnTimeout:     90 * time.Second,
+		TLSHandshakeTimeout: 10 * time.Second,
+	}
+	a.controlTransport = transport
+	a.controlClient = &http.Client{Timeout: 30 * time.Second, Transport: transport}
+	return a.controlClient
 }
 
 func (a *Agent) appliedVersion() int64 {
@@ -1003,6 +1029,27 @@ func (a *Agent) appliedVersion() int64 {
 type rejectingTransport struct{ err error }
 
 func (r rejectingTransport) RoundTrip(*http.Request) (*http.Response, error) { return nil, r.err }
+
+func (a *Agent) resetControlClient() {
+	if a.Config.HTTPClient != nil {
+		return
+	}
+	a.clientMu.Lock()
+	defer a.clientMu.Unlock()
+	if a.controlTransport != nil {
+		a.controlTransport.CloseIdleConnections()
+	}
+	a.controlClient = nil
+	a.controlTransport = nil
+}
+
+func drainAndClose(body io.ReadCloser) {
+	if body == nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, body)
+	_ = body.Close()
+}
 
 func pkixName(commonName string) pkix.Name { return pkix.Name{CommonName: commonName} }
 

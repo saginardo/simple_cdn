@@ -69,7 +69,7 @@ func (a *Agent) Monitor(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("report results: %w", err)
 	}
-	defer response.Body.Close()
+	defer drainAndClose(response.Body)
 	if response.StatusCode == http.StatusConflict {
 		return nil
 	}
@@ -89,7 +89,7 @@ func (a *Agent) pullMonitoringTargets(ctx context.Context) ([]domain.MonitoringT
 	if err != nil {
 		return nil, fmt.Errorf("pull targets: %w", err)
 	}
-	defer response.Body.Close()
+	defer drainAndClose(response.Body)
 	if response.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 		return nil, fmt.Errorf("pull targets: %s: %s", response.Status, strings.TrimSpace(string(body)))
