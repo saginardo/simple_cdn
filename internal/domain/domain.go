@@ -36,6 +36,8 @@ type Node struct {
 	Capabilities      []string      `json:"capabilities"`
 	AgentVersion      string        `json:"agent_version,omitempty"`
 	AgentSHA256       string        `json:"agent_sha256,omitempty"`
+	NginxVersion      string        `json:"nginx_version,omitempty"`
+	NginxSHA256       string        `json:"nginx_sha256,omitempty"`
 	ActiveUpgradeID   string        `json:"active_upgrade_task_id,omitempty"`
 	LastHeartbeatAt   *time.Time    `json:"last_heartbeat_at,omitempty"`
 	AppliedVersion    int64         `json:"applied_version"`
@@ -107,6 +109,7 @@ const (
 	EdgeCapabilityOriginConnection    = "origin_connection_v1"
 	EdgeCapabilityTCPMonitoring       = "tcp_monitoring_v1"
 	EdgeCapabilityControlManifest     = "control_manifest_v1"
+	EdgeCapabilityNginxBundle         = "nginx_bundle_v1"
 )
 
 // EdgeControlManifest is a compact change manifest returned with a heartbeat.
@@ -272,18 +275,20 @@ const (
 )
 
 type NodeUpgradeTask struct {
-	ID           string            `json:"id"`
-	NodeID       string            `json:"node_id"`
-	Status       NodeUpgradeStatus `json:"status"`
-	SourceSHA256 string            `json:"source_sha256,omitempty"`
-	TargetSHA256 string            `json:"target_sha256"`
-	ErrorCode    string            `json:"error_code,omitempty"`
-	Detail       string            `json:"detail,omitempty"`
-	DeadlineAt   time.Time         `json:"deadline_at"`
-	StartedAt    *time.Time        `json:"started_at,omitempty"`
-	CompletedAt  *time.Time        `json:"completed_at,omitempty"`
-	CreatedAt    time.Time         `json:"created_at"`
-	UpdatedAt    time.Time         `json:"updated_at"`
+	ID                string            `json:"id"`
+	NodeID            string            `json:"node_id"`
+	Status            NodeUpgradeStatus `json:"status"`
+	SourceSHA256      string            `json:"source_sha256,omitempty"`
+	TargetSHA256      string            `json:"target_sha256"`
+	SourceNginxSHA256 string            `json:"source_nginx_sha256,omitempty"`
+	TargetNginxSHA256 string            `json:"target_nginx_sha256,omitempty"`
+	ErrorCode         string            `json:"error_code,omitempty"`
+	Detail            string            `json:"detail,omitempty"`
+	DeadlineAt        time.Time         `json:"deadline_at"`
+	StartedAt         *time.Time        `json:"started_at,omitempty"`
+	CompletedAt       *time.Time        `json:"completed_at,omitempty"`
+	CreatedAt         time.Time         `json:"created_at"`
+	UpdatedAt         time.Time         `json:"updated_at"`
 }
 
 type UpgradeArtifact struct {
@@ -292,20 +297,23 @@ type UpgradeArtifact struct {
 }
 
 type NodeUpgradeInstruction struct {
-	TaskID         string          `json:"task_id"`
-	DeadlineAt     time.Time       `json:"deadline_at"`
-	Binary         UpgradeArtifact `json:"binary"`
-	Installer      UpgradeArtifact `json:"installer"`
-	AgentService   UpgradeArtifact `json:"agent_service"`
-	UpdaterService UpgradeArtifact `json:"updater_service"`
+	TaskID         string           `json:"task_id"`
+	DeadlineAt     time.Time        `json:"deadline_at"`
+	Binary         UpgradeArtifact  `json:"binary"`
+	Installer      UpgradeArtifact  `json:"installer"`
+	AgentService   UpgradeArtifact  `json:"agent_service"`
+	UpdaterService UpgradeArtifact  `json:"updater_service"`
+	NginxBundle    *UpgradeArtifact `json:"nginx_bundle,omitempty"`
+	NginxService   *UpgradeArtifact `json:"nginx_service,omitempty"`
 }
 
 type NodeUpgradeReport struct {
-	TaskID          string            `json:"task_id"`
-	Status          NodeUpgradeStatus `json:"status"`
-	ErrorCode       string            `json:"error_code,omitempty"`
-	Detail          string            `json:"detail,omitempty"`
-	InstalledSHA256 string            `json:"installed_sha256,omitempty"`
+	TaskID               string            `json:"task_id"`
+	Status               NodeUpgradeStatus `json:"status"`
+	ErrorCode            string            `json:"error_code,omitempty"`
+	Detail               string            `json:"detail,omitempty"`
+	InstalledSHA256      string            `json:"installed_sha256,omitempty"`
+	InstalledNginxSHA256 string            `json:"installed_nginx_sha256,omitempty"`
 }
 
 type TLSBundle struct {

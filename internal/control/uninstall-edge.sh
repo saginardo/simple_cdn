@@ -24,23 +24,18 @@ elif [[ $EUID -ne 0 ]]; then
   echo "edge uninstall must run as root" >&2
   exit 2
 fi
-if [[ "$CONTROL_URL" != https://* || -z "$TOKEN" ]]; then
+if [[ "$CONTROL_URL" != https://* || "$CONTROL_URL" == *[[:space:]]* || -z "$TOKEN" || "$TOKEN" == *[[:space:]]* ]]; then
   echo "usage: uninstall-edge.sh --control-url HTTPS_URL --token TOKEN" >&2
   exit 2
 fi
-
 CONTROL_URL="${CONTROL_URL%/}"
+
 root_path() {
   printf '%s%s' "$ROOT_PREFIX" "$1"
 }
-
-lock_dir=$(root_path /run/cdn-edge-agent-uninstall.lock)
-if ! mkdir "$lock_dir" 2>/dev/null; then
-  echo "another edge uninstall is already running" >&2
-  exit 1
-fi
-trap 'rmdir "$lock_dir" 2>/dev/null || true' EXIT
-
+link_points_to() {
+  [[ -L "$1" && "$(readlink "$1")" == "$2" ]]
+}
 callback() {
   local action="$1"
   shift
@@ -49,43 +44,61 @@ callback() {
     "$@" "$CONTROL_URL/api/edge/v1/uninstall/$action"
 }
 
+lock_dir=$(root_path /run/cdn-edge-agent-uninstall.lock)
+if ! mkdir "$lock_dir" 2>/dev/null; then
+  echo "another edge uninstall is already running" >&2
+  exit 1
+fi
+legacy_backup=""
+cleanup_temporary() {
+  if [[ -n "$legacy_backup" ]]; then rm -rf "$legacy_backup"; fi
+  rmdir "$lock_dir" 2>/dev/null || true
+}
+trap cleanup_temporary EXIT
+
+edge_root=$(root_path /opt/cdn-edge)
+marker="$edge_root/.layout-version"
+layout_version=""
+if [[ -f "$marker" ]]; then layout_version=$(tr -d '[:space:]' <"$marker"); fi
+if [[ -n "$layout_version" && "$layout_version" != "1" && "$layout_version" != "2" ]]; then
+  echo "unsupported /opt/cdn-edge layout version" >&2
+  exit 1
+fi
+
+agent_unit=$(root_path /etc/systemd/system/cdn-edge-agent.service)
+updater_unit=$(root_path /etc/systemd/system/cdn-edge-updater@.service)
+nginx_unit=$(root_path /etc/systemd/system/nginx.service)
+expected_agent_unit="$edge_root/systemd/cdn-edge-agent.service"
+expected_updater_unit="$edge_root/systemd/cdn-edge-updater@.service"
+expected_nginx_unit="$edge_root/systemd/nginx.service"
+
 started=0
 cleanup_committed=0
-was_enabled=0
-was_active=0
-nginx_config=""
-nginx_backup=""
-nginx_config_present=0
-nginx_stream_entry=""
-nginx_stream_backup=""
-nginx_stream_present=0
-nginx_root_config=""
-nginx_root_backup=""
-nginx_root_present=0
-nginx_root_next=""
-config_removed=0
+agent_was_active=0
+agent_was_enabled=0
+nginx_was_active=0
+nginx_was_enabled=0
+legacy_changed=0
 report_failure() {
   local code=$?
   trap - ERR
+  set +e
   if ((started == 1 && cleanup_committed == 0)); then
-    if ((config_removed == 1)); then
-      if ((nginx_config_present == 1)) && [[ -n "$nginx_backup" && -e "$nginx_backup" ]]; then
-        cp -a "$nginx_backup" "$nginx_config" >/dev/null 2>&1 || true
-      fi
-      if ((nginx_stream_present == 1)) && [[ -n "$nginx_stream_backup" && -e "$nginx_stream_backup" ]]; then
-        cp -a "$nginx_stream_backup" "$nginx_stream_entry" >/dev/null 2>&1 || true
-      fi
-	  if ((nginx_root_present == 1)) && [[ -n "$nginx_root_backup" && -e "$nginx_root_backup" ]]; then
-		cp -a "$nginx_root_backup" "$nginx_root_config" >/dev/null 2>&1 || true
-	  fi
-      nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || true
+    if ((legacy_changed == 1)) && [[ -d "$legacy_backup" ]]; then
+      legacy_http=$(root_path /etc/nginx/conf.d/cdn-platform.conf)
+      legacy_stream=$(root_path /etc/nginx/modules-enabled/99-cdn-platform-stream.conf)
+      legacy_root=$(root_path /etc/nginx/nginx.conf)
+      rm -f "$legacy_http" "$legacy_stream" "$legacy_root"
+      if [[ -e "$legacy_backup/http" ]]; then install -d -m 0755 "$(dirname "$legacy_http")"; cp -a "$legacy_backup/http" "$legacy_http"; fi
+      if [[ -e "$legacy_backup/stream" ]]; then install -d -m 0755 "$(dirname "$legacy_stream")"; cp -a "$legacy_backup/stream" "$legacy_stream"; fi
+      if [[ -e "$legacy_backup/root" ]]; then install -d -m 0755 "$(dirname "$legacy_root")"; cp -a "$legacy_backup/root" "$legacy_root"; fi
+      nginx -t >/dev/null 2>&1 && systemctl reload nginx.service >/dev/null 2>&1 || true
     fi
-    if [[ -n "$nginx_backup" ]]; then rm -f "$nginx_backup" >/dev/null 2>&1 || true; fi
-    if [[ -n "$nginx_stream_backup" ]]; then rm -f "$nginx_stream_backup" >/dev/null 2>&1 || true; fi
-	if [[ -n "$nginx_root_backup" ]]; then rm -f "$nginx_root_backup" >/dev/null 2>&1 || true; fi
-	if [[ -n "$nginx_root_next" ]]; then rm -f "$nginx_root_next" >/dev/null 2>&1 || true; fi
-    if ((was_enabled == 1)); then systemctl enable cdn-edge-agent.service >/dev/null 2>&1 || true; fi
-    if ((was_active == 1)); then systemctl start cdn-edge-agent.service >/dev/null 2>&1 || true; fi
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    if ((nginx_was_enabled == 1)); then systemctl enable nginx.service >/dev/null 2>&1 || true; fi
+    if ((nginx_was_active == 1)); then systemctl start nginx.service >/dev/null 2>&1 || true; fi
+    if ((agent_was_enabled == 1)); then systemctl enable cdn-edge-agent.service >/dev/null 2>&1 || true; fi
+    if ((agent_was_active == 1)); then systemctl start cdn-edge-agent.service >/dev/null 2>&1 || true; fi
     callback fail --header 'Content-Type: text/plain' \
       --data-binary "edge uninstall failed before local cleanup completed (exit $code)" >/dev/null 2>&1 || true
   fi
@@ -95,146 +108,97 @@ trap report_failure ERR
 
 callback start >/dev/null
 started=1
+if systemctl is-active --quiet cdn-edge-agent.service 2>/dev/null; then agent_was_active=1; fi
+if systemctl is-enabled --quiet cdn-edge-agent.service 2>/dev/null; then agent_was_enabled=1; fi
+if systemctl is-active --quiet nginx.service 2>/dev/null; then nginx_was_active=1; fi
+if systemctl is-enabled --quiet nginx.service 2>/dev/null; then nginx_was_enabled=1; fi
 
-if systemctl is-enabled --quiet cdn-edge-agent.service 2>/dev/null; then
-  was_enabled=1
-fi
-if systemctl is-active --quiet cdn-edge-agent.service 2>/dev/null; then
-  was_active=1
-fi
-
-service_unit=$(root_path /etc/systemd/system/cdn-edge-agent.service)
-updater_unit=$(root_path /etc/systemd/system/cdn-edge-updater@.service)
-if [[ -e "$service_unit" ]]; then
-  systemctl disable cdn-edge-agent.service >/dev/null
-  systemctl stop cdn-edge-agent.service >/dev/null
-else
-  systemctl disable cdn-edge-agent.service >/dev/null 2>&1 || true
-  systemctl stop cdn-edge-agent.service >/dev/null 2>&1 || true
+if ((agent_was_enabled == 1)); then systemctl disable cdn-edge-agent.service >/dev/null; fi
+if ((agent_was_active == 1)); then systemctl stop cdn-edge-agent.service >/dev/null; fi
+if [[ "$layout_version" == "2" ]]; then
+  if ((nginx_was_enabled == 1)); then systemctl disable nginx.service >/dev/null; fi
+  if ((nginx_was_active == 1)); then systemctl stop nginx.service >/dev/null; fi
 fi
 
-# The agent owns only this dedicated table. Leave all distribution and
-# operator-managed firewall tables untouched.
+# The edge owns only these dedicated nftables tables.
 if command -v nft >/dev/null 2>&1; then
   for table in simple_cdn cdn_platform; do
-    if nft list table inet "$table" >/dev/null 2>&1; then
-      nft delete table inet "$table" >/dev/null
-    fi
+    if nft list table inet "$table" >/dev/null 2>&1; then nft delete table inet "$table" >/dev/null; fi
   done
 fi
 
-nginx_config=$(root_path /etc/nginx/conf.d/cdn-platform.conf)
-nginx_stream_entry=$(root_path /etc/nginx/modules-enabled/99-cdn-platform-stream.conf)
-nginx_root_config=$(root_path /etc/nginx/nginx.conf)
-if [[ -e "$nginx_config" ]]; then
-  if ! nginx_backup=$(mktemp "$(root_path /tmp/cdn-platform-nginx.XXXXXX)"); then
-    false
+# Layout 1 used Debian Nginx and injected includes under /etc/nginx. Remove
+# only those known files and marked lines so an operator-owned installation is
+# left intact during a compatibility uninstall.
+if [[ "$layout_version" == "1" ]]; then
+  nginx_root=$(root_path /etc/nginx/nginx.conf)
+  nginx_http=$(root_path /etc/nginx/conf.d/cdn-platform.conf)
+  nginx_stream=$(root_path /etc/nginx/modules-enabled/99-cdn-platform-stream.conf)
+  mkdir -p "$(root_path /tmp)"
+  legacy_backup=$(mktemp -d "$(root_path /tmp/cdn-edge-uninstall.XXXXXX)")
+  if [[ -e "$nginx_http" ]]; then cp -a "$nginx_http" "$legacy_backup/http"; fi
+  if [[ -e "$nginx_stream" ]]; then cp -a "$nginx_stream" "$legacy_backup/stream"; fi
+  if [[ -e "$nginx_root" ]]; then cp -a "$nginx_root" "$legacy_backup/root"; fi
+  legacy_changed=1
+  rm -f "$nginx_http" "$nginx_stream"
+  if [[ -f "$nginx_root" ]] && {
+    grep -Fq '# simple_cdn nginx capacity main include begin' "$nginx_root" ||
+      grep -Fq '# simple_cdn nginx capacity events include begin' "$nginx_root"
+  }; then
+    nginx_root_next=$(mktemp "${nginx_root}.cdn-edge.XXXXXX")
+    awk '
+      /^[ \t]*# simple_cdn nginx capacity main include begin[ \t]*$/ { skip_main=1; next }
+      skip_main { if ($0 ~ /^[ \t]*# simple_cdn nginx capacity main include end[ \t]*$/) skip_main=0; next }
+      /^[ \t]*# simple_cdn nginx capacity events include begin[ \t]*$/ { skip_events=1; next }
+      skip_events { if ($0 ~ /^[ \t]*# simple_cdn nginx capacity events include end[ \t]*$/) skip_events=0; next }
+      { sub(/# simple_cdn nginx capacity managed (worker_processes|worker_rlimit_nofile|worker_connections): /, ""); print }
+      END { if (skip_main || skip_events) exit 1 }
+    ' "$nginx_root" >"$nginx_root_next"
+    chmod --reference="$nginx_root" "$nginx_root_next" 2>/dev/null || chmod 0644 "$nginx_root_next"
+    mv "$nginx_root_next" "$nginx_root"
   fi
-  cp -a "$nginx_config" "$nginx_backup"
-  nginx_config_present=1
-fi
-if [[ -e "$nginx_stream_entry" ]]; then
-  if ! nginx_stream_backup=$(mktemp "$(root_path /tmp/cdn-platform-nginx-stream.XXXXXX)"); then
-    false
+  if command -v nginx >/dev/null 2>&1; then
+    nginx -t
+    systemctl reload nginx.service
   fi
-  cp -a "$nginx_stream_entry" "$nginx_stream_backup"
-  nginx_stream_present=1
-fi
-if [[ -e "$nginx_root_config" ]] && {
-  grep -Fq '# simple_cdn nginx capacity main include begin' "$nginx_root_config" ||
-    grep -Fq '# simple_cdn nginx capacity events include begin' "$nginx_root_config"
-}; then
-  if ! nginx_root_backup=$(mktemp "$(root_path /tmp/cdn-platform-nginx-root.XXXXXX)"); then
-    false
-  fi
-  cp -a "$nginx_root_config" "$nginx_root_backup"
-  nginx_root_present=1
-fi
-if ((nginx_config_present == 1 || nginx_stream_present == 1 || nginx_root_present == 1)); then
-  rm -f "$nginx_config"
-  rm -f "$nginx_stream_entry"
-	if ((nginx_root_present == 1)); then
-	  nginx_root_next=$(mktemp "${nginx_root_config}.cdn-platform.XXXXXX")
-	  if ! awk '
-	    /^[ \t]*# simple_cdn nginx capacity main include begin[ \t]*$/ { skip_main = 1; next }
-	    skip_main { if ($0 ~ /^[ \t]*# simple_cdn nginx capacity main include end[ \t]*$/) skip_main = 0; next }
-	    /^[ \t]*# simple_cdn nginx capacity events include begin[ \t]*$/ { skip_events = 1; next }
-	    skip_events { if ($0 ~ /^[ \t]*# simple_cdn nginx capacity events include end[ \t]*$/) skip_events = 0; next }
-	    { sub(/# simple_cdn nginx capacity managed (worker_processes|worker_rlimit_nofile|worker_connections): /, ""); print }
-	    END { if (skip_main || skip_events) exit 1 }
-	  ' "$nginx_root_config" >"$nginx_root_next"; then
-	    rm -f "$nginx_root_next"
-	    nginx_root_next=""
-	    false
-	  fi
-	  chmod --reference="$nginx_root_config" "$nginx_root_next" 2>/dev/null || chmod 0644 "$nginx_root_next"
-	  mv "$nginx_root_next" "$nginx_root_config"
-	  nginx_root_next=""
-	fi
-  config_removed=1
-  if ! command -v nginx >/dev/null 2>&1 || ! nginx -t; then
-    if ((nginx_config_present == 1)); then cp -a "$nginx_backup" "$nginx_config"; fi
-    if ((nginx_stream_present == 1)); then cp -a "$nginx_stream_backup" "$nginx_stream_entry"; fi
-	if ((nginx_root_present == 1)); then cp -a "$nginx_root_backup" "$nginx_root_config"; fi
-    config_removed=0
-    if [[ -n "$nginx_backup" ]]; then rm -f "$nginx_backup"; fi
-    if [[ -n "$nginx_stream_backup" ]]; then rm -f "$nginx_stream_backup"; fi
-	if [[ -n "$nginx_root_backup" ]]; then rm -f "$nginx_root_backup"; fi
-    if ((was_enabled == 1)); then systemctl enable cdn-edge-agent.service >/dev/null 2>&1 || true; fi
-    if ((was_active == 1)); then systemctl start cdn-edge-agent.service >/dev/null 2>&1 || true; fi
-    callback fail --header 'Content-Type: text/plain' --data-binary 'Nginx validation failed after removing simple_cdn configuration' >/dev/null 2>&1 || true
-    echo "Nginx validation failed; platform configuration was restored" >&2
-    exit 1
-  fi
-  if ! systemctl reload nginx; then
-    if ((nginx_config_present == 1)); then cp -a "$nginx_backup" "$nginx_config"; fi
-    if ((nginx_stream_present == 1)); then cp -a "$nginx_stream_backup" "$nginx_stream_entry"; fi
-	if ((nginx_root_present == 1)); then cp -a "$nginx_root_backup" "$nginx_root_config"; fi
-    config_removed=0
-    if [[ -n "$nginx_backup" ]]; then rm -f "$nginx_backup"; fi
-    if [[ -n "$nginx_stream_backup" ]]; then rm -f "$nginx_stream_backup"; fi
-	if [[ -n "$nginx_root_backup" ]]; then rm -f "$nginx_root_backup"; fi
-    nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || true
-    if ((was_enabled == 1)); then systemctl enable cdn-edge-agent.service >/dev/null 2>&1 || true; fi
-    if ((was_active == 1)); then systemctl start cdn-edge-agent.service >/dev/null 2>&1 || true; fi
-    callback fail --header 'Content-Type: text/plain' --data-binary 'Nginx reload failed after removing simple_cdn configuration' >/dev/null 2>&1 || true
-    echo "Nginx reload failed; platform configuration was restored" >&2
-    exit 1
-  fi
-  if [[ -n "$nginx_backup" ]]; then rm -f "$nginx_backup"; fi
-  if [[ -n "$nginx_stream_backup" ]]; then rm -f "$nginx_stream_backup"; fi
-	if [[ -n "$nginx_root_backup" ]]; then rm -f "$nginx_root_backup"; fi
 fi
 
-# From this point the operation is intentionally idempotent. A later failure
-# leaves the job running so rerunning the command can finish the callback.
+# From this point local cleanup is intentionally idempotent. If the final
+# callback fails, rerunning the command only has to complete the callback.
 cleanup_committed=1
-rm -f "$service_unit" "$updater_unit"
-rm -f "$(root_path /etc/logrotate.d/cdn-edge-platform)"
-rm -f "$(root_path /usr/local/bin/cdn-edge-agent)"
+if link_points_to "$agent_unit" "$expected_agent_unit"; then rm -f "$agent_unit"; fi
+if link_points_to "$updater_unit" "$expected_updater_unit"; then rm -f "$updater_unit"; fi
+if [[ "$layout_version" == "2" ]] && link_points_to "$nginx_unit" "$expected_nginx_unit"; then rm -f "$nginx_unit"; fi
+rm -f "$(root_path /etc/logrotate.d/cdn-edge-platform)" \
+  "$(root_path /usr/local/bin/cdn-edge-agent)"
+
 sysctl_config=$(root_path /usr/local/lib/sysctl.d/40-simple-cdn-edge.conf)
-sysctl_baseline=$(root_path /opt/cdn-edge/data/sysctl-baseline.conf)
+sysctl_baseline="$edge_root/data/sysctl-baseline.conf"
 rm -f "$sysctl_config"
 if command -v sysctl >/dev/null 2>&1; then
   if [[ -s "$sysctl_baseline" ]] && ! sysctl -q -p "$sysctl_baseline" >/dev/null; then
     echo "warning: could not completely restore the pre-install sysctl baseline" >&2
   fi
-  if ! sysctl --system >/dev/null; then
-    echo "warning: one or more remaining system sysctl files could not be applied" >&2
-  fi
+  sysctl --system >/dev/null || echo "warning: one or more remaining system sysctl files could not be applied" >&2
 else
-  echo "warning: sysctl is unavailable; removed the platform profile but runtime values will remain until reboot" >&2
+  echo "warning: sysctl is unavailable; runtime values will remain until reboot" >&2
 fi
-rm -rf "$(root_path /opt/cdn-edge)" \
+
+rm -rf "$edge_root" \
   "$(root_path /etc/cdn-platform)" "$(root_path /var/lib/cdn-platform)" \
   "$(root_path /var/log/cdn-platform)" "$(root_path /var/cache/cdn-platform)"
 systemctl daemon-reload
 systemctl reset-failed cdn-edge-agent.service >/dev/null 2>&1 || true
 systemctl reset-failed 'cdn-edge-updater@*.service' >/dev/null 2>&1 || true
+if [[ "$layout_version" == "2" ]]; then systemctl reset-failed nginx.service >/dev/null 2>&1 || true; fi
 
 if ! callback complete >/dev/null; then
   echo "local cleanup completed, but the control-plane callback failed; rerun this command" >&2
   exit 1
 fi
 trap - ERR
-echo "simple_cdn edge components were removed; Nginx remains installed."
+if [[ "$layout_version" == "2" ]]; then
+  echo "simple_cdn edge agent and managed Nginx were removed."
+else
+  echo "simple_cdn edge components were removed; an external Nginx installation was left untouched."
+fi

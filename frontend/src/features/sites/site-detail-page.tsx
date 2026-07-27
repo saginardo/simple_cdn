@@ -71,6 +71,7 @@ import type {
   TCPForward,
 } from "@/lib/types";
 import { t, useI18n } from "@/lib/i18n";
+import { activeTask, taskMatchesCurrentSite } from "./publish-status";
 interface SiteDraft {
   name: string;
   domains: string;
@@ -1711,28 +1712,9 @@ function Toggle({
     </div>
   );
 }
-function activeTask(task?: DeploymentTask | null) {
-  return Boolean(
-    task && ["queued", "dispatching", "applying"].includes(task.status),
-  );
-}
 function siteNeedsCertificate(site: Site) {
   return (
     !site.tcp_only || site.tcp_forwards.some((forward) => forward.listen_tls)
-  );
-}
-function taskMatchesCurrentSite(
-  task: DeploymentTask | null | undefined,
-  site: Site,
-) {
-  if (!task) return false;
-  if (site.deleting || site.published || activeTask(task)) return true;
-  const taskCreatedAt = Date.parse(task.created_at);
-  const siteUpdatedAt = Date.parse(site.updated_at);
-  return (
-    Number.isFinite(taskCreatedAt) &&
-    Number.isFinite(siteUpdatedAt) &&
-    taskCreatedAt >= siteUpdatedAt
   );
 }
 function localizeTaskDetail(detail?: string) {

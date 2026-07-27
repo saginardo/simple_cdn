@@ -11,7 +11,7 @@ import (
 	"simple_cdn/internal/domain"
 )
 
-const nodeUpgradeTaskColumns = `id, node_id, status, source_sha256, target_sha256, error_code, detail,
+const nodeUpgradeTaskColumns = `id, node_id, status, source_sha256, target_sha256, source_nginx_sha256, target_nginx_sha256, error_code, detail,
 	deadline_at, started_at, completed_at, created_at, updated_at`
 
 const recoveredUpgradeDetail = "edge heartbeat confirmed the target artifact after the updater result was missed"
@@ -37,9 +37,9 @@ func (s *Store) CreateOrGetNodeUpgrade(nodeID string, instruction domain.NodeUpg
 	}
 
 	var status domain.NodeStatus
-	var sourceSHA256, activeUpgradeID string
+	var sourceSHA256, sourceNginxSHA256, activeUpgradeID string
 	var activeUninstall, activePublication int
-	err = tx.QueryRow(`SELECT nodes.status, nodes.agent_sha256, nodes.active_upgrade_task_id,
+	err = tx.QueryRow(`SELECT nodes.status, nodes.agent_sha256, nodes.nginx_sha256, nodes.active_upgrade_task_id,
 		EXISTS(SELECT 1 FROM node_uninstall_jobs WHERE node_id = nodes.id AND status IN (?, ?, ?, ?)),
 		EXISTS(SELECT 1 FROM publish_task_nodes
 			JOIN deployment_tasks ON deployment_tasks.id = publish_task_nodes.task_id
@@ -48,7 +48,7 @@ func (s *Store) CreateOrGetNodeUpgrade(nodeID string, instruction domain.NodeUpg
 		FROM nodes WHERE nodes.id = ?`,
 		NodeUninstallPreparing, NodeUninstallReady, NodeUninstallRunning, NodeUninstallFailed,
 		domain.PublishNodePending, domain.TaskQueued, domain.TaskDispatching, domain.TaskApplying, nodeID).
-		Scan(&status, &sourceSHA256, &activeUpgradeID, &activeUninstall, &activePublication)
+		Scan(&status, &sourceSHA256, &sourceNginxSHA256, &activeUpgradeID, &activeUninstall, &activePublication)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.NodeUpgradeTask{}, false, ErrNotFound
 	}
@@ -69,19 +69,32 @@ func (s *Store) CreateOrGetNodeUpgrade(nodeID string, instruction domain.NodeUpg
 	task := domain.NodeUpgradeTask{
 		ID: uuid.NewString(), NodeID: nodeID, Status: domain.NodeUpgradeQueued,
 		SourceSHA256: sourceSHA256, TargetSHA256: instruction.Binary.SHA256,
-		Detail: "waiting for edge to download upgrade artifacts", DeadlineAt: deadline,
+		SourceNginxSHA256: sourceNginxSHA256,
+		Detail:            "waiting for edge to download upgrade artifacts", DeadlineAt: deadline,
 		CreatedAt: created, UpdatedAt: created,
 	}
+	if instruction.NginxBundle != nil {
+		task.TargetNginxSHA256 = instruction.NginxBundle.SHA256
+	}
+	nginxBundle, nginxService := domain.UpgradeArtifact{}, domain.UpgradeArtifact{}
+	if instruction.NginxBundle != nil {
+		nginxBundle = *instruction.NginxBundle
+	}
+	if instruction.NginxService != nil {
+		nginxService = *instruction.NginxService
+	}
 	_, err = tx.Exec(`INSERT INTO node_upgrade_tasks(
-		id, node_id, status, source_sha256, target_sha256, binary_url,
+		id, node_id, status, source_sha256, target_sha256, source_nginx_sha256, target_nginx_sha256, binary_url,
 		installer_url, installer_sha256, agent_service_url, agent_service_sha256,
-		updater_service_url, updater_service_sha256, error_code, detail, deadline_at,
+		updater_service_url, updater_service_sha256, nginx_bundle_url, nginx_bundle_sha256,
+		nginx_service_url, nginx_service_sha256, error_code, detail, deadline_at,
 		started_at, completed_at, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, NULL, NULL, ?, ?)`,
-		task.ID, task.NodeID, task.Status, task.SourceSHA256, task.TargetSHA256, instruction.Binary.URL,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, NULL, NULL, ?, ?)`,
+		task.ID, task.NodeID, task.Status, task.SourceSHA256, task.TargetSHA256, task.SourceNginxSHA256, task.TargetNginxSHA256, instruction.Binary.URL,
 		instruction.Installer.URL, instruction.Installer.SHA256,
 		instruction.AgentService.URL, instruction.AgentService.SHA256,
 		instruction.UpdaterService.URL, instruction.UpdaterService.SHA256,
+		nginxBundle.URL, nginxBundle.SHA256, nginxService.URL, nginxService.SHA256,
 		task.Detail, stamp(task.DeadlineAt), stamp(task.CreatedAt), stamp(task.UpdatedAt))
 	if err != nil {
 		return domain.NodeUpgradeTask{}, false, err
@@ -127,15 +140,18 @@ func (s *Store) NodeUpgradeInstruction(nodeID string) (domain.NodeUpgradeInstruc
 	}
 	var instruction domain.NodeUpgradeInstruction
 	var deadline string
+	var nginxBundleURL, nginxBundleSHA256, nginxServiceURL, nginxServiceSHA256 string
 	err := s.db.QueryRow(`SELECT id, deadline_at, binary_url, target_sha256,
 		installer_url, installer_sha256, agent_service_url, agent_service_sha256,
-		updater_service_url, updater_service_sha256
+		updater_service_url, updater_service_sha256,
+		nginx_bundle_url, nginx_bundle_sha256, nginx_service_url, nginx_service_sha256
 		FROM node_upgrade_tasks WHERE node_id = ? AND status IN (?, ?)
 		ORDER BY created_at DESC LIMIT 1`, nodeID, domain.NodeUpgradeQueued, domain.NodeUpgradeApplying).
 		Scan(&instruction.TaskID, &deadline, &instruction.Binary.URL, &instruction.Binary.SHA256,
 			&instruction.Installer.URL, &instruction.Installer.SHA256,
 			&instruction.AgentService.URL, &instruction.AgentService.SHA256,
-			&instruction.UpdaterService.URL, &instruction.UpdaterService.SHA256)
+			&instruction.UpdaterService.URL, &instruction.UpdaterService.SHA256,
+			&nginxBundleURL, &nginxBundleSHA256, &nginxServiceURL, &nginxServiceSHA256)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.NodeUpgradeInstruction{}, ErrNotFound
 	}
@@ -143,6 +159,12 @@ func (s *Store) NodeUpgradeInstruction(nodeID string) (domain.NodeUpgradeInstruc
 		return domain.NodeUpgradeInstruction{}, err
 	}
 	instruction.DeadlineAt, err = parseTime(deadline)
+	if nginxBundleURL != "" || nginxBundleSHA256 != "" {
+		instruction.NginxBundle = &domain.UpgradeArtifact{URL: nginxBundleURL, SHA256: nginxBundleSHA256}
+	}
+	if nginxServiceURL != "" || nginxServiceSHA256 != "" {
+		instruction.NginxService = &domain.UpgradeArtifact{URL: nginxServiceURL, SHA256: nginxServiceSHA256}
+	}
 	return instruction, err
 }
 
@@ -176,6 +198,9 @@ func (s *Store) RecordNodeUpgradeReport(nodeID string, report domain.NodeUpgrade
 		if !strings.EqualFold(strings.TrimSpace(report.InstalledSHA256), task.TargetSHA256) {
 			return domain.NodeUpgradeTask{}, errors.New("installed edge digest does not match upgrade target")
 		}
+		if task.TargetNginxSHA256 != "" && !strings.EqualFold(strings.TrimSpace(report.InstalledNginxSHA256), task.TargetNginxSHA256) {
+			return domain.NodeUpgradeTask{}, errors.New("installed Nginx digest does not match upgrade target")
+		}
 		_, err = tx.Exec(`UPDATE node_upgrade_tasks SET status = ?, error_code = '', detail = ?,
 			started_at = COALESCE(started_at, ?), completed_at = ?, updated_at = ? WHERE id = ?`,
 			domain.NodeUpgradeSucceeded, report.Detail, stamp(updated), stamp(updated), stamp(updated), task.ID)
@@ -183,13 +208,14 @@ func (s *Store) RecordNodeUpgradeReport(nodeID string, report domain.NodeUpgrade
 		if task.Status == domain.NodeUpgradeSucceeded {
 			return task, tx.Commit()
 		}
-		var installedSHA256 string
+		var installedSHA256, installedNginxSHA256 string
 		if report.ErrorCode == "updater_interrupted" {
-			if err := tx.QueryRow(`SELECT agent_sha256 FROM nodes WHERE id = ?`, nodeID).Scan(&installedSHA256); err != nil {
+			if err := tx.QueryRow(`SELECT agent_sha256, nginx_sha256 FROM nodes WHERE id = ?`, nodeID).Scan(&installedSHA256, &installedNginxSHA256); err != nil {
 				return domain.NodeUpgradeTask{}, err
 			}
 		}
-		if strings.EqualFold(strings.TrimSpace(installedSHA256), task.TargetSHA256) {
+		if strings.EqualFold(strings.TrimSpace(installedSHA256), task.TargetSHA256) &&
+			(task.TargetNginxSHA256 == "" || strings.EqualFold(strings.TrimSpace(installedNginxSHA256), task.TargetNginxSHA256)) {
 			_, err = tx.Exec(`UPDATE node_upgrade_tasks SET status = ?, error_code = '', detail = ?,
 				started_at = COALESCE(started_at, ?), completed_at = ?, updated_at = ? WHERE id = ?`,
 				domain.NodeUpgradeSucceeded, recoveredUpgradeDetail, stamp(updated), stamp(updated), stamp(updated), task.ID)
@@ -230,9 +256,10 @@ func (s *Store) ReconcileNodeUpgrades() error {
 		AND NOT EXISTS (SELECT 1 FROM node_upgrade_tasks AS newer
 			WHERE newer.node_id = node_upgrade_tasks.node_id AND newer.created_at > node_upgrade_tasks.created_at)
 		AND EXISTS (SELECT 1 FROM nodes
-			WHERE nodes.id = node_upgrade_tasks.node_id
-			AND lower(nodes.agent_sha256) = lower(node_upgrade_tasks.target_sha256)
-			AND nodes.active_upgrade_task_id = '')`,
+				WHERE nodes.id = node_upgrade_tasks.node_id
+				AND lower(nodes.agent_sha256) = lower(node_upgrade_tasks.target_sha256)
+				AND (node_upgrade_tasks.target_nginx_sha256 = '' OR lower(nodes.nginx_sha256) = lower(node_upgrade_tasks.target_nginx_sha256))
+				AND nodes.active_upgrade_task_id = '')`,
 		domain.NodeUpgradeSucceeded, recoveredUpgradeDetail, stamp(completed), stamp(completed), domain.NodeUpgradeFailed); err != nil {
 		return err
 	}
@@ -319,6 +346,7 @@ func scanNodeUpgradeTask(row scanner) (domain.NodeUpgradeTask, error) {
 	var deadlineAt, createdAt, updatedAt string
 	var startedAt, completedAt sql.NullString
 	err := row.Scan(&task.ID, &task.NodeID, &task.Status, &task.SourceSHA256, &task.TargetSHA256,
+		&task.SourceNginxSHA256, &task.TargetNginxSHA256,
 		&task.ErrorCode, &task.Detail, &deadlineAt, &startedAt, &completedAt, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.NodeUpgradeTask{}, ErrNotFound

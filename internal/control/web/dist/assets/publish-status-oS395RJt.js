@@ -1,0 +1,1 @@
+function e(e){return!!(e&&[`queued`,`dispatching`,`applying`].includes(e.status))}function t(t,n){if(!t)return!1;if(n.deleting||n.published||e(t))return!0;let r=Date.parse(t.created_at),i=Date.parse(n.updated_at);return Number.isFinite(r)&&Number.isFinite(i)&&r>=i}export{t as n,e as t};

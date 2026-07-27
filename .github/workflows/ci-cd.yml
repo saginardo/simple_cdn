@@ -124,9 +124,29 @@ jobs:
       - name: Run browser tests
         run: npm --prefix frontend run test:e2e
 
+  edge-nginx:
+    name: Managed Nginx and Debian migration
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Build managed Nginx artifact
+        run: |
+          mkdir -p dist-nginx
+          docker build --target nginx-artifact \
+            --output type=local,dest=dist-nginx .
+
+      - name: Test artifact on Debian 12 and 13
+        run: ./scripts/test-nginx-artifact.sh dist-nginx/cdn-nginx-linux-amd64.tar.gz
+
+      - name: Test Debian package replacement and rollback
+        run: ./scripts/test-edge-installer-debian.sh dist-nginx/cdn-nginx-linux-amd64.tar.gz
+
   image:
     name: Build and publish image
-    needs: [verify, browser]
+    needs: [verify, browser, edge-nginx]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

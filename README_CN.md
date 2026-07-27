@@ -2,7 +2,7 @@
 
 [English](README.md) | 简体中文
 
-一个面向单管理员的轻量自托管 CDN：使用一台 Debian VPS 运行控制面，并由 3-10 台 Debian VPS 作为边缘节点。需要 HTTP/3 的边缘节点推荐使用 Debian 13；Debian 12 仍支持 HTTP/1.1 和 HTTP/2。Cloudflare 仅提供权威 DNS，终端用户直接连接边缘节点。
+一个面向单管理员的轻量自托管 CDN：使用一台 Debian VPS 运行控制面，并由 3-10 台 Debian 12 或 13 VPS 作为边缘节点。控制器向两种发行版下发同一份项目自编译 Nginx，包含 HTTP/2、HTTP/3、stream 和 Lua 支持。Cloudflare 仅提供权威 DNS，终端用户直接连接边缘节点。
 
 已发布版本由 `vMAJOR.MINOR.PATCH` Git 标签推导，详见仓库的[版本标签](https://github.com/saginardo/simple_cdn/tags)。
 
@@ -12,7 +12,8 @@
 - 节点优先注册：先创建待注册节点，复制一条有效期为 15 分钟的一次性引导命令；后续所有边缘请求都绑定到内部签发的 mTLS 客户端证书。
 - 支持从管理界面对单个节点或全部节点执行在线升级，包括资格检查、mTLS 任务下发、所有制品的 SHA-256 校验、独立 systemd 更新器、新代理心跳就绪检查和事务式回滚。
 - 全局恶意路径访问策略：在回源前由 Nginx 拒绝请求，持久记录边缘事件，通过原生 nftables 执行 IPv4 封禁，支持全节点对账、自动过期和管理界面手动解封。另支持边缘本地客户端 IP 限速，可配置每秒请求阈值，并可选择按 2xx/3xx/4xx/5xx 响应计数触发。
-- 边缘代理以原子方式暂存版本化 Nginx 基础配置、每站点 HTTP 和 `stream` 配置片段及证书；检查本机公网 TCP 与 UDP 端口占用，执行 `nginx -t`，重新加载健康的 Nginx，或拉起已失败/停止的 Nginx。代理会确认重新加载确实创建了新一代 worker 进程；失败时恢复最后一份正常配置和 TLS 文件，并在不阻塞心跳循环的前提下上报 Linux 主机状态和 `/opt/cdn-edge/cache` 磁盘用量。
+- 边缘代理以原子方式暂存版本化 Nginx 基础配置、每站点 HTTP 和 `stream` 配置片段及证书；检查本机公网 TCP 与 UDP 端口占用，校验 `/opt/cdn-edge/nginx/sbin/nginx`，重新加载健康的 Nginx，或拉起已失败/停止的 Nginx。代理会确认重新加载确实创建了新一代 worker 进程；失败时恢复最后一份正常配置和 TLS 文件，并在不阻塞心跳循环的前提下上报 Linux 主机状态和 `/opt/cdn-edge/cache` 磁盘用量。
+- 可复现的 AMD64 Nginx 1.30.4 bundle：固定所有源码 SHA-256，启用加固参数、HTTP/2、HTTP/3、stream、NDK、lua-nginx-module，并私有携带 OpenResty LuaJIT/runtime。事务安装器记录并卸载 Debian Nginx 软件包，把二进制、配置、运行目录、日志、缓存和服务统一安装到 `/opt/cdn-edge`；失败时恢复准确的软件包版本和 `/etc/nginx`。
 - Nginx OSS 静态资源缓存策略：每个边缘节点共享一个缓存区，默认总磁盘上限为 1 GiB。全局节点默认值可被单个节点覆盖，站点共享该节点配额。只有常见 CSS、JavaScript、字体、图片、WebAssembly 和 Web Manifest 后缀会选择缓存，其他 URI 均使用 `proxy_cache off`。携带 Authorization 或 Cookie 的请求不会读取或写入共享缓存，但这些请求头仍会原样回源。策略包括规范化缓存代际、缓存锁、重新验证、后台刷新、`STALE` 回退，以及 HTTP(S) 主备源站故障切换。HTTP(S) 站点会自动对 WebSocket Upgrade、SSE Accept、`X-CDN-Stream: 1` 和 POST 响应关闭缓存与响应缓冲；整站透传模式会对整个主机名禁用缓存和缓冲，同时转发字节范围。`grpc://` 和 `grpcs://` 源站通过客户端 HTTP/2 监听器使用原生 gRPC 代理。
 - 按能力下发共享回源连接池：相同协议、地址、Host 和 SNI 的站点复用同一 upstream，池容量按节点 `worker_connections` 和引用权重自动分配。边缘以约 5 秒的复用服务探测持续确认应用路径，并以 32-48 秒的低频冷探测验证新建 TCP/TLS；任一层连续 2 次失败会熔断，恢复需两层分别确认。Nginx include 切换与站点发布串行、可回滚。访问日志和 30 天分钟聚合提供真实请求的回源建连、首字节、完整响应及连接复用率，节点详情只实时展示最新双层探测状态且不持久化历史。详见 [docs/ORIGIN_CONNECTIONS.md](docs/ORIGIN_CONNECTIONS.md)。
 - 按站点、按能力启用基于 UDP 443 的 HTTP/3/QUIC，默认关闭。安装器仅在 Nginx 报告 `--with-http_v3_module` 时声明 `http3_v1`；主动开启的站点在兼容节点上会增加 QUIC 监听、`Alt-Svc`、地址验证重试、UDP 冲突检查、重载后监听确认和能力自动对账，同时保留 TCP 443 上的 HTTP/1.1 与 HTTP/2 回退。IP 封禁同时覆盖 UDP 443 和 TCP 80/443。
@@ -51,7 +52,7 @@ scripts/              Compose 控制面辅助脚本和发布构建脚本
 
 ## 构建与测试
 
-管理界面构建需要 Node.js 24 LTS 和 npm 11 或更高版本。生成的 Vite 产物会嵌入 Go 控制面二进制文件。
+管理界面构建需要 Node.js 24 LTS 和 npm 11 或更高版本，自管 Nginx 制品构建需要 Docker。生成的 Vite 产物会嵌入 Go 控制面二进制文件。
 
 ```bash
 npm --prefix frontend ci
@@ -63,6 +64,8 @@ GOPATH=/private/tmp/simple_cdn_gopath \
 go test ./...
 
 ./scripts/build-release.sh dist
+./scripts/test-nginx-artifact.sh dist/cdn-nginx-linux-amd64.tar.gz
+./scripts/test-edge-installer-debian.sh dist/cdn-nginx-linux-amd64.tar.gz
 ```
 
 未打标签的本地构建使用 `0.0.0-dev+<commit>`（工作区有修改时追加 `.dirty`）。干净工作区恰好位于有效的 `vMAJOR.MINOR.PATCH` 标签时，直接使用该标签作为发布版本，无需修改版本文件。
@@ -71,7 +74,7 @@ go test ./...
 
 开发管理界面时，先在 `127.0.0.1:8443` 启动 TLS 控制面，再运行 `npm --prefix frontend run dev`。Vite 会将经过身份验证的 API 请求代理到本地 TLS 端点，支持其开发证书，并保留现有哈希路由。
 
-`dist/SHA256SUMS` 用于运维人员独立校验发布制品。控制器启动时会计算 `EDGE_BINARY_PATH` 的摘要，并将其写入每条注册与升级指令，因此不再需要单独维护校验和配置。由控制器提供内置边缘二进制文件时，可将 `https://CONTROL_PUBLIC_URL/downloads/cdn-edge-agent-linux-amd64` 用作 `EDGE_BINARY_URL`。
+`dist/SHA256SUMS` 用于独立校验控制器、边缘代理和自管 Nginx bundle。控制器启动时计算 `EDGE_BINARY_PATH`，并校验 `NGINX_BUNDLE_PATH`，再把两个摘要写入注册与升级指令。控制器可在边缘控制 URL 下直接提供 `/downloads/cdn-edge-agent-linux-amd64` 和 `/downloads/cdn-nginx-linux-amd64.tar.gz`。
 
 GitHub Actions 会为每个拉取请求执行相同的编译与校验、浏览器冒烟测试和完整 Docker 镜像构建。`main` 构建成功后发布带开发版本的 `main` 和 `sha-<commit>` 镜像；推送有效的 `vMAJOR.MINOR.PATCH` 标签会直接发布对应稳定版镜像，无需修改项目文件。工作流不会连接生产环境。私有部署自动化消费不可变 digest；控制主机只拉取镜像，不再编译源码或执行 `docker compose build`。详见 [Compose 部署文档](docs/COMPOSE_DEPLOYMENT.md#github-actions-delivery)。
 
@@ -116,17 +119,17 @@ sudo docker compose ps
 ## 边缘节点注册
 
 1. 在“节点”页面使用固定公网 IPv4 添加节点。
-2. 将 `EDGE_BINARY_URL` 设置为 `cdn-edge-agent-linux-amd64` 发布文件的 HTTPS 地址；控制器会根据 `EDGE_BINARY_PATH` 自动计算 SHA-256 摘要。
-3. 点击“注册”，在对应 Debian VPS 上以 `root` 执行生成的命令。需要 HTTP/3 时使用 Debian 13；Debian 12 节点保持 HTTP/2。
+2. 将 `EDGE_BINARY_URL` 和 `NGINX_BUNDLE_URL` 设置为对应发布文件的 HTTPS 地址；控制器会根据 `EDGE_BINARY_PATH` 和 `NGINX_BUNDLE_PATH` 计算并校验 SHA-256 摘要。
+3. 点击“注册”，在对应 Debian 12 或 13 VPS 上以 `root` 执行生成的命令。
 4. 代理在本地创建私钥，使用有效期 15 分钟的一次性令牌提交 CSR，接收内部 mTLS 证书，并开始每 30 秒发送一次心跳。
 
-同一条生成命令可以安装新边缘节点、迁移旧的分散目录布局，或升级现有 `/opt/cdn-edge` 部署。迁移时会保留节点身份、证书、已应用版本、待发送访问日志队列、读取偏移和访问日志；可重建的 Nginx 缓存会从空状态开始。旧布局和已迁移节点共存期间不要发布新的站点状态。目录布局、迁移检查、备份边界和回滚行为见 [docs/EDGE_DEPLOYMENT.md](docs/EDGE_DEPLOYMENT.md)。
+同一条生成命令可以安装新边缘节点、迁移旧的分散目录布局，或升级现有 `/opt/cdn-edge` 部署。它同时校验并安装代理与自管 Nginx，在记录回滚数据后卸载 Debian Nginx，并保留节点身份、证书、已应用版本、待发送访问日志队列、读取偏移和访问日志。旧布局和已迁移节点共存期间不要发布新的站点状态。目录布局、构建、迁移检查、备份边界和回滚行为见 [docs/EDGE_DEPLOYMENT.md](docs/EDGE_DEPLOYMENT.md)。
 
-安装器根据 `nginx -V` 检测 HTTP/3，不会向不兼容节点下发 QUIC 指令。所有新建和已有站点都默认关闭 HTTP/3，需要在对应站点的流量设置中主动开启；更新后的站点设置发布后，或节点能力发生变化时，节点期望状态会自动重建。公网 HTTP/3 还要求主机防火墙和云厂商防火墙同时允许 UDP 443；阻断 UDP 不会移除 TCP 回退，但客户端可能先经历一次失败的 QUIC 尝试。
+安装器根据 `/opt/cdn-edge/nginx/sbin/nginx -V` 检测 HTTP/3，不会向不兼容节点下发 QUIC 指令。所有新建和已有站点都默认关闭 HTTP/3，需要在对应站点的流量设置中主动开启；更新后的站点设置发布后，或节点能力发生变化时，节点期望状态会自动重建。公网 HTTP/3 还要求主机防火墙和云厂商防火墙同时允许 UDP 443；阻断 UDP 不会移除 TCP 回退，但客户端可能先经历一次失败的 QUIC 尝试。
 
 具备 `machine_status_stream_v1` 能力的代理每 5 秒采集一次主机快照，并通过复用的 mTLS HTTP/2 控制连接上报；常规 30 秒心跳仍携带最新快照作为滚动升级兼容路径。主控只在内存中保存最新值，并通过受认证的 SSE 实时更新节点详情页；页面保留 30 秒详情刷新作为断线兜底。机器状态及其中的实时回源探测结果不持久化历史数据，尚未收到快照时页面不显示对应区域。节点详情显示 Linux 发行版和版本、运行时长、1/5/15 分钟负载、逻辑 CPU 数与区间利用率、内存和根文件系统用量、默认路由接口的 RX/TX 速率，以及有样本时的回源池状态。CPU 和网络速率根据相邻 5 秒样本计算，因此代理重启后要到第二次采样才会结束短暂的采样状态。
 
-节点上报 `online_upgrade_v1` 能力后，“节点”页面会比较正在运行的代理 SHA-256 与控制器当前边缘制品；二者不同时提供单节点“升级”操作。“全部升级”会在一次请求中评估所有节点，为每个符合条件且版本落后的节点排队，并分别报告已是最新、任务繁忙、离线或缺少能力的节点，而不会中断其余节点。缺少该能力的旧版本代理需要最后执行一次生成的部署/升级命令；之后的版本可以完全通过界面安装。在线升级保持节点当前调度状态，在停止代理前暂存并校验安装器、二进制文件和两个 systemd 单元，并要求新二进制完成一次经过身份验证的心跳后才提交升级。升级进行期间，该节点不能参与站点发布、站点删除或节点卸载。
+节点上报 `online_upgrade_v1` 与 `nginx_bundle_v1` 后，“节点”页面会同时比较代理 SHA-256、自管 Nginx bundle SHA-256 与控制器制品。“全部升级”会逐节点报告已是最新、任务繁忙、离线、缺少能力或版本落后。旧代理需要最后执行一次生成的部署命令。在线升级会在停止服务前暂存并校验安装器、代理、Nginx bundle 和三个 systemd 单元，并要求新代理通过认证心跳同时报告两个目标摘要后才提交。升级期间，该节点不能参与站点发布、站点删除或节点卸载。
 
 控制面不可用、新配置校验失败，或运行中的 Nginx 主进程异步拒绝重新加载时，代理会保留最后可用的 Nginx HTTP 和 `stream` 配置。应用状态前会检查每个目标公网 TCP 与 UDP 端口；若端口被非 Nginx 进程占用，发布任务会收到协议、端口、PID 和进程名，代理不会停止该进程。释放端口后点击“重新发布”，代理会清除 Nginx 失败状态并自动启动它。不要删除活跃边缘节点上的 `/opt/cdn-edge/data`，其中包含节点私钥、mTLS 证书、已应用版本和待发送访问日志队列。`reload` / `restart` 边界及准确的 worker 进程和站点校验命令见 [docs/NGINX_APPLY_SAFETY.md](docs/NGINX_APPLY_SAFETY.md)。
 
@@ -139,7 +142,7 @@ sudo docker compose ps
 1. 暂停节点调度或撤销其授权。
 2. 将节点从所有站点移除，分配替代的活跃节点，并发布每个变更站点。已禁用站点不要求替代节点。
 3. 开始准备卸载。控制器只删除托管备注精确标识该节点的 Cloudflare A 记录，然后强制等待 75 秒 DNS 安全窗口。
-4. 生成有效期 30 分钟的流程命令，并在边缘主机上以 `root` 执行。脚本会停止代理，删除 `/opt/cdn-edge`、对应 systemd/Nginx 集成链接和所有旧版项目路径。脚本会校验并重新加载 Nginx，但保留 Nginx 软件包、服务、系统日志及无关配置。
+4. 生成有效期 30 分钟的流程命令，并在边缘主机上以 `root` 执行。对于布局 v2，脚本会停止自管代理与 Nginx，删除 `/opt/cdn-edge`、systemd 链接、sysctl/logrotate 集成和旧版项目路径；不会重新安装 Debian Nginx 或重建 `/etc/nginx`。
 5. 回调成功后，节点以“已卸载”状态保留用于审计。删除控制面节点记录是另一个带确认保护的操作。
 
 如果清理提交前 Nginx 校验或重新加载失败，脚本会恢复平台配置和之前的边缘代理服务状态。“强制完成”只在主机永久不可达时修改控制面状态，不会校验或执行远程清理。
@@ -153,7 +156,7 @@ sudo docker compose ps
 5. 等待边缘节点进入活跃状态，并连续通过 5 次节点级和站点级 HTTPS 探测。随后控制器使用站点已发布 TTL 覆盖或默认 60 秒全局值创建 DNS-only A 记录。
 6. 从经过身份验证的 API 获取 `GET /api/sites/{site-id}/origin-allowlist`，将返回的 `/32` CIDR 加入源站防火墙或安全组，以防止绕过 CDN 直连源站。
 
-对于 SMTPS、IMAPS 或其他 TCP 服务，可在同一站点添加一条或多条 TCP 规则。每条规则定义公网监听端口、上游主机/端口、监听器 TLS、上游 TLS/SNI 和超时。需要专用节点且不应监听 80/443 时选择“纯 TCP”。节点首次发布 TCP 配置前，应重新执行生成的部署/升级命令；安装器会添加 `libnginx-mod-stream`、主配置上下文中的 `stream` include，以及声明 `tcp_stream_v1` 能力的代理。所有受影响节点上报该能力前，发布会被拒绝。纯 TCP 和 HTTP 站点不能共享节点，公网 80/443 端口始终保留给 HTTP 渲染器。如果 Nginx 已通过手写配置占用目标端口，代理会将其报告为非托管冲突；保留回滚副本后移除手动监听器，校验 Nginx，再从控制器发布。TCP 会话和错误日志保存在边缘节点 `/var/log/nginx/cdn-platform-tcp-*.log`，使用主机 Nginx 日志轮转，不会混入 HTTP 请求分析。
+对于 SMTPS、IMAPS 或其他 TCP 服务，可在同一站点添加一条或多条 TCP 规则。每条规则定义公网监听端口、上游主机/端口、监听器 TLS、上游 TLS/SNI 和超时。需要专用节点且不应监听 80/443 时选择“纯 TCP”。所有受影响节点上报自管 bundle 的 `tcp_stream_v1` 能力前，发布会被拒绝。纯 TCP 和 HTTP 站点不能共享节点，公网 80/443 端口始终保留给 HTTP 渲染器。如果 Nginx 已通过手写配置占用目标端口，代理会将其报告为非托管冲突；保留回滚副本后移除手动监听器，校验 Nginx，再从控制器发布。TCP 会话和错误日志保存在 `/opt/cdn-edge/logs`，使用项目 logrotate 策略，不会混入 HTTP 请求分析。
 
 HTTP 边缘节点提供 `http://EDGE_IPV4/__cdn_health`。已发布 HTTP 配置还提供站点专属的 `https://SITE_DOMAIN/__cdn_health`；控制器会直接连接每个已分配边缘 IP，同时保留真实 Host、SNI 和证书校验。纯 TCP 节点改为连接每个期望的已发布 TCP 端口，不要求开放 80/443。请在节点与云厂商防火墙中开放 TCP 80/443；当 `http3_v1` 节点上至少有一个已发布站点开启 HTTP/3 时，还需开放 UDP 443。控制器有意继续用 TCP 回退路径判定健康，因此应按边缘部署文档单独验证 QUIC。源站本身应只允许返回的边缘 CIDR 入站。
 

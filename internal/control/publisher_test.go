@@ -1010,6 +1010,9 @@ func TestLoginAndEnrollmentCommandGuard(t *testing.T) {
 	}
 	server.EdgeBinaryURL = "https://downloads.example.test/edge"
 	server.EdgeBinarySHA256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	server.NginxBundleURL = "https://downloads.example.test/nginx"
+	server.NginxBundleSHA256 = strings.Repeat("3", 64)
+	server.NginxVersion = "1.30.4"
 	ready := httptest.NewRequest(http.MethodPost, "/api/nodes/"+node.ID+"/enrollment-token", nil)
 	ready.AddCookie(cookie)
 	ready.Header.Set("X-CSRF-Token", decodeCSRF(t, loginResponse.Body.Bytes()))

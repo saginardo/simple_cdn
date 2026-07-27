@@ -125,7 +125,7 @@ edge-a 上的 cdn-edge-agent ── HTTPS ${CONTROL_MTLS_PORT} ──> cdn-contr
 | 备份 | SQLite、ClickHouse 和 Restic 工作流应通过隔离恢复演练；凭据只保存在部署环境。 |
 | 边缘节点 | `edge-a`（`203.0.113.10`）、`edge-b`（`203.0.113.11`）、`edge-c`（`203.0.113.12`）、`edge-d`（`203.0.113.13`）代表 RFC 5737 示例节点。 |
 | 边缘应用状态 | 所有 active 节点的 `applied_version` 应与目标版本一致且 `last_error` 为空。 |
-| Edge 服务 | `cdn-edge-agent.service` 和 `nginx.service` 均为 `active`，`nginx -t` 成功。 |
+| Edge 服务 | `cdn-edge-agent.service` 和自管 `nginx.service` 均为 `active`，`/opt/cdn-edge/nginx/sbin/nginx -t` 成功。 |
 | Edge 目录迁移 | 所有边缘节点都应使用 `/opt/cdn-edge`；旧路径不得出现在 desired Nginx 配置中。 |
 | 示例站点 | `api_example_com`、`app_example_com`、`node_example_com`、`stream_example_com` 代表已启用并发布的站点。 |
 
@@ -180,7 +180,7 @@ edge-a 上的 cdn-edge-agent ── HTTPS ${CONTROL_MTLS_PORT} ──> cdn-contr
 
 ### P2：连接与容量调优
 
-- 节点默认使用 `worker_processes auto`、`worker_connections 4096` 和 `worker_rlimit_nofile 65536`；Node 详情可按 VPS 的文件描述符、内存和源站能力调整三项值。`sendfile on`、`tcp_nopush on` 等发行版 HTTP 参数仍由 Debian Nginx 主配置管理。
+- 节点默认使用 `worker_processes auto`、`worker_connections 4096` 和 `worker_rlimit_nofile 65536`；Node 详情可按 VPS 的文件描述符、内存和源站能力调整三项值。`sendfile on`、`tcp_nopush on` 等全局参数由 `/opt/cdn-edge/nginx/conf/nginx.conf` 统一管理。
 - HTTP/3/QUIC 已实现按站点选择并默认关闭：安装器仅在 Nginx 包含 `ngx_http_v3_module` 时声明能力，主动开启的站点仍需节点能力门控；配置保留 HTTP/1.1/2 回退，并将 UDP 443 冲突、监听确认、回滚和 IP 封禁纳入既有事务。上线时仅需为承载已开启站点的节点确认云厂商与主机防火墙开放 UDP 443，并从外部执行 `curl --http3-only` 验收。
 - 可配置的客户端保活和 2-60 分钟回源读写空闲超时不能代替应用层保活。WebSocket 应发送 ping/pong，SSE 应定期发送注释或事件心跳；持续有数据的连接总时长不受该档位限制。
 
@@ -236,7 +236,7 @@ sudo sqlite3 -header -column /opt/cdn-platform/data/control/control.db \
 
 # 边缘
 sudo systemctl status cdn-edge-agent nginx
-sudo nginx -t
+sudo /opt/cdn-edge/nginx/sbin/nginx -t
 curl -fsS http://127.0.0.1/__cdn_health
 ```
 

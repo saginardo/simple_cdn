@@ -12,3 +12,6 @@ var bootstrapEdgeService string
 
 //go:embed install-edge-updater.service
 var bootstrapEdgeUpdaterService string
+
+//go:embed install-edge-nginx.service
+var bootstrapEdgeNginxService string

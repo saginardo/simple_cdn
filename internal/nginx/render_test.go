@@ -400,7 +400,7 @@ func TestRenderTCPOnlySiteOmitsHTTPListeners(t *testing.T) {
 		"listen 9465 ssl;", "listen 9993 ssl;", "9465 \"us1.workspace.org:465\";", "9993 \"us1.workspace.org:993\";",
 		"proxy_pass $cdn_tcp_upstream;", "resolver 1.1.1.1 8.8.8.8 valid=1h ipv6=off;", "proxy_ssl_name $cdn_tcp_upstream_sni;",
 		"ssl_certificate /opt/cdn-edge/config/certs/11111111-1111-4111-8111-111111111111.crt;", "proxy_timeout 300s;",
-		"access_log /var/log/nginx/cdn-platform-tcp-access.log cdn_tcp_json;", "error_log /var/log/nginx/cdn-platform-tcp-error.log warn;",
+		"access_log /opt/cdn-edge/logs/tcp-access.json cdn_tcp_json;", "error_log /opt/cdn-edge/logs/tcp-error.log warn;",
 	} {
 		if !strings.Contains(streamConfiguration, expected) {
 			t.Fatalf("stream config is missing %q:\n%s", expected, streamConfiguration)

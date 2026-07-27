@@ -997,6 +997,38 @@ test("sites list shows only the publish status", async ({ page }) => {
   await expect(page.getByLabel("Cloudflare Zone ID")).toHaveCount(0);
 });
 
+test("sites list ignores a completed publish task after newer edits", async ({
+  page,
+}) => {
+  const previous = new Date(now.getTime() - 60 * 60 * 1000).toISOString();
+  const changedSite = {
+    ...site,
+    name: "API 加速",
+    domains: ["api.dustk.com"],
+    published: false,
+    updated_at: now.toISOString(),
+  };
+  await mockAPI(page, {
+    "/api/sites": [changedSite],
+    "/api/sites/site-1/publish-status": {
+      task: {
+        id: "publish-old",
+        kind: "publish_site",
+        site_id: "site-1",
+        status: "succeeded",
+        created_at: previous,
+        updated_at: previous,
+      },
+      nodes: [],
+    },
+  });
+  await page.goto("/#/sites");
+
+  const row = page.getByRole("row").filter({ hasText: changedSite.name });
+  await expect(row.getByText("待发布", { exact: true })).toBeVisible();
+  await expect(row.getByText("成功", { exact: true })).toHaveCount(0);
+});
+
 test("certificate workspace shows renewal state and manual actions", async ({
   page,
 }, testInfo) => {

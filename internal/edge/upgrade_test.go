@@ -153,18 +153,28 @@ func TestAgentStagesOnlineUpgradeAndReportsResultAfterRestart(t *testing.T) {
 	stateDir := t.TempDir()
 	taskID := uuid.NewString()
 	sourceDigest := strings.Repeat("1", 64)
+	sourceNginxDigest := strings.Repeat("3", 64)
 	binary := []byte("new edge binary")
 	installer := []byte("#!/usr/bin/env bash\nexit 0\n")
 	service := []byte("agent service")
 	updaterService := []byte("updater service")
+	nginxBundle := []byte("managed nginx bundle")
+	nginxService := []byte("managed nginx service")
+	nginxBundleArtifact := testUpgradeArtifact("https://control.example.test/nginx", nginxBundle)
+	nginxServiceArtifact := testUpgradeArtifact("https://control.example.test/nginx-service", nginxService)
 	instruction := domain.NodeUpgradeInstruction{
 		TaskID: taskID, DeadlineAt: time.Now().Add(time.Hour),
 		Binary:         testUpgradeArtifact("https://control.example.test/binary", binary),
 		Installer:      testUpgradeArtifact("https://control.example.test/installer", installer),
 		AgentService:   testUpgradeArtifact("https://control.example.test/service", service),
 		UpdaterService: testUpgradeArtifact("https://control.example.test/updater", updaterService),
+		NginxBundle:    &nginxBundleArtifact,
+		NginxService:   &nginxServiceArtifact,
 	}
-	artifacts := map[string][]byte{"/binary": binary, "/installer": installer, "/service": service, "/updater": updaterService}
+	artifacts := map[string][]byte{
+		"/binary": binary, "/installer": installer, "/service": service, "/updater": updaterService,
+		"/nginx": nginxBundle, "/nginx-service": nginxService,
+	}
 	var reports []domain.NodeUpgradeReport
 	client := &http.Client{Transport: upgradeRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		switch {
@@ -185,7 +195,11 @@ func TestAgentStagesOnlineUpgradeAndReportsResultAfterRestart(t *testing.T) {
 		}
 	})}
 	runner := &fakeUpgradeRunner{active: true}
-	agent, err := New(Config{ControlURL: "https://control.example.test", StateDir: stateDir, CertificateDir: stateDir + "/certs", AgentSHA256: sourceDigest, HTTPClient: client, UpgradeRunner: runner, Runner: &fakeRunner{}})
+	agent, err := New(Config{
+		ControlURL: "https://control.example.test", StateDir: stateDir, CertificateDir: stateDir + "/certs",
+		AgentSHA256: sourceDigest, NginxVersion: "1.30.3", NginxSHA256: sourceNginxDigest,
+		HTTPClient: client, UpgradeRunner: runner, Runner: &fakeRunner{},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,8 +212,30 @@ func TestAgentStagesOnlineUpgradeAndReportsResultAfterRestart(t *testing.T) {
 	if contents, err := io.ReadAll(mustOpen(t, agent.upgradeDirectory(taskID)+"/cdn-edge-agent")); err != nil || string(contents) != string(binary) {
 		t.Fatalf("staged binary = %q, err=%v", contents, err)
 	}
+	if contents, err := os.ReadFile(agent.upgradeDirectory(taskID) + "/cdn-nginx.tar.gz"); err != nil || string(contents) != string(nginxBundle) {
+		t.Fatalf("staged Nginx bundle = %q, err=%v", contents, err)
+	}
 
-	upgraded, err := New(Config{ControlURL: "https://control.example.test", StateDir: stateDir, CertificateDir: stateDir + "/certs", AgentSHA256: instruction.Binary.SHA256, HTTPClient: client, UpgradeRunner: runner, Runner: &fakeRunner{}})
+	agentOnly, err := New(Config{
+		ControlURL: "https://control.example.test", StateDir: stateDir, CertificateDir: stateDir + "/certs",
+		AgentSHA256: instruction.Binary.SHA256, NginxVersion: "1.30.3", NginxSHA256: sourceNginxDigest,
+		HTTPClient: client, UpgradeRunner: runner, Runner: &fakeRunner{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := agentOnly.markUpgradeReady(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(agentOnly.upgradeDirectory(taskID) + "/ready"); !os.IsNotExist(err) {
+		t.Fatalf("agent-only update incorrectly became ready: %v", err)
+	}
+
+	upgraded, err := New(Config{
+		ControlURL: "https://control.example.test", StateDir: stateDir, CertificateDir: stateDir + "/certs",
+		AgentSHA256: instruction.Binary.SHA256, NginxVersion: "1.30.4", NginxSHA256: nginxBundleArtifact.SHA256,
+		HTTPClient: client, UpgradeRunner: runner, Runner: &fakeRunner{},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,6 +247,7 @@ func TestAgentStagesOnlineUpgradeAndReportsResultAfterRestart(t *testing.T) {
 	}
 	if err := writeLocalUpgradeReport(upgraded.upgradeDirectory(taskID), domain.NodeUpgradeReport{
 		TaskID: taskID, Status: domain.NodeUpgradeSucceeded, Detail: "complete", InstalledSHA256: instruction.Binary.SHA256,
+		InstalledNginxSHA256: nginxBundleArtifact.SHA256,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -306,7 +343,11 @@ func TestUpgradeHelperRunsStagedInstallerAndPersistsSuccess(t *testing.T) {
 	}
 	binary := []byte("verified target binary")
 	artifact := testUpgradeArtifact("https://control.example.test/binary", binary)
-	manifest := localUpgradeManifest{ControlURL: "https://control.example.test", Instruction: domain.NodeUpgradeInstruction{TaskID: taskID, Binary: artifact}}
+	nginxBundle := testUpgradeArtifact("https://control.example.test/nginx", []byte("nginx bundle"))
+	nginxService := testUpgradeArtifact("https://control.example.test/nginx-service", []byte("nginx service"))
+	manifest := localUpgradeManifest{ControlURL: "https://control.example.test", Instruction: domain.NodeUpgradeInstruction{
+		TaskID: taskID, Binary: artifact, NginxBundle: &nginxBundle, NginxService: &nginxService,
+	}}
 	manifestContents, _ := json.Marshal(manifest)
 	if err := os.WriteFile(directory+"/manifest.json", manifestContents, 0o600); err != nil {
 		t.Fatal(err)
@@ -316,8 +357,17 @@ func TestUpgradeHelperRunsStagedInstallerAndPersistsSuccess(t *testing.T) {
 	}
 	installer := `#!/usr/bin/env bash
 set -euo pipefail
+nginx_digest=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --nginx-bundle-sha256) nginx_digest="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
 mkdir -p "$CDN_EDGE_INSTALL_ROOT/opt/cdn-edge/bin"
 cp "$(dirname "$0")/cdn-edge-agent" "$CDN_EDGE_INSTALL_ROOT/opt/cdn-edge/bin/cdn-edge-agent"
+mkdir -p "$CDN_EDGE_INSTALL_ROOT/opt/cdn-edge/nginx"
+printf '%s\n' "$nginx_digest" >"$CDN_EDGE_INSTALL_ROOT/opt/cdn-edge/nginx/.bundle-sha256"
 echo "staged installer completed"
 `
 	if err := os.WriteFile(directory+"/installer.sh", []byte(installer), 0o700); err != nil {
@@ -334,7 +384,8 @@ echo "staged installer completed"
 	if err := json.Unmarshal(contents, &report); err != nil {
 		t.Fatal(err)
 	}
-	if report.Status != domain.NodeUpgradeSucceeded || report.InstalledSHA256 != artifact.SHA256 {
+	if report.Status != domain.NodeUpgradeSucceeded || report.InstalledSHA256 != artifact.SHA256 ||
+		report.InstalledNginxSHA256 != nginxBundle.SHA256 {
 		t.Fatalf("helper report = %#v", report)
 	}
 }

@@ -128,10 +128,13 @@ func (a *Agent) ProcessUpgrade(ctx context.Context) error {
 	if err := validateUpgradeInstruction(instruction); err != nil {
 		return err
 	}
-	if strings.EqualFold(instruction.Binary.SHA256, a.Config.AgentSHA256) {
+	agentCurrent := strings.EqualFold(instruction.Binary.SHA256, a.Config.AgentSHA256)
+	nginxCurrent := instruction.NginxBundle == nil || strings.EqualFold(instruction.NginxBundle.SHA256, a.Config.NginxSHA256)
+	if agentCurrent && nginxCurrent {
 		return a.sendUpgradeReport(ctx, domain.NodeUpgradeReport{
 			TaskID: instruction.TaskID, Status: domain.NodeUpgradeSucceeded,
-			Detail: "edge already runs the requested artifact", InstalledSHA256: a.Config.AgentSHA256,
+			Detail: "edge already runs the requested artifacts", InstalledSHA256: a.Config.AgentSHA256,
+			InstalledNginxSHA256: a.Config.NginxSHA256,
 		})
 	}
 	return a.stageAndStartUpgrade(ctx, instruction)
@@ -154,6 +157,23 @@ func validateUpgradeInstruction(instruction domain.NodeUpgradeInstruction) error
 		}
 		if !validDigest(artifact.SHA256) {
 			return fmt.Errorf("online upgrade %s digest is invalid", name)
+		}
+	}
+	if (instruction.NginxBundle == nil) != (instruction.NginxService == nil) {
+		return errors.New("online upgrade Nginx artifacts must be provided together")
+	}
+	if instruction.NginxBundle != nil {
+		for name, artifact := range map[string]domain.UpgradeArtifact{
+			"Nginx bundle":  *instruction.NginxBundle,
+			"Nginx service": *instruction.NginxService,
+		} {
+			parsed, err := url.Parse(strings.TrimSpace(artifact.URL))
+			if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
+				return fmt.Errorf("online upgrade %s URL must be absolute HTTPS", name)
+			}
+			if !validDigest(artifact.SHA256) {
+				return fmt.Errorf("online upgrade %s digest is invalid", name)
+			}
 		}
 	}
 	return nil
@@ -205,6 +225,22 @@ func (a *Agent) stageAndStartUpgrade(ctx context.Context, instruction domain.Nod
 		{instruction.Binary, "cdn-edge-agent", 0o700, upgradeBinaryLimit},
 		{instruction.AgentService, "cdn-edge-agent.service", 0o600, upgradeResourceLimit},
 		{instruction.UpdaterService, "cdn-edge-updater@.service", 0o600, upgradeResourceLimit},
+	}
+	if instruction.NginxBundle != nil {
+		artifacts = append(artifacts,
+			struct {
+				artifact domain.UpgradeArtifact
+				name     string
+				mode     os.FileMode
+				limit    int64
+			}{*instruction.NginxBundle, "cdn-nginx.tar.gz", 0o600, upgradeBinaryLimit},
+			struct {
+				artifact domain.UpgradeArtifact
+				name     string
+				mode     os.FileMode
+				limit    int64
+			}{*instruction.NginxService, "nginx.service", 0o600, upgradeResourceLimit},
+		)
 	}
 	for _, item := range artifacts {
 		if err := a.downloadUpgradeArtifact(ctx, item.artifact, filepath.Join(directory, item.name), item.mode, item.limit); err != nil {
@@ -447,6 +483,9 @@ func (a *Agent) markUpgradeReady() error {
 	if !strings.EqualFold(manifest.Instruction.Binary.SHA256, a.Config.AgentSHA256) {
 		return nil
 	}
+	if manifest.Instruction.NginxBundle != nil && !strings.EqualFold(manifest.Instruction.NginxBundle.SHA256, a.Config.NginxSHA256) {
+		return nil
+	}
 	return atomicWriteFile(filepath.Join(a.upgradeDirectory(taskID), "ready"), []byte(a.Config.AgentSHA256+"\n"), 0o600)
 }
 
@@ -498,6 +537,14 @@ func RunUpgradeHelper(stateDir, taskID string) error {
 		"--updater-service-sha256", manifest.Instruction.UpdaterService.SHA256,
 		"--readiness-file", filepath.Join(directory, "ready"),
 	}
+	if manifest.Instruction.NginxBundle != nil && manifest.Instruction.NginxService != nil {
+		arguments = append(arguments,
+			"--nginx-bundle-file", filepath.Join(directory, "cdn-nginx.tar.gz"),
+			"--nginx-bundle-sha256", manifest.Instruction.NginxBundle.SHA256,
+			"--nginx-service-file", filepath.Join(directory, "nginx.service"),
+			"--nginx-service-sha256", manifest.Instruction.NginxService.SHA256,
+		)
+	}
 	command := exec.Command("/bin/bash", arguments...)
 	command.Stdout = output
 	command.Stderr = output
@@ -505,8 +552,13 @@ func RunUpgradeHelper(stateDir, taskID string) error {
 	runErr := command.Run()
 	installedPath := rootPath("/opt/cdn-edge/bin/cdn-edge-agent")
 	installedSHA256, digestErr := fileSHA256(installedPath)
-	report := domain.NodeUpgradeReport{TaskID: taskID, Status: domain.NodeUpgradeSucceeded, Detail: "edge online upgrade completed", InstalledSHA256: installedSHA256}
-	if runErr != nil || digestErr != nil || !strings.EqualFold(installedSHA256, manifest.Instruction.Binary.SHA256) {
+	installedNginxSHA256 := readTrimmedFile(rootPath("/opt/cdn-edge/nginx/.bundle-sha256"))
+	report := domain.NodeUpgradeReport{
+		TaskID: taskID, Status: domain.NodeUpgradeSucceeded, Detail: "edge online upgrade completed",
+		InstalledSHA256: installedSHA256, InstalledNginxSHA256: installedNginxSHA256,
+	}
+	nginxMismatch := manifest.Instruction.NginxBundle != nil && !strings.EqualFold(installedNginxSHA256, manifest.Instruction.NginxBundle.SHA256)
+	if runErr != nil || digestErr != nil || !strings.EqualFold(installedSHA256, manifest.Instruction.Binary.SHA256) || nginxMismatch {
 		report.Status = domain.NodeUpgradeFailed
 		report.ErrorCode = "installer_failed"
 		report.InstalledSHA256 = installedSHA256
@@ -525,6 +577,14 @@ func RunUpgradeHelper(stateDir, taskID string) error {
 		return errors.New(report.Detail)
 	}
 	return runErr
+}
+
+func readTrimmedFile(path string) string {
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(contents))
 }
 
 func rootPath(path string) string {

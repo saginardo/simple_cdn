@@ -53,3 +53,9 @@ The console uses shadcn CLI/component source 4.13.1, Radix UI 1.6.2, and Rechart
 ## Geist Variable Font
 
 The console self-hosts Geist through `@fontsource-variable/geist` 5.2.9. The font is distributed under the SIL Open Font License 1.1.
+
+## Managed Nginx Bundle
+
+The edge bundle contains Nginx 1.30.4 (2-clause BSD-like license), ngx_devel_kit 0.3.4 (3-clause BSD license), lua-nginx-module 0.10.29 (2-clause BSD license), lua-resty-core 0.1.32 (2-clause BSD license), lua-resty-lrucache 0.15 (2-clause BSD license), and OpenResty LuaJIT 2.1-20260724 (MIT license, including the Lua 5.1/5.2 notice).
+
+The complete upstream copyright and license text for every bundled component is installed with the binary under `/opt/cdn-edge/nginx/licenses` and is also present inside `cdn-nginx-linux-amd64.tar.gz`.

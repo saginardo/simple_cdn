@@ -173,6 +173,50 @@ func TestInterruptedUpgradeIsRecoveredFromInstalledAgentDigest(t *testing.T) {
 	}
 }
 
+func TestNodeUpgradePersistsAndValidatesManagedNginxArtifact(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	node, err := database.CreateNode("edge-nginx-upgrade", "203.0.113.97")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceAgent := strings.Repeat("7", 64)
+	targetAgent := strings.Repeat("8", 64)
+	sourceNginx := strings.Repeat("9", 64)
+	targetNginx := strings.Repeat("a", 64)
+	if err := database.HeartbeatWithArtifacts(node.ID, 0, "", nil, "v1", sourceAgent, "1.30.3", sourceNginx, ""); err != nil {
+		t.Fatal(err)
+	}
+	instruction := testUpgradeInstruction(targetAgent)
+	bundle := domain.UpgradeArtifact{URL: "https://control.example.test/nginx", SHA256: targetNginx}
+	service := domain.UpgradeArtifact{URL: "https://control.example.test/nginx-service", SHA256: strings.Repeat("b", 64)}
+	instruction.NginxBundle = &bundle
+	instruction.NginxService = &service
+	task, created, err := database.CreateOrGetNodeUpgrade(node.ID, instruction, time.Now().Add(time.Hour))
+	if err != nil || !created || task.SourceNginxSHA256 != sourceNginx || task.TargetNginxSHA256 != targetNginx {
+		t.Fatalf("managed Nginx task = %#v, created=%v, err=%v", task, created, err)
+	}
+	loaded, err := database.NodeUpgradeInstruction(node.ID)
+	if err != nil || loaded.NginxBundle == nil || loaded.NginxBundle.SHA256 != targetNginx ||
+		loaded.NginxService == nil || loaded.NginxService.SHA256 != service.SHA256 {
+		t.Fatalf("managed Nginx instruction = %#v, err=%v", loaded, err)
+	}
+	if _, err := database.RecordNodeUpgradeReport(node.ID, domain.NodeUpgradeReport{
+		TaskID: task.ID, Status: domain.NodeUpgradeSucceeded, InstalledSHA256: targetAgent,
+	}); err == nil {
+		t.Fatal("accepted success without the target managed Nginx digest")
+	}
+	completed, err := database.RecordNodeUpgradeReport(node.ID, domain.NodeUpgradeReport{
+		TaskID: task.ID, Status: domain.NodeUpgradeSucceeded, InstalledSHA256: targetAgent, InstalledNginxSHA256: targetNginx,
+	})
+	if err != nil || completed.Status != domain.NodeUpgradeSucceeded {
+		t.Fatalf("managed Nginx completion = %#v, err=%v", completed, err)
+	}
+}
+
 func testUpgradeInstruction(targetDigest string) domain.NodeUpgradeInstruction {
 	return domain.NodeUpgradeInstruction{
 		Binary:         domain.UpgradeArtifact{URL: "https://control.example.test/edge", SHA256: targetDigest},

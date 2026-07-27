@@ -98,7 +98,7 @@ func TestSiteHTTP3MigrationDefaultsExistingSitesOff(t *testing.T) {
 	if _, err := database.db.Exec(`ALTER TABLE sites DROP COLUMN http3_enabled`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.db.Exec(`DELETE FROM schema_migrations WHERE version = 21`); err != nil {
+	if _, err := database.db.Exec(`DELETE FROM schema_migrations WHERE version >= 21`); err != nil {
 		t.Fatal(err)
 	}
 	if err := database.Migrate(); err != nil {

@@ -22,9 +22,10 @@ import {
 } from "@/components/ui/table";
 import { api } from "@/lib/api";
 import { formatDateTime, formatNumber } from "@/lib/format";
-import type { DeploymentTask, PublishStatus, Site } from "@/lib/types";
+import type { PublishStatus, Site } from "@/lib/types";
 import { useListPagination } from "@/hooks/use-list-pagination";
 import { t, useI18n } from "@/lib/i18n";
+import { activeTask, taskMatchesCurrentSite } from "./publish-status";
 export function SitesPage() {
   useI18n();
   const query = useQuery({
@@ -148,7 +149,8 @@ function SiteStatus({ site }: { site: Site }) {
     return <StatusBadge status="applying" label={t("删除中")} />;
   if (!site.enabled)
     return <StatusBadge status="pending" label={t("已停用")} />;
-  const publishTask = publish.data?.task;
+  const task = publish.data?.task;
+  const publishTask = taskMatchesCurrentSite(task, site) ? task : undefined;
   return (
     <StatusBadge
       status={publishTask?.status ?? (site.published ? "succeeded" : "pending")}
@@ -156,11 +158,6 @@ function SiteStatus({ site }: { site: Site }) {
         publishTask ? undefined : site.published ? t("已发布") : t("待发布")
       }
     />
-  );
-}
-function activeTask(task?: DeploymentTask | null) {
-  return Boolean(
-    task && ["queued", "dispatching", "applying"].includes(task.status),
   );
 }
 function siteProtocol(site: Site) {

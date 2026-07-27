@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -30,6 +31,8 @@ import (
 	"simple_cdn/internal/version"
 )
 
+var managedNginxVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
+
 type Config struct {
 	ControlURL                   string
 	EnrollmentToken              string
@@ -38,6 +41,12 @@ type Config struct {
 	NginxStreamConfigPath        string
 	NginxMainConfigPath          string
 	NginxEventsConfigPath        string
+	NginxBinaryPath              string
+	NginxPIDPath                 string
+	NginxVersionPath             string
+	NginxSHA256Path              string
+	NginxVersion                 string
+	NginxSHA256                  string
 	OriginPoolConfigDirectory    string
 	CertificateDir               string
 	ClientKeyPath                string
@@ -131,6 +140,18 @@ func New(config Config) (*Agent, error) {
 	if config.NginxEventsConfigPath == "" {
 		config.NginxEventsConfigPath = filepath.Join(filepath.Dir(config.NginxConfigPath), "cdn-platform-events.conf")
 	}
+	if config.NginxBinaryPath == "" {
+		config.NginxBinaryPath = "/opt/cdn-edge/nginx/sbin/nginx"
+	}
+	if config.NginxPIDPath == "" {
+		config.NginxPIDPath = "/opt/cdn-edge/nginx/run/nginx.pid"
+	}
+	if config.NginxVersionPath == "" {
+		config.NginxVersionPath = "/opt/cdn-edge/nginx/VERSION"
+	}
+	if config.NginxSHA256Path == "" {
+		config.NginxSHA256Path = "/opt/cdn-edge/nginx/.bundle-sha256"
+	}
 	if config.OriginPoolConfigDirectory == "" {
 		config.OriginPoolConfigDirectory = filepath.Join(filepath.Dir(config.NginxConfigPath), "origin-pools")
 	}
@@ -199,7 +220,7 @@ func New(config Config) (*Agent, error) {
 		config.ListenerPollInterval = 100 * time.Millisecond
 	}
 	if config.Runner == nil {
-		config.Runner = NginxRunner{}
+		config.Runner = NginxRunner{Binary: config.NginxBinaryPath, PIDPath: config.NginxPIDPath}
 	}
 	if config.UpgradeRunner == nil {
 		config.UpgradeRunner = SystemdUpgradeRunner{}
@@ -215,6 +236,9 @@ func New(config Config) (*Agent, error) {
 	}
 	config.AgentVersion = strings.TrimSpace(config.AgentVersion)
 	config.AgentSHA256 = strings.ToLower(strings.TrimSpace(config.AgentSHA256))
+	if err := loadManagedNginxMetadata(&config); err != nil {
+		return nil, err
+	}
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityOnlineUpgrade)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityCacheUsage)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityMachineStatus)
@@ -222,6 +246,9 @@ func New(config Config) (*Agent, error) {
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityNginxFragments)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityControlManifest)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityOriginConnection)
+	if config.NginxVersion != "" && config.NginxSHA256 != "" {
+		config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityNginxBundle)
+	}
 	configureMonitoring(&config)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityTCPMonitoring)
 	config.SecurityFirewall = defaultSecurityFirewall(config.SecurityFirewall)
@@ -681,9 +708,11 @@ func (a *Agent) Heartbeat(ctx context.Context, appliedVersion int64, lastError s
 	payload, err := json.Marshal(map[string]any{
 		"last_error": lastError, "applied_version": appliedVersion, "apply_report": report,
 		"capabilities":  append([]string(nil), a.Config.Capabilities...),
-		"agent_version": a.Config.AgentVersion, "agent_sha256": a.Config.AgentSHA256, "active_upgrade_task_id": a.activeUpgradeID(),
-		"cache_storage":  a.cacheUsage.Snapshot(),
-		"machine_status": a.latestMachineStatus(),
+		"agent_version": a.Config.AgentVersion, "agent_sha256": a.Config.AgentSHA256,
+		"nginx_version": a.Config.NginxVersion, "nginx_sha256": a.Config.NginxSHA256,
+		"active_upgrade_task_id": a.activeUpgradeID(),
+		"cache_storage":          a.cacheUsage.Snapshot(),
+		"machine_status":         a.latestMachineStatus(),
 	})
 	if err != nil {
 		return err
@@ -722,6 +751,32 @@ func (a *Agent) Heartbeat(ctx context.Context, appliedVersion int64, lastError s
 		}
 	}
 	a.setControlManifest(result.Control)
+	return nil
+}
+
+func loadManagedNginxMetadata(config *Config) error {
+	if strings.TrimSpace(config.NginxVersion) == "" {
+		value, err := os.ReadFile(config.NginxVersionPath)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("read managed Nginx version: %w", err)
+		}
+		config.NginxVersion = strings.TrimSpace(string(value))
+	}
+	if strings.TrimSpace(config.NginxSHA256) == "" {
+		value, err := os.ReadFile(config.NginxSHA256Path)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("read managed Nginx digest: %w", err)
+		}
+		config.NginxSHA256 = strings.ToLower(strings.TrimSpace(string(value)))
+	}
+	config.NginxVersion = strings.TrimSpace(config.NginxVersion)
+	config.NginxSHA256 = strings.ToLower(strings.TrimSpace(config.NginxSHA256))
+	if config.NginxVersion == "" && config.NginxSHA256 == "" {
+		return nil
+	}
+	if !managedNginxVersionPattern.MatchString(config.NginxVersion) || !validDigest(config.NginxSHA256) {
+		return errors.New("managed Nginx VERSION or .bundle-sha256 is invalid")
+	}
 	return nil
 }
 

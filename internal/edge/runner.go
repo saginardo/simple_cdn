@@ -22,6 +22,7 @@ type Runner interface {
 
 type NginxRunner struct {
 	Binary             string
+	PIDPath            string
 	ReloadTimeout      time.Duration
 	ReloadPollInterval time.Duration
 	command            func(string, ...string) ([]byte, error)
@@ -36,7 +37,7 @@ type nginxProcessSnapshot struct {
 func (r NginxRunner) Test() error {
 	binary := r.Binary
 	if binary == "" {
-		binary = "nginx"
+		binary = "/opt/cdn-edge/nginx/sbin/nginx"
 	}
 	output, err := r.run(binary, "-t")
 	if err != nil {
@@ -69,7 +70,7 @@ func (r NginxRunner) reload() error {
 	}
 	binary := r.Binary
 	if binary == "" {
-		binary = "nginx"
+		binary = "/opt/cdn-edge/nginx/sbin/nginx"
 	}
 	output, err := r.run(binary, "-s", "reload")
 	if err != nil {
@@ -130,11 +131,15 @@ func (r NginxRunner) processSnapshot() (nginxProcessSnapshot, error) {
 	if r.snapshot != nil {
 		return r.snapshot()
 	}
-	return readNginxProcessSnapshot()
+	pidPath := r.PIDPath
+	if pidPath == "" {
+		pidPath = "/opt/cdn-edge/nginx/run/nginx.pid"
+	}
+	return readNginxProcessSnapshot(pidPath)
 }
 
-func readNginxProcessSnapshot() (nginxProcessSnapshot, error) {
-	pidBytes, err := os.ReadFile("/run/nginx.pid")
+func readNginxProcessSnapshot(pidPath string) (nginxProcessSnapshot, error) {
+	pidBytes, err := os.ReadFile(pidPath)
 	if err != nil {
 		return nginxProcessSnapshot{}, err
 	}

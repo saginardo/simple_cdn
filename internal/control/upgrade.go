@@ -21,13 +21,16 @@ const (
 
 type nodeUpgradeStatusResponse struct {
 	domain.Node
-	TargetAgentSHA256  string                  `json:"target_agent_sha256,omitempty"`
-	TargetAgentVersion string                  `json:"target_agent_version,omitempty"`
-	UpgradeCapable     bool                    `json:"upgrade_capable"`
-	UpgradeUpToDate    bool                    `json:"upgrade_up_to_date"`
-	CanUpgrade         bool                    `json:"can_upgrade"`
-	UpgradeBlocker     string                  `json:"upgrade_blocker,omitempty"`
-	UpgradeTask        *domain.NodeUpgradeTask `json:"upgrade_task,omitempty"`
+	TargetAgentSHA256   string                  `json:"target_agent_sha256,omitempty"`
+	TargetAgentVersion  string                  `json:"target_agent_version,omitempty"`
+	TargetNginxSHA256   string                  `json:"target_nginx_sha256,omitempty"`
+	TargetNginxVersion  string                  `json:"target_nginx_version,omitempty"`
+	UpgradeCapable      bool                    `json:"upgrade_capable"`
+	NginxUpgradeCapable bool                    `json:"nginx_upgrade_capable"`
+	UpgradeUpToDate     bool                    `json:"upgrade_up_to_date"`
+	CanUpgrade          bool                    `json:"can_upgrade"`
+	UpgradeBlocker      string                  `json:"upgrade_blocker,omitempty"`
+	UpgradeTask         *domain.NodeUpgradeTask `json:"upgrade_task,omitempty"`
 }
 
 type nodeUpgradeAllResult struct {
@@ -47,11 +50,17 @@ type nodeUpgradeAllResponse struct {
 }
 
 func (s *Server) buildNodeUpgradeStatus(node domain.Node) (nodeUpgradeStatusResponse, error) {
-	result := nodeUpgradeStatusResponse{Node: node, TargetAgentSHA256: strings.ToLower(strings.TrimSpace(s.EdgeBinarySHA256)), TargetAgentVersion: version.Version}
+	result := nodeUpgradeStatusResponse{
+		Node:              node,
+		TargetAgentSHA256: strings.ToLower(strings.TrimSpace(s.EdgeBinarySHA256)), TargetAgentVersion: version.Version,
+		TargetNginxSHA256: strings.ToLower(strings.TrimSpace(s.NginxBundleSHA256)), TargetNginxVersion: s.NginxVersion,
+	}
 	for _, capability := range node.Capabilities {
 		if capability == domain.EdgeCapabilityOnlineUpgrade {
 			result.UpgradeCapable = true
-			break
+		}
+		if capability == domain.EdgeCapabilityNginxBundle {
+			result.NginxUpgradeCapable = true
 		}
 	}
 	if task, err := s.Store.LatestNodeUpgrade(node.ID); err == nil {
@@ -59,7 +68,9 @@ func (s *Server) buildNodeUpgradeStatus(node domain.Node) (nodeUpgradeStatusResp
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return result, err
 	}
-	result.UpgradeUpToDate = validSHA256Digest(node.AgentSHA256) && strings.EqualFold(node.AgentSHA256, result.TargetAgentSHA256)
+	agentUpToDate := validSHA256Digest(node.AgentSHA256) && strings.EqualFold(node.AgentSHA256, result.TargetAgentSHA256)
+	nginxUpToDate := validSHA256Digest(node.NginxSHA256) && strings.EqualFold(node.NginxSHA256, result.TargetNginxSHA256)
+	result.UpgradeUpToDate = agentUpToDate && nginxUpToDate
 	if result.UpgradeTask != nil && (result.UpgradeTask.Status == domain.NodeUpgradeQueued || result.UpgradeTask.Status == domain.NodeUpgradeApplying) {
 		result.UpgradeBlocker = "节点升级正在进行"
 		return result, nil
@@ -74,6 +85,10 @@ func (s *Server) buildNodeUpgradeStatus(node domain.Node) (nodeUpgradeStatusResp
 	}
 	if !result.UpgradeCapable || !validSHA256Digest(node.AgentSHA256) {
 		result.UpgradeBlocker = "需要先手动执行一次部署/升级命令以启用在线升级"
+		return result, nil
+	}
+	if agentUpToDate && !nginxUpToDate && !result.NginxUpgradeCapable {
+		result.UpgradeBlocker = "需要先手动执行一次部署/升级命令以启用受管 Nginx 在线升级"
 		return result, nil
 	}
 	if node.LastHeartbeatAt == nil || node.LastHeartbeatAt.Before(time.Now().UTC().Add(-nodeUpgradeHeartbeatFreshness)) {
@@ -105,20 +120,33 @@ func (s *Server) buildNodeUpgradeStatus(node domain.Node) (nodeUpgradeStatusResp
 }
 
 func (s *Server) validateNodeUpgradeArtifacts() error {
-	if !validHTTPSURL(s.edgeControlURL()) || !validHTTPSURL(s.EdgeBinaryURL) || !validSHA256Digest(strings.TrimSpace(s.EdgeBinarySHA256)) {
+	if !validHTTPSURL(s.edgeControlURL()) ||
+		!validHTTPSURL(s.EdgeBinaryURL) || !validSHA256Digest(strings.TrimSpace(s.EdgeBinarySHA256)) ||
+		!validHTTPSURL(s.NginxBundleURL) || !validSHA256Digest(strings.TrimSpace(s.NginxBundleSHA256)) ||
+		!nginxVersionPattern.MatchString(strings.TrimSpace(s.NginxVersion)) {
 		return errors.New("主控尚未配置有效的边缘升级制品")
 	}
 	return nil
 }
 
-func (s *Server) nodeUpgradeInstruction() domain.NodeUpgradeInstruction {
+func (s *Server) nodeUpgradeInstruction(node domain.Node) domain.NodeUpgradeInstruction {
 	baseURL := strings.TrimRight(s.edgeControlURL(), "/")
-	return domain.NodeUpgradeInstruction{
+	instruction := domain.NodeUpgradeInstruction{
 		Binary:         domain.UpgradeArtifact{URL: s.EdgeBinaryURL, SHA256: strings.ToLower(strings.TrimSpace(s.EdgeBinarySHA256))},
-		Installer:      domain.UpgradeArtifact{URL: baseURL + "/install-edge.sh", SHA256: resourceSHA256(bootstrapEdgeScript)},
+		Installer:      domain.UpgradeArtifact{URL: baseURL + "/install-edge.sh", SHA256: resourceSHA256(s.renderedEdgeInstaller())},
 		AgentService:   domain.UpgradeArtifact{URL: baseURL + "/install-edge.service", SHA256: resourceSHA256(bootstrapEdgeService)},
 		UpdaterService: domain.UpgradeArtifact{URL: baseURL + "/install-edge-updater.service", SHA256: resourceSHA256(bootstrapEdgeUpdaterService)},
 	}
+	for _, capability := range node.Capabilities {
+		if capability == domain.EdgeCapabilityNginxBundle {
+			bundle := domain.UpgradeArtifact{URL: s.NginxBundleURL, SHA256: strings.ToLower(strings.TrimSpace(s.NginxBundleSHA256))}
+			service := domain.UpgradeArtifact{URL: baseURL + "/install-edge-nginx.service", SHA256: resourceSHA256(bootstrapEdgeNginxService)}
+			instruction.NginxBundle = &bundle
+			instruction.NginxService = &service
+			break
+		}
+	}
+	return instruction
 }
 
 func resourceSHA256(value string) string {
@@ -166,7 +194,7 @@ func (s *Server) startNodeUpgrade(response http.ResponseWriter, request *http.Re
 		writeJSON(response, http.StatusConflict, map[string]any{"error": status.UpgradeBlocker, "upgrade": status})
 		return
 	}
-	instruction := s.nodeUpgradeInstruction()
+	instruction := s.nodeUpgradeInstruction(node)
 	task, created, err := s.Store.CreateOrGetNodeUpgrade(node.ID, instruction, time.Now().UTC().Add(nodeUpgradeTimeout))
 	if err != nil {
 		writeStoreError(response, err)
@@ -194,7 +222,6 @@ func (s *Server) startAllNodeUpgrades(response http.ResponseWriter, request *htt
 		return
 	}
 	result := nodeUpgradeAllResponse{Results: make([]nodeUpgradeAllResult, 0, len(nodes))}
-	instruction := s.nodeUpgradeInstruction()
 	for _, node := range nodes {
 		status, err := s.buildNodeUpgradeStatus(node)
 		if err != nil {
@@ -213,7 +240,7 @@ func (s *Server) startAllNodeUpgrades(response http.ResponseWriter, request *htt
 			item.State, item.Detail = "blocked", status.UpgradeBlocker
 			result.Blocked++
 		default:
-			task, _, err := s.Store.CreateOrGetNodeUpgrade(node.ID, instruction, time.Now().UTC().Add(nodeUpgradeTimeout))
+			task, _, err := s.Store.CreateOrGetNodeUpgrade(node.ID, s.nodeUpgradeInstruction(node), time.Now().UTC().Add(nodeUpgradeTimeout))
 			if err != nil {
 				if errors.Is(err, store.ErrNodeOperationActive) || errors.Is(err, store.ErrNodeUpgradeActive) || errors.Is(err, store.ErrUpgradeRetryNotReady) {
 					item.State, item.Detail = "blocked", err.Error()
@@ -258,8 +285,10 @@ func (s *Server) edgeUpgradeReport(response http.ResponseWriter, request *http.R
 	report.ErrorCode = strings.TrimSpace(report.ErrorCode)
 	report.Detail = strings.TrimSpace(report.Detail)
 	report.InstalledSHA256 = strings.ToLower(strings.TrimSpace(report.InstalledSHA256))
+	report.InstalledNginxSHA256 = strings.ToLower(strings.TrimSpace(report.InstalledNginxSHA256))
 	if !validNodeUpgradeTaskID(report.TaskID) || len(report.ErrorCode) > 64 || len(report.Detail) > 4096 ||
-		(report.InstalledSHA256 != "" && !validSHA256Digest(report.InstalledSHA256)) {
+		(report.InstalledSHA256 != "" && !validSHA256Digest(report.InstalledSHA256)) ||
+		(report.InstalledNginxSHA256 != "" && !validSHA256Digest(report.InstalledNginxSHA256)) {
 		writeError(response, http.StatusBadRequest, errors.New("invalid node upgrade report"))
 		return
 	}

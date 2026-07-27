@@ -100,6 +100,8 @@ CREATE TABLE IF NOT EXISTS nodes (
 	  applied_version INTEGER NOT NULL DEFAULT 0,
 	  agent_version TEXT NOT NULL DEFAULT '',
 	  agent_sha256 TEXT NOT NULL DEFAULT '',
+	  nginx_version TEXT NOT NULL DEFAULT '',
+	  nginx_sha256 TEXT NOT NULL DEFAULT '',
 	  active_upgrade_task_id TEXT NOT NULL DEFAULT '',
 	  last_error TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
@@ -337,6 +339,8 @@ CREATE TABLE IF NOT EXISTS node_uninstall_jobs (
 	  status TEXT NOT NULL,
 	  source_sha256 TEXT NOT NULL DEFAULT '',
 	  target_sha256 TEXT NOT NULL,
+	  source_nginx_sha256 TEXT NOT NULL DEFAULT '',
+	  target_nginx_sha256 TEXT NOT NULL DEFAULT '',
 	  binary_url TEXT NOT NULL,
 	  installer_url TEXT NOT NULL,
 	  installer_sha256 TEXT NOT NULL,
@@ -344,6 +348,10 @@ CREATE TABLE IF NOT EXISTS node_uninstall_jobs (
 	  agent_service_sha256 TEXT NOT NULL,
 	  updater_service_url TEXT NOT NULL,
 	  updater_service_sha256 TEXT NOT NULL,
+	  nginx_bundle_url TEXT NOT NULL DEFAULT '',
+	  nginx_bundle_sha256 TEXT NOT NULL DEFAULT '',
+	  nginx_service_url TEXT NOT NULL DEFAULT '',
+	  nginx_service_sha256 TEXT NOT NULL DEFAULT '',
 	  error_code TEXT NOT NULL DEFAULT '',
 	  detail TEXT NOT NULL DEFAULT '',
 	  deadline_at TEXT NOT NULL,
@@ -740,11 +748,11 @@ func (s *Store) CreateNode(name, publicIPv4 string) (domain.Node, error) {
 }
 
 func (s *Store) GetNode(id string) (domain.Node, error) {
-	return scanNode(s.db.QueryRow(`SELECT id, name, public_ipv4, status, monitor_auto_paused, capabilities_json, cache_max_size_gb, nginx_worker_processes, nginx_worker_connections, nginx_worker_rlimit_nofile, agent_version, agent_sha256, active_upgrade_task_id, last_heartbeat_at, applied_version, last_error, created_at, updated_at FROM nodes WHERE id = ?`, id))
+	return scanNode(s.db.QueryRow(`SELECT id, name, public_ipv4, status, monitor_auto_paused, capabilities_json, cache_max_size_gb, nginx_worker_processes, nginx_worker_connections, nginx_worker_rlimit_nofile, agent_version, agent_sha256, nginx_version, nginx_sha256, active_upgrade_task_id, last_heartbeat_at, applied_version, last_error, created_at, updated_at FROM nodes WHERE id = ?`, id))
 }
 
 func (s *Store) ListNodes() ([]domain.Node, error) {
-	rows, err := s.db.Query(`SELECT id, name, public_ipv4, status, monitor_auto_paused, capabilities_json, cache_max_size_gb, nginx_worker_processes, nginx_worker_connections, nginx_worker_rlimit_nofile, agent_version, agent_sha256, active_upgrade_task_id, last_heartbeat_at, applied_version, last_error, created_at, updated_at FROM nodes ORDER BY name`)
+	rows, err := s.db.Query(`SELECT id, name, public_ipv4, status, monitor_auto_paused, capabilities_json, cache_max_size_gb, nginx_worker_processes, nginx_worker_connections, nginx_worker_rlimit_nofile, agent_version, agent_sha256, nginx_version, nginx_sha256, active_upgrade_task_id, last_heartbeat_at, applied_version, last_error, created_at, updated_at FROM nodes ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -808,7 +816,7 @@ func scanNode(row scanner) (domain.Node, error) {
 	var cacheMaxSizeGB sql.NullInt64
 	var heartbeat sql.NullString
 	var createdAt, updatedAt string
-	err := row.Scan(&node.ID, &node.Name, &node.PublicIPv4, &node.Status, &monitorAutoPaused, &capabilities, &cacheMaxSizeGB, &node.NginxCapacity.WorkerProcesses, &node.NginxCapacity.WorkerConnections, &node.NginxCapacity.WorkerRlimitNoFile, &node.AgentVersion, &node.AgentSHA256, &node.ActiveUpgradeID, &heartbeat, &node.AppliedVersion, &node.LastError, &createdAt, &updatedAt)
+	err := row.Scan(&node.ID, &node.Name, &node.PublicIPv4, &node.Status, &monitorAutoPaused, &capabilities, &cacheMaxSizeGB, &node.NginxCapacity.WorkerProcesses, &node.NginxCapacity.WorkerConnections, &node.NginxCapacity.WorkerRlimitNoFile, &node.AgentVersion, &node.AgentSHA256, &node.NginxVersion, &node.NginxSHA256, &node.ActiveUpgradeID, &heartbeat, &node.AppliedVersion, &node.LastError, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.Node{}, ErrNotFound
 	}
@@ -1005,6 +1013,10 @@ func (s *Store) HeartbeatWithAgent(nodeID string, appliedVersion int64, lastErro
 }
 
 func (s *Store) HeartbeatWithAgentVersion(nodeID string, appliedVersion int64, lastError string, report *domain.ApplyReport, agentVersion, agentSHA256, activeUpgradeID string) error {
+	return s.HeartbeatWithArtifacts(nodeID, appliedVersion, lastError, report, agentVersion, agentSHA256, "", "", activeUpgradeID)
+}
+
+func (s *Store) HeartbeatWithArtifacts(nodeID string, appliedVersion int64, lastError string, report *domain.ApplyReport, agentVersion, agentSHA256, nginxVersion, nginxSHA256, activeUpgradeID string) error {
 	// Record a structured apply result before advancing applied_version. The
 	// latter is a compatibility signal for old agents, and a concurrent health
 	// reconciliation could otherwise consume it first and replace the richer
@@ -1018,9 +1030,12 @@ func (s *Store) HeartbeatWithAgentVersion(nodeID string, appliedVersion int64, l
 	result, err := s.db.Exec(`UPDATE nodes SET status = CASE WHEN status = ? THEN ? ELSE status END,
 		last_heartbeat_at = ?, applied_version = CASE WHEN ? > applied_version THEN ? ELSE applied_version END,
 		agent_version = ?,
-		agent_sha256 = CASE WHEN ? = '' THEN agent_sha256 ELSE ? END, active_upgrade_task_id = ?,
+		agent_sha256 = CASE WHEN ? = '' THEN agent_sha256 ELSE ? END,
+		nginx_version = CASE WHEN ? = '' THEN nginx_version ELSE ? END,
+		nginx_sha256 = CASE WHEN ? = '' THEN nginx_sha256 ELSE ? END, active_upgrade_task_id = ?,
 		last_error = ?, updated_at = ? WHERE id = ?`, domain.NodePending, status, stamp(now()), appliedVersion, appliedVersion,
-		agentVersion, agentSHA256, agentSHA256, activeUpgradeID, lastError, stamp(now()), nodeID)
+		agentVersion, agentSHA256, agentSHA256, nginxVersion, nginxVersion, nginxSHA256, nginxSHA256,
+		activeUpgradeID, lastError, stamp(now()), nodeID)
 	if err != nil {
 		return err
 	}

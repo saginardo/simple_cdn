@@ -37,6 +37,29 @@ var schemaMigrations = []schemaMigration{
 	{Version: 19, Name: "http3-public-udp-ports", Apply: migrateHTTP3PublicUDPPorts},
 	{Version: 20, Name: "origin-connection-pools", Apply: migrateOriginConnectionPools},
 	{Version: 21, Name: "site-http3-opt-in", Apply: migrateSiteHTTP3OptIn},
+	{Version: 22, Name: "managed-nginx-artifacts", Apply: migrateManagedNginxArtifacts},
+}
+
+func migrateManagedNginxArtifacts(tx *sql.Tx) error {
+	for _, column := range []struct {
+		table      string
+		name       string
+		definition string
+	}{
+		{"nodes", "nginx_version", "nginx_version TEXT NOT NULL DEFAULT ''"},
+		{"nodes", "nginx_sha256", "nginx_sha256 TEXT NOT NULL DEFAULT ''"},
+		{"node_upgrade_tasks", "source_nginx_sha256", "source_nginx_sha256 TEXT NOT NULL DEFAULT ''"},
+		{"node_upgrade_tasks", "target_nginx_sha256", "target_nginx_sha256 TEXT NOT NULL DEFAULT ''"},
+		{"node_upgrade_tasks", "nginx_bundle_url", "nginx_bundle_url TEXT NOT NULL DEFAULT ''"},
+		{"node_upgrade_tasks", "nginx_bundle_sha256", "nginx_bundle_sha256 TEXT NOT NULL DEFAULT ''"},
+		{"node_upgrade_tasks", "nginx_service_url", "nginx_service_url TEXT NOT NULL DEFAULT ''"},
+		{"node_upgrade_tasks", "nginx_service_sha256", "nginx_service_sha256 TEXT NOT NULL DEFAULT ''"},
+	} {
+		if err := addColumnIfMissing(tx, column.table, column.name, column.definition); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func migrateSiteHTTP3OptIn(tx *sql.Tx) error {

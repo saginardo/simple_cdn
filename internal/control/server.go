@@ -66,6 +66,10 @@ type Server struct {
 	EdgeBinaryURL             string
 	EdgeBinarySHA256          string
 	EdgeBinaryPath            string
+	NginxBundleURL            string
+	NginxBundleSHA256         string
+	NginxBundlePath           string
+	NginxVersion              string
 	InitializationTokenPath   string
 	SetupAllowCIDRs           []*net.IPNet
 	TrustedProxyCIDRs         []*net.IPNet
@@ -89,8 +93,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /install-edge.sh", s.bootstrapEdgeScript)
 	mux.HandleFunc("GET /install-edge.service", s.bootstrapEdgeService)
 	mux.HandleFunc("GET /install-edge-updater.service", s.bootstrapEdgeUpdaterService)
+	mux.HandleFunc("GET /install-edge-nginx.service", s.bootstrapEdgeNginxService)
 	mux.HandleFunc("GET /uninstall-edge.sh", s.uninstallEdgeScript)
 	mux.HandleFunc("GET /downloads/cdn-edge-agent-linux-amd64", s.edgeBinary)
+	mux.HandleFunc("GET /downloads/cdn-nginx-linux-amd64.tar.gz", s.nginxBundle)
 	mux.HandleFunc("GET /api/setup/status", s.setupStatus)
 	mux.HandleFunc("GET /api/branding", s.getPublicBranding)
 	mux.HandleFunc("POST /api/setup", s.setup)
@@ -491,8 +497,8 @@ func (s *Server) createEnrollmentToken(response http.ResponseWriter, request *ht
 	nodeID := request.PathValue("id")
 	digest := strings.TrimSpace(s.EdgeBinarySHA256)
 	edgeControlURL := s.edgeControlURL()
-	if !validHTTPSURL(s.ControlURL) || !validHTTPSURL(edgeControlURL) || !validHTTPSURL(s.EdgeBinaryURL) || !validSHA256Digest(digest) {
-		writeError(response, http.StatusConflict, errors.New("CONTROL_PUBLIC_URL, EDGE_CONTROL_URL, and EDGE_BINARY_URL must be HTTPS URLs, and EDGE_BINARY_PATH must identify the edge binary before generating an enrollment command"))
+	if !validHTTPSURL(s.ControlURL) || !validHTTPSURL(edgeControlURL) || s.validateNodeUpgradeArtifacts() != nil {
+		writeError(response, http.StatusConflict, errors.New("CONTROL_PUBLIC_URL, EDGE_CONTROL_URL, EDGE_BINARY_URL, and NGINX_BUNDLE_URL must be HTTPS URLs, and both edge artifacts must be valid before generating an enrollment command"))
 		return
 	}
 	enrollmentRequired, err := s.Store.NodeRequiresEnrollment(nodeID)
@@ -542,7 +548,7 @@ func validHTTPSURL(value string) bool {
 func (s *Server) bootstrapEdgeScript(response http.ResponseWriter, request *http.Request) {
 	response.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
 	response.Header().Set("Cache-Control", "no-store")
-	_, _ = response.Write([]byte(bootstrapEdgeScript))
+	_, _ = response.Write([]byte(s.renderedEdgeInstaller()))
 }
 
 func (s *Server) bootstrapEdgeService(response http.ResponseWriter, request *http.Request) {
@@ -557,6 +563,20 @@ func (s *Server) bootstrapEdgeUpdaterService(response http.ResponseWriter, reque
 	_, _ = response.Write([]byte(bootstrapEdgeUpdaterService))
 }
 
+func (s *Server) bootstrapEdgeNginxService(response http.ResponseWriter, request *http.Request) {
+	response.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	response.Header().Set("Cache-Control", "no-store")
+	_, _ = response.Write([]byte(bootstrapEdgeNginxService))
+}
+
+func (s *Server) renderedEdgeInstaller() string {
+	baseURL := strings.TrimRight(s.edgeControlURL(), "/")
+	return renderBootstrapEdgeScript(
+		strings.TrimSpace(s.NginxBundleURL), strings.TrimSpace(s.NginxBundleSHA256),
+		baseURL+"/install-edge-nginx.service", resourceSHA256(bootstrapEdgeNginxService),
+	)
+}
+
 func (s *Server) edgeBinary(response http.ResponseWriter, request *http.Request) {
 	path := strings.TrimSpace(s.EdgeBinaryPath)
 	info, err := os.Stat(path)
@@ -566,6 +586,19 @@ func (s *Server) edgeBinary(response http.ResponseWriter, request *http.Request)
 	}
 	response.Header().Set("Content-Type", "application/octet-stream")
 	response.Header().Set("Content-Disposition", "attachment; filename=cdn-edge-agent-linux-amd64")
+	response.Header().Set("Cache-Control", "no-store")
+	http.ServeFile(response, request, path)
+}
+
+func (s *Server) nginxBundle(response http.ResponseWriter, request *http.Request) {
+	path := strings.TrimSpace(s.NginxBundlePath)
+	info, err := os.Stat(path)
+	if path == "" || err != nil || !info.Mode().IsRegular() {
+		http.NotFound(response, request)
+		return
+	}
+	response.Header().Set("Content-Type", "application/gzip")
+	response.Header().Set("Content-Disposition", "attachment; filename=cdn-nginx-linux-amd64.tar.gz")
 	response.Header().Set("Cache-Control", "no-store")
 	http.ServeFile(response, request, path)
 }
@@ -1458,6 +1491,8 @@ type heartbeatRequest struct {
 	Capabilities    []string                  `json:"capabilities,omitempty"`
 	AgentVersion    string                    `json:"agent_version,omitempty"`
 	AgentSHA256     string                    `json:"agent_sha256,omitempty"`
+	NginxVersion    string                    `json:"nginx_version,omitempty"`
+	NginxSHA256     string                    `json:"nginx_sha256,omitempty"`
 	ActiveUpgradeID string                    `json:"active_upgrade_task_id,omitempty"`
 	CacheStorage    *domain.CacheStorageUsage `json:"cache_storage,omitempty"`
 	MachineStatus   *domain.MachineStatus     `json:"machine_status,omitempty"`
@@ -1473,6 +1508,8 @@ func (s *Server) heartbeat(response http.ResponseWriter, request *http.Request) 
 	nodeID := edgeNodeID(request.Context())
 	input.AgentVersion = strings.TrimSpace(input.AgentVersion)
 	input.AgentSHA256 = strings.ToLower(strings.TrimSpace(input.AgentSHA256))
+	input.NginxVersion = strings.TrimSpace(input.NginxVersion)
+	input.NginxSHA256 = strings.ToLower(strings.TrimSpace(input.NginxSHA256))
 	input.ActiveUpgradeID = strings.TrimSpace(input.ActiveUpgradeID)
 	if len(input.AgentVersion) > 64 || strings.ContainsAny(input.AgentVersion, "\x00\r\n") {
 		writeError(response, http.StatusBadRequest, errors.New("agent_version is invalid"))
@@ -1480,6 +1517,19 @@ func (s *Server) heartbeat(response http.ResponseWriter, request *http.Request) 
 	}
 	if input.AgentSHA256 != "" && !validSHA256Digest(input.AgentSHA256) {
 		writeError(response, http.StatusBadRequest, errors.New("agent_sha256 must be a 64-character hexadecimal digest"))
+		return
+	}
+	if (input.NginxVersion != "" && !nginxVersionPattern.MatchString(input.NginxVersion)) ||
+		len(input.NginxVersion) > 64 || strings.ContainsAny(input.NginxVersion, "\x00\r\n") {
+		writeError(response, http.StatusBadRequest, errors.New("nginx_version is invalid"))
+		return
+	}
+	if input.NginxSHA256 != "" && !validSHA256Digest(input.NginxSHA256) {
+		writeError(response, http.StatusBadRequest, errors.New("nginx_sha256 must be a 64-character hexadecimal digest"))
+		return
+	}
+	if (input.NginxVersion == "") != (input.NginxSHA256 == "") {
+		writeError(response, http.StatusBadRequest, errors.New("nginx_version and nginx_sha256 must be reported together"))
 		return
 	}
 	if input.ActiveUpgradeID != "" && !validNodeUpgradeTaskID(input.ActiveUpgradeID) {
@@ -1510,7 +1560,8 @@ func (s *Server) heartbeat(response http.ResponseWriter, request *http.Request) 
 		writeStoreError(response, err)
 		return
 	}
-	if err := s.Store.HeartbeatWithAgentVersion(nodeID, input.AppliedVersion, input.LastError, input.ApplyReport, input.AgentVersion, input.AgentSHA256, input.ActiveUpgradeID); err != nil {
+	if err := s.Store.HeartbeatWithArtifacts(nodeID, input.AppliedVersion, input.LastError, input.ApplyReport,
+		input.AgentVersion, input.AgentSHA256, input.NginxVersion, input.NginxSHA256, input.ActiveUpgradeID); err != nil {
 		writeStoreError(response, err)
 		return
 	}

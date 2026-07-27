@@ -32,7 +32,7 @@ Policies whose response condition contains only 4xx and 5xx may optionally escal
 
 The ban event uses the same durable edge path as malicious-request bans. The Agent records local state before updating nftables, reports the event to the controller, and other edges receive the global ban on their next reconciliation. One shared-dictionary marker suppresses duplicate events for the configured ban duration. Nodes without both `edge_rate_limit_v1` and `edge_security_v1` continue to enforce HTTP 429 but do not receive the escalation settings.
 
-The installer adds Debian's `libnginx-mod-http-lua` package. Only nodes advertising `edge_rate_limit_v1` receive rate-limit configuration. A policy save rebuilds desired states for capable nodes through the same `nginx -t`, atomic apply, listener verification, and rollback path used by site and access-policy changes.
+The managed Nginx bundle includes lua-nginx-module, lua-resty-core, lua-resty-lrucache, and a private OpenResty LuaJIT under `/opt/cdn-edge/nginx`; it does not install Debian's Lua module. Only nodes advertising `edge_rate_limit_v1` receive rate-limit configuration. A policy save rebuilds desired states for capable nodes through the same managed Nginx validation, atomic apply, listener verification, and rollback path used by site and access-policy changes.
 
 ## Firewall ownership
 
@@ -55,8 +55,8 @@ Use these checks on an upgraded edge:
 ```bash
 sudo systemctl is-active cdn-edge-agent nginx
 sudo nft list table inet simple_cdn
-sudo nginx -T 2>/dev/null | grep -F cdn_security_policy_id
-sudo nginx -T 2>/dev/null | grep -F cdn_rate_limit
+sudo /opt/cdn-edge/nginx/sbin/nginx -T 2>/dev/null | grep -F cdn_security_policy_id
+sudo /opt/cdn-edge/nginx/sbin/nginx -T 2>/dev/null | grep -F cdn_rate_limit
 sudo tail -n 20 /opt/cdn-edge/logs/security.json
 sudo journalctl -u cdn-edge-agent --since '-10 minutes' --no-pager
 ```

@@ -65,8 +65,8 @@ include 切换、站点配置发布和 Nginx reload 使用同一串行锁。状�
 
 ```bash
 sudo systemctl is-active cdn-edge-agent nginx
-sudo nginx -t
-sudo nginx -T 2>/dev/null | grep -A6 -F 'upstream origin_pool_'
+sudo /opt/cdn-edge/nginx/sbin/nginx -t
+sudo /opt/cdn-edge/nginx/sbin/nginx -T 2>/dev/null | grep -A6 -F 'upstream origin_pool_'
 sudo find /opt/cdn-edge/config/nginx/origin-pools -maxdepth 1 -type f -print -exec sed -n '1,3p' {} \;
 sudo journalctl -u cdn-edge-agent -u nginx --since '-5 minutes' --no-pager
 ```
