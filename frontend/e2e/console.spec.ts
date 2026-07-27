@@ -2173,6 +2173,123 @@ test("bulk node upgrade refreshes the page without opening a result dialog", asy
   );
 });
 
+test("node list starts one upgrade without opening node details", async ({
+  page,
+}, testInfo) => {
+  const errors = trackPageErrors(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const baseNode = {
+    public_ipv4: "203.0.113.41",
+    status: "active",
+    capabilities: ["self_upgrade"],
+    agent_version: "0.1.16",
+    target_agent_version: "0.1.17",
+    applied_version: 8,
+    last_heartbeat_at: now.toISOString(),
+    created_at: now.toISOString(),
+    updated_at: now.toISOString(),
+    upgrade_capable: true,
+  };
+  const upgradeableNode = {
+    ...baseNode,
+    id: "node-ready",
+    name: "edge-ready",
+    upgrade_up_to_date: false,
+    can_upgrade: true,
+  };
+  const latestNode = {
+    ...baseNode,
+    id: "node-latest",
+    name: "edge-latest",
+    public_ipv4: "203.0.113.42",
+    agent_version: "0.1.17",
+    upgrade_up_to_date: true,
+    can_upgrade: false,
+  };
+  const applyingNode = {
+    ...baseNode,
+    id: "node-applying",
+    name: "edge-applying",
+    public_ipv4: "203.0.113.43",
+    upgrade_up_to_date: false,
+    can_upgrade: false,
+    upgrade_task: {
+      id: "upgrade-applying",
+      node_id: "node-applying",
+      status: "applying",
+      target_sha256: "a".repeat(64),
+      deadline_at: new Date(now.getTime() + 30 * 60_000).toISOString(),
+      created_at: now.toISOString(),
+      updated_at: now.toISOString(),
+    },
+  };
+  const queuedTask = {
+    id: "upgrade-queued",
+    node_id: upgradeableNode.id,
+    status: "queued",
+    target_sha256: "b".repeat(64),
+    deadline_at: new Date(now.getTime() + 30 * 60_000).toISOString(),
+    created_at: now.toISOString(),
+    updated_at: now.toISOString(),
+  };
+  await mockAPI(page, {
+    "/api/nodes": [upgradeableNode, latestNode, applyingNode],
+    "/api/nodes/node-ready/upgrade": {
+      ...upgradeableNode,
+      can_upgrade: false,
+      upgrade_blocker: "节点升级正在进行",
+      upgrade_task: queuedTask,
+    },
+  });
+  await page.goto("/#/nodes");
+
+  const upgradeButton = page.getByRole("button", {
+    name: "升级节点 edge-ready",
+  });
+  await expect(upgradeButton).toBeVisible();
+  await expect(page.getByText("最新", { exact: true })).toBeVisible();
+  await expect(page.getByText("升级中", { exact: true })).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("node-inline-upgrade-ready.png"),
+    fullPage: true,
+  });
+
+  const upgradeRequest = page.waitForRequest((request) => {
+    const url = new URL(request.url());
+    return (
+      url.pathname === "/api/nodes/node-ready/upgrade" &&
+      request.method() === "POST"
+    );
+  });
+  await upgradeButton.click();
+  await upgradeRequest;
+
+  await expect(page.getByText("节点 edge-ready 升级已启动")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "edge-ready · 排队中" }),
+  ).toBeDisabled();
+  await expect(page).toHaveURL(/#\/nodes$/);
+  await page.screenshot({
+    path: testInfo.outputPath("node-inline-upgrade.png"),
+    fullPage: true,
+  });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth + 1,
+    ),
+  ).toBe(true);
+  await page.locator('[data-slot="table-container"]').evaluate((container) => {
+    container.scrollLeft = container.scrollWidth;
+  });
+  await page.screenshot({
+    path: testInfo.outputPath("node-inline-upgrade-mobile.png"),
+    fullPage: true,
+  });
+  expect(errors).toEqual([]);
+});
+
 test("backup restore permanently deletes a confirmed S3 snapshot", async ({
   page,
 }, testInfo) => {

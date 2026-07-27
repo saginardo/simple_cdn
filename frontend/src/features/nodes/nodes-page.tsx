@@ -120,7 +120,7 @@ export function NodesPage() {
                     <TableHead>{t("公网 IPv4")}</TableHead>
                     <TableHead>{t("心跳")}</TableHead>
                     <TableHead>{t("代理版本")}</TableHead>
-                    <TableHead>{t("升级")}</TableHead>
+                    <TableHead className="w-28">{t("升级")}</TableHead>
                     <TableHead className="w-12 pr-5">
                       <span className="sr-only">{t("管理")}</span>
                     </TableHead>
@@ -158,18 +158,10 @@ export function NodesPage() {
                         </div>
                       </TableCell>
                       <TableCell>
-                        {node.upgrade_task &&
-                        activeUpgrade(node.upgrade_task) ? (
-                          <StatusBadge status={node.upgrade_task.status} />
-                        ) : node.upgrade_up_to_date ? (
-                          <StatusBadge status="succeeded" label={t("最新")} />
-                        ) : node.can_upgrade ? (
-                          <StatusBadge status="ready" label={t("可升级")} />
-                        ) : (
-                          <span className="text-xs text-muted-foreground">
-                            {node.upgrade_blocker || t("不可升级")}
-                          </span>
-                        )}
+                        <NodeUpgradeAction
+                          node={node}
+                          disabled={bulkUpgrade.isPending}
+                        />
                       </TableCell>
                       <TableCell className="pr-5">
                         <Button asChild variant="ghost" size="icon-sm">
@@ -216,6 +208,104 @@ export function NodesPage() {
     </>
   );
 }
+
+function NodeUpgradeAction({
+  node,
+  disabled,
+}: {
+  node: Node;
+  disabled: boolean;
+}) {
+  const queryClient = useQueryClient();
+  const upgrade = useMutation({
+    mutationFn: () =>
+      api<Node>(`/api/nodes/${encodeURIComponent(node.id)}/upgrade`, {
+        method: "POST",
+      }),
+    onSuccess: (updatedNode) => {
+      queryClient.setQueryData<Node[]>(["nodes"], (current) =>
+        current?.map((item) =>
+          item.id === updatedNode.id ? updatedNode : item,
+        ),
+      );
+      toast.success(
+        t("节点 {value0} 升级已启动", {
+          value0: node.name,
+        }),
+      );
+    },
+    onError: (error) => toast.error(errorMessage(error)),
+  });
+  const task = node.upgrade_task;
+
+  if (upgrade.isPending) {
+    return (
+      <Button
+        variant="outline"
+        size="xs"
+        disabled
+        className="min-w-[4.75rem] border-info/25 bg-info/10 text-info disabled:opacity-100"
+        aria-label={`${node.name} · ${t("正在启动")}`}
+      >
+        <LoaderCircle className="animate-spin" />
+        {t("正在启动")}
+      </Button>
+    );
+  }
+
+  if (task && activeUpgrade(task)) {
+    const label = task.status === "queued" ? t("排队中") : t("升级中");
+    return (
+      <Button
+        variant="outline"
+        size="xs"
+        disabled
+        title={task.detail}
+        className={
+          task.status === "queued"
+            ? "min-w-[4.75rem] border-warning/25 bg-warning/10 text-warning disabled:opacity-100"
+            : "min-w-[4.75rem] border-info/25 bg-info/10 text-info disabled:opacity-100"
+        }
+        aria-label={`${node.name} · ${label}`}
+      >
+        <LoaderCircle className="animate-spin" />
+        {label}
+      </Button>
+    );
+  }
+
+  if (node.upgrade_up_to_date) {
+    return <StatusBadge status="succeeded" label={t("最新")} />;
+  }
+
+  if (node.can_upgrade) {
+    const label = t("升级节点 {value0}", { value0: node.name });
+    return (
+      <Button
+        variant="outline"
+        size="xs"
+        disabled={disabled}
+        title={label}
+        aria-label={label}
+        onClick={() => upgrade.mutate()}
+        className="min-w-[4.75rem] border-info/30 bg-info/5 text-info shadow-none hover:border-info/50 hover:bg-info/10 hover:text-info"
+      >
+        <Rocket />
+        {t("可升级")}
+      </Button>
+    );
+  }
+
+  return (
+    <span
+      className="block max-w-32 whitespace-normal text-xs leading-4 text-muted-foreground"
+      title={node.upgrade_blocker}
+    >
+      {node.upgrade_blocker || t("不可升级")}
+    </span>
+  );
+}
+
 function CreateNodeDialog({
   open,
   onOpenChange,
