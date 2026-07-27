@@ -28,13 +28,23 @@ func TestEdgeMachineStatusStoresNewestSnapshot(t *testing.T) {
 	}
 	server := &Server{Store: database}
 	report := controlTestMachineStatus(time.Now().UTC().Truncate(time.Millisecond))
+	report.OriginProbes = []domain.OriginProbeStatus{{
+		PoolID: "0123456789abcdef01234567", Address: "203.0.113.10:8080", Scheme: "http",
+		KeepaliveConnections: 32, References: []domain.OriginPoolReference{{SiteID: "site-1", Role: "primary"}},
+		Healthy: true, CircuitState: domain.OriginCircuitClosed, CheckedAt: report.CollectedAt,
+		ServiceProbe: &domain.OriginProbeSample{
+			Healthy: true, ConnectionReused: true, HeaderMS: 8.5, TotalMS: 9,
+			HTTPStatus: http.StatusNoContent, CheckedAt: report.CollectedAt,
+		},
+	}}
 
 	response := reportMachineStatus(t, server, node.ID, report)
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("machine status response = %d %s", response.Code, response.Body.String())
 	}
 	stored := server.nodeMachineStatus(node, time.Now().UTC())
-	if !stored.Available || stored.Report == nil || !stored.Report.CollectedAt.Equal(report.CollectedAt) {
+	if !stored.Available || stored.Report == nil || !stored.Report.CollectedAt.Equal(report.CollectedAt) ||
+		len(stored.Report.OriginProbes) != 1 || stored.Report.OriginProbes[0].ServiceProbe == nil || stored.Report.OriginProbes[0].ServiceProbe.HeaderMS != 8.5 {
 		t.Fatalf("stored machine status = %#v", stored)
 	}
 	older := report
@@ -95,6 +105,15 @@ func TestMachineStatusSSERequiresAdminAndStreamsUpdates(t *testing.T) {
 	}
 	server := &Server{Store: database}
 	initial := controlTestMachineStatus(time.Now().UTC().Truncate(time.Millisecond))
+	initial.OriginProbes = []domain.OriginProbeStatus{{
+		PoolID: "0123456789abcdef01234567", Address: "203.0.113.10:8080", Scheme: "http",
+		KeepaliveConnections: 16, References: []domain.OriginPoolReference{{SiteID: "site-1", Role: "primary"}},
+		Healthy: false, CircuitState: domain.OriginCircuitOpen, ServiceConsecutiveFailures: 2,
+		ServiceProbe: &domain.OriginProbeSample{
+			Healthy: false, Error: "connection refused", CheckedAt: initial.CollectedAt,
+		},
+		CheckedAt: initial.CollectedAt,
+	}}
 	server.recordNodeMachineStatus(node.ID, initial)
 	handler := server.Handler()
 
@@ -123,7 +142,8 @@ func TestMachineStatusSSERequiresAdminAndStreamsUpdates(t *testing.T) {
 	}
 	reader := bufio.NewReader(response.Body)
 	first := readMachineStatusEvent(t, reader)
-	if !first.Available || first.Report == nil || !first.Report.CollectedAt.Equal(initial.CollectedAt) {
+	if !first.Available || first.Report == nil || !first.Report.CollectedAt.Equal(initial.CollectedAt) ||
+		len(first.Report.OriginProbes) != 1 || first.Report.OriginProbes[0].CircuitState != domain.OriginCircuitOpen {
 		t.Fatalf("initial SSE machine status = %#v", first)
 	}
 

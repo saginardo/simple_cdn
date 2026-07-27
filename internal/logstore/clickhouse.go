@@ -53,11 +53,18 @@ type LogPage struct {
 }
 
 type MinuteMetric struct {
-	Minute    time.Time `json:"minute"`
-	Requests  uint64    `json:"requests"`
-	Bytes     int64     `json:"bytes"`
-	Errors    uint64    `json:"errors"`
-	CacheHits uint64    `json:"cache_hits"`
+	Minute                  time.Time `json:"minute"`
+	Requests                uint64    `json:"requests"`
+	Bytes                   int64     `json:"bytes"`
+	Errors                  uint64    `json:"errors"`
+	CacheHits               uint64    `json:"cache_hits"`
+	UpstreamSamples         uint64    `json:"upstream_samples"`
+	UpstreamHeaderSamples   uint64    `json:"upstream_header_samples"`
+	UpstreamResponseSamples uint64    `json:"upstream_response_samples"`
+	UpstreamReused          uint64    `json:"upstream_reused"`
+	UpstreamConnectMS       float64   `json:"upstream_connect_ms"`
+	UpstreamHeaderMS        float64   `json:"upstream_header_ms"`
+	UpstreamResponseMS      float64   `json:"upstream_response_ms"`
 }
 
 type OverviewBucket struct {
@@ -89,7 +96,7 @@ func (c ClickHouse) EnsureSchema(ctx context.Context) error {
 	}
 	statements := []string{
 		`CREATE TABLE IF NOT EXISTS ` + identifier(c.database()) + `.cdn_access_logs (
-	 request_id String, timestamp DateTime64(3, 'UTC'), node_id String, site_id String, client_ip String, host String, scheme LowCardinality(String), protocol LowCardinality(String), method LowCardinality(String), path String, status UInt16, request_bytes Int64, bytes Int64, duration_ms Int64, upstream String, upstream_status String, upstream_response_time String, cache_status LowCardinality(String), user_agent String, referer String, request_content_type String, response_content_type String, request_accept String, request_range String
+	 request_id String, timestamp DateTime64(3, 'UTC'), node_id String, site_id String, client_ip String, host String, scheme LowCardinality(String), protocol LowCardinality(String), method LowCardinality(String), path String, status UInt16, request_bytes Int64, bytes Int64, duration_ms Int64, upstream String, upstream_status String, upstream_connect_time String, upstream_header_time String, upstream_response_time String, cache_status LowCardinality(String), user_agent String, referer String, request_content_type String, response_content_type String, request_accept String, request_range String
 ) ENGINE = MergeTree PARTITION BY toDate(timestamp) ORDER BY (site_id, timestamp, node_id) TTL timestamp + INTERVAL 7 DAY DELETE`,
 		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS request_id String`,
 		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS host String`,
@@ -97,6 +104,8 @@ func (c ClickHouse) EnsureSchema(ctx context.Context) error {
 		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS protocol LowCardinality(String)`,
 		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS request_bytes Int64`,
 		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS upstream_status String`,
+		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS upstream_connect_time String`,
+		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS upstream_header_time String`,
 		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS upstream_response_time String`,
 		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS user_agent String`,
 		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS referer String`,
@@ -108,8 +117,27 @@ func (c ClickHouse) EnsureSchema(ctx context.Context) error {
  minute DateTime('UTC'), site_id String, node_id String, requests UInt64, bytes Int64, errors UInt64, cache_hits UInt64
 ) ENGINE = SummingMergeTree PARTITION BY toDate(minute) ORDER BY (site_id, minute, node_id) TTL minute + INTERVAL 30 DAY DELETE`,
 		`CREATE MATERIALIZED VIEW IF NOT EXISTS ` + identifier(c.database()) + `.cdn_access_to_minute TO ` + identifier(c.database()) + `.cdn_site_minute AS
- SELECT toStartOfMinute(timestamp) AS minute, site_id, node_id, count() AS requests, sum(bytes) AS bytes, countIf(status >= 500) AS errors, countIf(cache_status = 'HIT') AS cache_hits
- FROM ` + identifier(c.database()) + `.cdn_access_logs GROUP BY minute, site_id, node_id`,
+	 SELECT toStartOfMinute(timestamp) AS minute, site_id, node_id, count() AS requests, sum(bytes) AS bytes, countIf(status >= 500) AS errors, countIf(cache_status = 'HIT') AS cache_hits
+	 FROM ` + identifier(c.database()) + `.cdn_access_logs GROUP BY minute, site_id, node_id`,
+		`CREATE TABLE IF NOT EXISTS ` + identifier(c.database()) + `.cdn_origin_minute (
+	 minute DateTime('UTC'), site_id String, node_id String, connect_samples UInt64, header_samples UInt64, response_samples UInt64, reused UInt64, connect_seconds Float64, header_seconds Float64, response_seconds Float64
+) ENGINE = SummingMergeTree PARTITION BY toDate(minute) ORDER BY (site_id, minute, node_id) TTL minute + INTERVAL 30 DAY DELETE`,
+		`CREATE MATERIALIZED VIEW IF NOT EXISTS ` + identifier(c.database()) + `.cdn_access_to_origin_minute TO ` + identifier(c.database()) + `.cdn_origin_minute AS
+		 SELECT minute, site_id, node_id,
+			sum(length(connect_values)) AS connect_samples,
+			sum(length(header_values)) AS header_samples,
+			sum(length(response_values)) AS response_samples,
+			sum(arrayCount(value -> value = 0, connect_values)) AS reused,
+			sum(arraySum(connect_values)) AS connect_seconds,
+			sum(arraySum(header_values)) AS header_seconds,
+			sum(arraySum(response_values)) AS response_seconds
+		 FROM (
+			SELECT toStartOfMinute(timestamp) AS minute, site_id, node_id,
+				arrayMap(value -> toFloat64(value), extractAll(upstream_connect_time, '([0-9]+[.]?[0-9]*)')) AS connect_values,
+				arrayMap(value -> toFloat64(value), extractAll(upstream_header_time, '([0-9]+[.]?[0-9]*)')) AS header_values,
+				arrayMap(value -> toFloat64(value), extractAll(upstream_response_time, '([0-9]+[.]?[0-9]*)')) AS response_values
+			FROM ` + identifier(c.database()) + `.cdn_access_logs
+		 ) GROUP BY minute, site_id, node_id`,
 		monitoringHistoryTableStatement(c.database()),
 	}
 	for _, statement := range statements {
@@ -148,6 +176,8 @@ func (c ClickHouse) Append(ctx context.Context, events []domain.AccessLogEvent) 
 			DurationMS:           event.DurationMS,
 			Upstream:             event.Upstream,
 			UpstreamStatus:       event.UpstreamStatus,
+			UpstreamConnectTime:  event.UpstreamConnectTime,
+			UpstreamHeaderTime:   event.UpstreamHeaderTime,
 			UpstreamResponseTime: event.UpstreamResponseTime,
 			CacheStatus:          event.CacheStatus,
 			UserAgent:            event.UserAgent, Referer: event.Referer, ContentType: event.ContentType,
@@ -160,7 +190,7 @@ func (c ClickHouse) Append(ctx context.Context, events []domain.AccessLogEvent) 
 	return c.query(ctx, "INSERT INTO "+identifier(c.database())+".cdn_access_logs FORMAT JSONEachRow", &body)
 }
 
-const accessLogSelectColumns = `request_id, timestamp, node_id, site_id, client_ip, host, scheme, protocol, method, path, status, request_bytes, bytes, duration_ms, upstream, upstream_status, upstream_response_time, cache_status, user_agent, referer, request_content_type, response_content_type, request_accept, request_range`
+const accessLogSelectColumns = `request_id, timestamp, node_id, site_id, client_ip, host, scheme, protocol, method, path, status, request_bytes, bytes, duration_ms, upstream, upstream_status, upstream_connect_time, upstream_header_time, upstream_response_time, cache_status, user_agent, referer, request_content_type, response_content_type, request_accept, request_range`
 
 func (c ClickHouse) Get(ctx context.Context, id string) (domain.AccessLogEvent, error) {
 	query := `SELECT ` + accessLogSelectColumns + ` FROM ` + identifier(c.database()) + `.cdn_access_logs WHERE request_id = {request_id:String} ORDER BY timestamp DESC LIMIT 1 FORMAT JSONEachRow`
@@ -288,7 +318,31 @@ func (c ClickHouse) Search(ctx context.Context, search LogQuery) (LogPage, error
 }
 
 func (c ClickHouse) Metrics(ctx context.Context, siteID string, since time.Time) ([]MinuteMetric, error) {
-	query := `SELECT minute, sum(requests) AS requests, sum(bytes) AS bytes, sum(errors) AS errors, sum(cache_hits) AS cache_hits FROM ` + identifier(c.database()) + `.cdn_site_minute WHERE site_id = {site_id:String} AND minute >= {since:DateTime} GROUP BY minute ORDER BY minute FORMAT JSONEachRow`
+	query := `SELECT metrics.minute AS minute, metrics.requests AS requests, metrics.bytes AS bytes,
+		metrics.errors AS errors, metrics.cache_hits AS cache_hits,
+		coalesce(origin.connect_samples, 0) AS upstream_samples,
+		coalesce(origin.header_samples, 0) AS upstream_header_samples,
+		coalesce(origin.response_samples, 0) AS upstream_response_samples,
+		coalesce(origin.reused, 0) AS upstream_reused,
+		if(coalesce(origin.connect_samples, 0) = 0, 0, coalesce(origin.connect_seconds, 0) * 1000 / origin.connect_samples) AS upstream_connect_ms,
+		if(coalesce(origin.header_samples, 0) = 0, 0, coalesce(origin.header_seconds, 0) * 1000 / origin.header_samples) AS upstream_header_ms,
+		if(coalesce(origin.response_samples, 0) = 0, 0, coalesce(origin.response_seconds, 0) * 1000 / origin.response_samples) AS upstream_response_ms
+	FROM (
+		SELECT minute, sum(requests) AS requests, sum(bytes) AS bytes, sum(errors) AS errors, sum(cache_hits) AS cache_hits
+		FROM ` + identifier(c.database()) + `.cdn_site_minute
+		WHERE site_id = {site_id:String} AND minute >= {since:DateTime}
+		GROUP BY minute
+	) AS metrics
+	LEFT JOIN (
+		SELECT minute, sum(connect_samples) AS connect_samples, sum(header_samples) AS header_samples,
+			sum(response_samples) AS response_samples, sum(reused) AS reused,
+			sum(connect_seconds) AS connect_seconds, sum(header_seconds) AS header_seconds,
+			sum(response_seconds) AS response_seconds
+		FROM ` + identifier(c.database()) + `.cdn_origin_minute
+		WHERE site_id = {site_id:String} AND minute >= {since:DateTime}
+		GROUP BY minute
+	) AS origin USING minute
+	ORDER BY minute FORMAT JSONEachRow`
 	parameters := url.Values{"param_site_id": {siteID}, "param_since": {since.UTC().Format("2006-01-02 15:04:05")}}
 	response, err := c.request(ctx, c.database(), query, nil, parameters)
 	if err != nil {
@@ -415,7 +469,11 @@ func (c ClickHouse) request(ctx context.Context, database, query string, body *b
 		return nil, err
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		detail, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 		response.Body.Close()
+		if message := strings.TrimSpace(string(detail)); message != "" {
+			return nil, fmt.Errorf("ClickHouse returned %s: %s", response.Status, message)
+		}
 		return nil, fmt.Errorf("ClickHouse returned %s", response.Status)
 	}
 	return response, nil
@@ -486,6 +544,8 @@ type accessLogRow struct {
 	DurationMS           int64  `json:"duration_ms"`
 	Upstream             string `json:"upstream"`
 	UpstreamStatus       string `json:"upstream_status"`
+	UpstreamConnectTime  string `json:"upstream_connect_time"`
+	UpstreamHeaderTime   string `json:"upstream_header_time"`
 	UpstreamResponseTime string `json:"upstream_response_time"`
 	CacheStatus          string `json:"cache_status"`
 	UserAgent            string `json:"user_agent"`
@@ -513,6 +573,8 @@ type accessLogInsert struct {
 	DurationMS           int64  `json:"duration_ms"`
 	Upstream             string `json:"upstream"`
 	UpstreamStatus       string `json:"upstream_status"`
+	UpstreamConnectTime  string `json:"upstream_connect_time"`
+	UpstreamHeaderTime   string `json:"upstream_header_time"`
 	UpstreamResponseTime string `json:"upstream_response_time"`
 	CacheStatus          string `json:"cache_status"`
 	UserAgent            string `json:"user_agent"`
@@ -532,7 +594,8 @@ func (r accessLogRow) event() (domain.AccessLogEvent, error) {
 		ID: r.ID, Timestamp: timestamp, NodeID: r.NodeID, SiteID: r.SiteID, ClientIP: r.ClientIP,
 		Host: r.Host, Scheme: r.Scheme, Protocol: r.Protocol, Method: r.Method, Path: r.Path,
 		Status: r.Status, RequestBytes: r.RequestBytes, Bytes: r.Bytes, DurationMS: r.DurationMS,
-		Upstream: r.Upstream, UpstreamStatus: r.UpstreamStatus, UpstreamResponseTime: r.UpstreamResponseTime,
+		Upstream: r.Upstream, UpstreamStatus: r.UpstreamStatus, UpstreamConnectTime: r.UpstreamConnectTime,
+		UpstreamHeaderTime: r.UpstreamHeaderTime, UpstreamResponseTime: r.UpstreamResponseTime,
 		CacheStatus: r.CacheStatus, UserAgent: r.UserAgent, Referer: r.Referer,
 		ContentType: r.ContentType, ResponseContentType: r.ResponseContentType, Accept: r.Accept, Range: r.Range,
 	}, nil
@@ -540,11 +603,18 @@ func (r accessLogRow) event() (domain.AccessLogEvent, error) {
 
 func (m *MinuteMetric) UnmarshalJSON(contents []byte) error {
 	var row struct {
-		Minute    string `json:"minute"`
-		Requests  uint64 `json:"requests"`
-		Bytes     int64  `json:"bytes"`
-		Errors    uint64 `json:"errors"`
-		CacheHits uint64 `json:"cache_hits"`
+		Minute                  string  `json:"minute"`
+		Requests                uint64  `json:"requests"`
+		Bytes                   int64   `json:"bytes"`
+		Errors                  uint64  `json:"errors"`
+		CacheHits               uint64  `json:"cache_hits"`
+		UpstreamSamples         uint64  `json:"upstream_samples"`
+		UpstreamHeaderSamples   uint64  `json:"upstream_header_samples"`
+		UpstreamResponseSamples uint64  `json:"upstream_response_samples"`
+		UpstreamReused          uint64  `json:"upstream_reused"`
+		UpstreamConnectMS       float64 `json:"upstream_connect_ms"`
+		UpstreamHeaderMS        float64 `json:"upstream_header_ms"`
+		UpstreamResponseMS      float64 `json:"upstream_response_ms"`
 	}
 	if err := json.Unmarshal(contents, &row); err != nil {
 		return err
@@ -553,7 +623,20 @@ func (m *MinuteMetric) UnmarshalJSON(contents []byte) error {
 	if err != nil {
 		return fmt.Errorf("decode minute metric timestamp: %w", err)
 	}
-	*m = MinuteMetric{Minute: minute, Requests: row.Requests, Bytes: row.Bytes, Errors: row.Errors, CacheHits: row.CacheHits}
+	*m = MinuteMetric{
+		Minute:                  minute,
+		Requests:                row.Requests,
+		Bytes:                   row.Bytes,
+		Errors:                  row.Errors,
+		CacheHits:               row.CacheHits,
+		UpstreamSamples:         row.UpstreamSamples,
+		UpstreamHeaderSamples:   row.UpstreamHeaderSamples,
+		UpstreamResponseSamples: row.UpstreamResponseSamples,
+		UpstreamReused:          row.UpstreamReused,
+		UpstreamConnectMS:       row.UpstreamConnectMS,
+		UpstreamHeaderMS:        row.UpstreamHeaderMS,
+		UpstreamResponseMS:      row.UpstreamResponseMS,
+	}
 	return nil
 }
 

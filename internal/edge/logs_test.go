@@ -21,7 +21,7 @@ import (
 )
 
 func TestDecodeNginxLogIncludesRequestDetails(t *testing.T) {
-	line := []byte(`{"request_id":"request-1","timestamp":"2026-07-18T10:20:30Z","site_id":"site-1","client_ip":"203.0.113.5","host":"cdn.example.test","scheme":"https","protocol":"HTTP/2.0","method":"GET","path":"/asset.js?token=secret","status":404,"request_bytes":512,"bytes":2048,"duration_seconds":0.037,"upstream":"192.0.2.10:443","upstream_status":"404","upstream_response_time":"0.036","cache_status":"MISS","user_agent":"test-agent","referer":"https://example.test/","content_type":"application/json","response_content_type":"text/javascript","accept":"*/*","range":"bytes=0-1023"}`)
+	line := []byte(`{"request_id":"request-1","timestamp":"2026-07-18T10:20:30Z","site_id":"site-1","client_ip":"203.0.113.5","host":"cdn.example.test","scheme":"https","protocol":"HTTP/2.0","method":"GET","path":"/asset.js?token=secret","status":404,"request_bytes":512,"bytes":2048,"duration_seconds":0.037,"upstream":"192.0.2.10:443","upstream_status":"404","upstream_connect_time":"0.004","upstream_header_time":"0.020","upstream_response_time":"0.036","cache_status":"MISS","user_agent":"test-agent","referer":"https://example.test/","content_type":"application/json","response_content_type":"text/javascript","accept":"*/*","range":"bytes=0-1023"}`)
 	event, err := decodeNginxLog(line)
 	if err != nil {
 		t.Fatal(err)
@@ -31,6 +31,9 @@ func TestDecodeNginxLogIncludesRequestDetails(t *testing.T) {
 	}
 	if event.Host != "cdn.example.test" || event.Protocol != "HTTP/2.0" || event.UserAgent != "test-agent" || event.UpstreamStatus != "404" || event.ResponseContentType != "text/javascript" || event.Range != "bytes=0-1023" {
 		t.Fatalf("decoded request details = %#v", event)
+	}
+	if event.UpstreamConnectTime != "0.004" || event.UpstreamHeaderTime != "0.020" || event.UpstreamResponseTime != "0.036" {
+		t.Fatalf("decoded upstream timings = %#v", event)
 	}
 }
 

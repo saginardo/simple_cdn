@@ -23,6 +23,7 @@ cache "cdn_cache" uses the "/opt/cdn-edge/cache" cache path while previously it 
 5. 站点与节点的 DNS 资格分别使用 3 次失败摘除、5 次成功恢复的滞回。多节点站点只摘除失败节点；如果所有已分配节点都不合格，系统保留现有 DNS 并发送告警，避免主动发布空记录集。
 6. 滚动发布期间，尚未包含站点探针端点的旧 desired state 暂时只使用节点级健康结果。执行 `publish-all` 并由 Edge 应用新配置后，控制面自动切换到站点级判断。
 7. 节点上的所有缓存站点共用 `cdn_cache` zone、`/opt/cdn-edge/cache` 路径和一份节点总配额。由旧的按站点 zone/目录切回共享布局时，zone 名称不同，因此普通 reload 不会触发同名 zone 路径冲突；新 worker 接管后，Agent 清理退出配置的旧站点缓存目录。
+8. `origin_connection_v1` 节点的 upstream server 位于 `/opt/cdn-edge/config/nginx/origin-pools/*.conf`。主动探测的熔断切换与 desired-state 应用共用串行锁；include、边缘持久化状态或 reload 任一步失败都会恢复旧文件和旧 worker 配置。不要手工修改池文件或并行执行 reload，详见 [ORIGIN_CONNECTIONS.md](ORIGIN_CONNECTIONS.md)。
 
 ## 何时必须 restart
 

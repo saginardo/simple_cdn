@@ -130,6 +130,72 @@ func TestPublishUsesEachNodesEffectiveCacheLimit(t *testing.T) {
 	}
 }
 
+func TestPublishCapabilityGatesSharedOriginPools(t *testing.T) {
+	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	key, _ := NewEncryptionKey()
+	cipher, _ := NewCipher(key)
+	legacyNode, err := database.CreateNode("legacy-origin-edge", "203.0.113.30")
+	if err != nil {
+		t.Fatal(err)
+	}
+	managedNode, err := database.CreateNode("managed-origin-edge", "203.0.113.31")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetNodeCapabilities(managedNode.ID, []string{domain.EdgeCapabilityOriginConnection}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.SetNodeNginxCapacity(managedNode.ID, domain.NginxCapacity{WorkerConnections: 1024, WorkerRlimitNoFile: 65536}); err != nil {
+		t.Fatal(err)
+	}
+	site, err := database.CreateSite(domain.Site{
+		Name: "shared-origin", Domains: []string{"cdn.example.test"}, Nodes: []string{legacyNode.ID, managedNode.ID},
+		PrimaryOrigin: domain.Origin{URL: "http://origin.example.test:8080", Enabled: true}, Enabled: true,
+	}, "zone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	publisher := Publisher{Store: database, Cipher: cipher}
+	certificate, privateKey, notAfter := testCertificate(t, site.Domains...)
+	if err := publisher.StoreCertificate(site.ID, certificate, privateKey, notAfter); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := publisher.PublishSite(site.ID); err != nil {
+		t.Fatal(err)
+	}
+	legacyState, _, err := database.NodeState(legacyNode.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	managedState, _, err := database.NodeState(managedNode.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(legacyState.OriginPools) != 0 || !strings.Contains(legacyState.NginxConfig, "upstream origin_"+site.ID) {
+		t.Fatalf("legacy node received managed origin state: %#v\n%s", legacyState.OriginPools, legacyState.NginxConfig)
+	}
+	if len(managedState.OriginPools) != 1 || managedState.OriginPools[0].KeepaliveConnections != 64 ||
+		!strings.Contains(managedState.NginxConfig, "include "+managedState.OriginPools[0].ConfigPath+";") ||
+		strings.Contains(managedState.NginxConfig, "server origin.example.test:8080;") {
+		t.Fatalf("managed node origin state = %#v\n%s", managedState.OriginPools, managedState.NginxConfig)
+	}
+	version := managedState.Version
+	if err := publisher.PublishNode(managedNode.ID); err != nil {
+		t.Fatal(err)
+	}
+	unchanged, _, err := database.NodeState(managedNode.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unchanged.Version != version {
+		t.Fatalf("unchanged managed pool advanced version from %d to %d", version, unchanged.Version)
+	}
+}
+
 func TestPublishNodeUpdatesNginxCapacityState(t *testing.T) {
 	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
 	if err != nil {

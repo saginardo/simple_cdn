@@ -35,6 +35,11 @@ var schemaMigrations = []schemaMigration{
 	{Version: 17, Name: "smart-routing", Apply: migrateSmartRouting},
 	{Version: 18, Name: "smart-routing-minimum-recovery-rounds", Apply: migrateSmartRoutingMinimumRecoveryRounds},
 	{Version: 19, Name: "http3-public-udp-ports", Apply: migrateHTTP3PublicUDPPorts},
+	{Version: 20, Name: "origin-connection-pools", Apply: migrateOriginConnectionPools},
+}
+
+func migrateOriginConnectionPools(tx *sql.Tx) error {
+	return addColumnIfMissing(tx, "node_states", "origin_pools_json", "origin_pools_json TEXT NOT NULL DEFAULT '[]'")
 }
 
 func migrateHTTP3PublicUDPPorts(tx *sql.Tx) error {

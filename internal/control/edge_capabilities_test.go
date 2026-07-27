@@ -82,3 +82,22 @@ func TestHTTP3CapabilityDoesNotOpenUDPWithoutAnHTTPSSite(t *testing.T) {
 		t.Fatal("HTTP/3 capability requested a rebuild for a node without an HTTPS site")
 	}
 }
+
+func TestOriginPoolCapabilityRebuildsOnlyHTTPOriginStates(t *testing.T) {
+	legacy := domain.DesiredState{NginxConfig: "location / { proxy_pass https://origin_site; }"}
+	capabilities := []string{domain.EdgeCapabilityOriginConnection}
+	if !originPoolStateNeedsRebuild(legacy, capabilities) {
+		t.Fatal("origin connection capability did not request a legacy state rebuild")
+	}
+	managed := legacy
+	managed.OriginPools = []domain.OriginPool{{ID: "0123456789abcdef01234567"}}
+	if originPoolStateNeedsRebuild(managed, capabilities) {
+		t.Fatal("managed origin state still requested a rebuild")
+	}
+	if !originPoolStateNeedsRebuild(managed, nil) {
+		t.Fatal("capability removal did not request a legacy state rebuild")
+	}
+	if originPoolStateNeedsRebuild(domain.DesiredState{NginxConfig: "server { listen 80; }"}, capabilities) {
+		t.Fatal("node without an HTTP origin requested a pool rebuild")
+	}
+}

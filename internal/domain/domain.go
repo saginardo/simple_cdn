@@ -104,6 +104,7 @@ const (
 	EdgeCapabilityNginxFragments      = "nginx_fragments_v1"
 	EdgeCapabilityNginxCapacity       = "nginx_capacity_v1"
 	EdgeCapabilityHTTP3               = "http3_v1"
+	EdgeCapabilityOriginConnection    = "origin_connection_v1"
 	EdgeCapabilityTCPMonitoring       = "tcp_monitoring_v1"
 	EdgeCapabilityControlManifest     = "control_manifest_v1"
 )
@@ -243,6 +244,7 @@ type DesiredState struct {
 	NginxFragments    *NginxConfigFragments `json:"nginx_fragments,omitempty"`
 	PublicPorts       []int                 `json:"public_ports"`
 	PublicUDPPorts    []int                 `json:"public_udp_ports,omitempty"`
+	OriginPools       []OriginPool          `json:"origin_pools,omitempty"`
 	CacheMaxBytes     int64                 `json:"cache_max_bytes,omitempty"`
 	Certificates      map[string]TLSBundle  `json:"certificates,omitempty"`
 }
@@ -327,6 +329,8 @@ type AccessLogEvent struct {
 	DurationMS           int64     `json:"duration_ms"`
 	Upstream             string    `json:"upstream"`
 	UpstreamStatus       string    `json:"upstream_status"`
+	UpstreamConnectTime  string    `json:"upstream_connect_time"`
+	UpstreamHeaderTime   string    `json:"upstream_header_time"`
 	UpstreamResponseTime string    `json:"upstream_response_time"`
 	CacheStatus          string    `json:"cache_status"`
 	UserAgent            string    `json:"user_agent"`

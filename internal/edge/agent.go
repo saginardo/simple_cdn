@@ -31,36 +31,46 @@ import (
 )
 
 type Config struct {
-	ControlURL            string
-	EnrollmentToken       string
-	StateDir              string
-	NginxConfigPath       string
-	NginxStreamConfigPath string
-	NginxMainConfigPath   string
-	NginxEventsConfigPath string
-	CertificateDir        string
-	ClientKeyPath         string
-	ClientCertPath        string
-	CAPath                string
-	AccessLogPath         string
-	SecurityLogPath       string
-	Capabilities          []string
-	AgentVersion          string
-	AgentSHA256           string
-	PollInterval          time.Duration
-	ListenerSettleTimeout time.Duration
-	ListenerPollInterval  time.Duration
-	HTTPClient            *http.Client
-	ArtifactHTTPClient    *http.Client
-	Runner                Runner
-	UpgradeRunner         UpgradeRunner
-	SecurityFirewall      SecurityFirewall
-	SecurityPollInterval  time.Duration
-	MonitoringDialer      MonitoringDialer
-	MonitoringTimeout     time.Duration
-	MonitoringAttempts    int
-	MonitoringWorkers     int
-	MachineStatusInterval time.Duration
+	ControlURL                   string
+	EnrollmentToken              string
+	StateDir                     string
+	NginxConfigPath              string
+	NginxStreamConfigPath        string
+	NginxMainConfigPath          string
+	NginxEventsConfigPath        string
+	OriginPoolConfigDirectory    string
+	CertificateDir               string
+	ClientKeyPath                string
+	ClientCertPath               string
+	CAPath                       string
+	AccessLogPath                string
+	SecurityLogPath              string
+	Capabilities                 []string
+	AgentVersion                 string
+	AgentSHA256                  string
+	PollInterval                 time.Duration
+	ListenerSettleTimeout        time.Duration
+	ListenerPollInterval         time.Duration
+	HTTPClient                   *http.Client
+	ArtifactHTTPClient           *http.Client
+	Runner                       Runner
+	UpgradeRunner                UpgradeRunner
+	SecurityFirewall             SecurityFirewall
+	SecurityPollInterval         time.Duration
+	MonitoringDialer             MonitoringDialer
+	MonitoringTimeout            time.Duration
+	MonitoringAttempts           int
+	MonitoringWorkers            int
+	MachineStatusInterval        time.Duration
+	OriginProbeInterval          time.Duration
+	OriginColdProbeInterval      time.Duration
+	OriginDegradedProbeInterval  time.Duration
+	OriginDegradedColdInterval   time.Duration
+	OriginProbeTimeout           time.Duration
+	OriginProbeFailureThreshold  int
+	OriginProbeRecoveryThreshold int
+	OriginProbeWorkers           int
+	OriginProber                 OriginProber
 }
 
 type Agent struct {
@@ -79,6 +89,13 @@ type Agent struct {
 	manifest   *domain.EdgeControlManifest
 	machineMu  sync.RWMutex
 	machine    *domain.MachineStatus
+
+	nginxMu         sync.Mutex
+	originMu        sync.RWMutex
+	originPools     map[string]*originPoolRuntime
+	originProbeWake chan struct{}
+	jitterOnce      sync.Once
+	jitterSeed      [sha256.Size]byte
 
 	monitoringMu       sync.RWMutex
 	monitoringTargets  []domain.MonitoringTarget
@@ -114,6 +131,13 @@ func New(config Config) (*Agent, error) {
 	if config.NginxEventsConfigPath == "" {
 		config.NginxEventsConfigPath = filepath.Join(filepath.Dir(config.NginxConfigPath), "cdn-platform-events.conf")
 	}
+	if config.OriginPoolConfigDirectory == "" {
+		config.OriginPoolConfigDirectory = filepath.Join(filepath.Dir(config.NginxConfigPath), "origin-pools")
+	}
+	config.OriginPoolConfigDirectory, err = filepath.Abs(filepath.Clean(config.OriginPoolConfigDirectory))
+	if err != nil {
+		return nil, fmt.Errorf("resolve origin pool configuration directory: %w", err)
+	}
 	if config.CertificateDir == "" {
 		config.CertificateDir = "/opt/cdn-edge/config/certs"
 	}
@@ -137,6 +161,36 @@ func New(config Config) (*Agent, error) {
 	}
 	if config.MachineStatusInterval <= 0 {
 		config.MachineStatusInterval = 5 * time.Second
+	}
+	if config.OriginProbeInterval <= 0 {
+		config.OriginProbeInterval = 5 * time.Second
+	}
+	if config.OriginColdProbeInterval <= 0 {
+		config.OriginColdProbeInterval = 40 * time.Second
+	}
+	if config.OriginDegradedProbeInterval <= 0 {
+		config.OriginDegradedProbeInterval = 2 * time.Second
+	}
+	if config.OriginDegradedColdInterval <= 0 {
+		config.OriginDegradedColdInterval = 5 * time.Second
+	}
+	if config.OriginProbeTimeout <= 0 {
+		config.OriginProbeTimeout = 3 * time.Second
+	}
+	if config.OriginProbeFailureThreshold <= 0 {
+		config.OriginProbeFailureThreshold = 2
+	}
+	if config.OriginProbeRecoveryThreshold <= 0 {
+		config.OriginProbeRecoveryThreshold = 2
+	}
+	if config.OriginProbeWorkers <= 0 {
+		config.OriginProbeWorkers = 8
+	}
+	if config.OriginProbeWorkers > 32 {
+		config.OriginProbeWorkers = 32
+	}
+	if config.OriginProber == nil {
+		config.OriginProber = newNetworkOriginProber()
 	}
 	if config.ListenerSettleTimeout <= 0 {
 		config.ListenerSettleTimeout = 5 * time.Second
@@ -167,6 +221,7 @@ func New(config Config) (*Agent, error) {
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityMachineStatusStream)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityNginxFragments)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityControlManifest)
+	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityOriginConnection)
 	configureMonitoring(&config)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityTCPMonitoring)
 	config.SecurityFirewall = defaultSecurityFirewall(config.SecurityFirewall)
@@ -179,11 +234,19 @@ func New(config Config) (*Agent, error) {
 	if err := os.MkdirAll(config.CertificateDir, 0o700); err != nil {
 		return nil, err
 	}
+	if err := os.MkdirAll(config.OriginPoolConfigDirectory, 0o750); err != nil {
+		return nil, err
+	}
 	agent := &Agent{
 		Config: config, logs: NewLogForwarder(config.StateDir, config.AccessLogPath),
 		cacheUsage:        newCacheUsageCollector(nginx.DefaultCachePath, nginx.DefaultCacheMaxBytes, defaultCacheUsageInterval),
 		machineStatus:     newMachineStatusCollector(),
 		componentFailures: make(map[string]string),
+		originPools:       make(map[string]*originPoolRuntime),
+		originProbeWake:   make(chan struct{}, 1),
+	}
+	if err := agent.loadOriginRuntime(); err != nil {
+		return nil, err
 	}
 	if config.SecurityFirewall != nil {
 		agent.security = NewSecurityManager(config.StateDir, config.SecurityLogPath, config.SecurityPollInterval, config.SecurityFirewall)
@@ -194,6 +257,9 @@ func New(config Config) (*Agent, error) {
 func (a *Agent) Run(ctx context.Context) error {
 	defer a.resetControlClient()
 	defer a.resetArtifactClient()
+	if lifecycle, ok := a.Config.OriginProber.(originProberLifecycle); ok {
+		defer func() { _ = lifecycle.Close() }()
+	}
 	if err := a.EnsureEnrollment(ctx); err != nil {
 		return err
 	}
@@ -206,6 +272,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		}()
 	}
 	start(func() { a.cacheUsage.Run(ctx) })
+	start(func() { a.runOriginProbeLoop(ctx) })
 	start(func() { a.runMachineStatusLoop(ctx) })
 	start(func() { a.logs.Run(ctx, a.Config.ControlURL, a.client) })
 	if a.security != nil {
@@ -254,6 +321,7 @@ func (a *Agent) runMachineStatusRound(ctx context.Context) {
 	report, err := a.machineStatus.Collect()
 	action := "collect machine status"
 	if err == nil && report != nil {
+		report.OriginProbes = a.originProbeStatuses()
 		a.setLatestMachineStatus(report)
 		action = "report machine status"
 		requestCtx, cancel := context.WithTimeout(ctx, min(10*time.Second, a.Config.MachineStatusInterval))
@@ -308,11 +376,30 @@ func (a *Agent) stableJitter(purpose string) time.Duration {
 	if maximum > 5*time.Second {
 		maximum = 5 * time.Second
 	}
+	return a.stableJitterWithin(purpose, maximum)
+}
+
+func (a *Agent) stableInterval(purpose string, base time.Duration) time.Duration {
+	spread := base / 5
+	if spread <= 0 {
+		return base
+	}
+	return base - spread + a.stableJitterWithin(purpose, 2*spread+1)
+}
+
+func (a *Agent) stableJitterWithin(purpose string, maximum time.Duration) time.Duration {
 	if maximum <= 0 {
 		return 0
 	}
-	identity, _ := os.ReadFile(a.Config.ClientCertPath)
-	digest := sha256.Sum256(append(append(identity, a.Config.ControlURL...), purpose...))
+	a.jitterOnce.Do(func() {
+		identity, _ := os.ReadFile(a.Config.ClientCertPath)
+		material := append([]byte(nil), identity...)
+		material = append(material, 0)
+		material = append(material, a.Config.ControlURL...)
+		a.jitterSeed = sha256.Sum256(material)
+	})
+	material := append(a.jitterSeed[:], purpose...)
+	digest := sha256.Sum256(material)
 	value := uint64(0)
 	for _, item := range digest[:8] {
 		value = value<<8 | uint64(item)
@@ -347,7 +434,9 @@ func (a *Agent) setComponentFailure(component, action string, err error) {
 func (a *Agent) heartbeatError() string {
 	a.statusMu.Lock()
 	defer a.statusMu.Unlock()
-	for _, component := range []string{"certificate", "configuration", "monitoring", "upgrade", "machine_status"} {
+	for _, component := range []string{
+		"certificate", "configuration", "origin_health_service", "origin_health_cold", "monitoring", "upgrade", "machine_status",
+	} {
 		if detail := a.componentFailures[component]; detail != "" {
 			return detail
 		}
@@ -423,7 +512,7 @@ func (a *Agent) setLatestMachineStatus(report *domain.MachineStatus) {
 		a.machine = nil
 		return
 	}
-	copyOfReport := *report
+	copyOfReport := cloneMachineStatus(*report)
 	a.machine = &copyOfReport
 }
 
@@ -433,8 +522,24 @@ func (a *Agent) latestMachineStatus() *domain.MachineStatus {
 	if a.machine == nil {
 		return nil
 	}
-	copyOfReport := *a.machine
+	copyOfReport := cloneMachineStatus(*a.machine)
 	return &copyOfReport
+}
+
+func cloneMachineStatus(report domain.MachineStatus) domain.MachineStatus {
+	report.OriginProbes = append([]domain.OriginProbeStatus(nil), report.OriginProbes...)
+	for index := range report.OriginProbes {
+		report.OriginProbes[index].References = append([]domain.OriginPoolReference(nil), report.OriginProbes[index].References...)
+		if sample := report.OriginProbes[index].ServiceProbe; sample != nil {
+			copyOfSample := *sample
+			report.OriginProbes[index].ServiceProbe = &copyOfSample
+		}
+		if sample := report.OriginProbes[index].ColdProbe; sample != nil {
+			copyOfSample := *sample
+			report.OriginProbes[index].ColdProbe = &copyOfSample
+		}
+	}
+	return report
 }
 
 func (a *Agent) EnsureEnrollment(ctx context.Context) error {
@@ -645,8 +750,17 @@ func (a *Agent) ReportMachineStatus(ctx context.Context, report domain.MachineSt
 }
 
 func (a *Agent) apply(state domain.DesiredState) error {
+	a.nginxMu.Lock()
+	defer a.nginxMu.Unlock()
+	return a.applyLocked(state)
+}
+
+func (a *Agent) applyLocked(state domain.DesiredState) error {
 	ports, err := desiredPublicPorts(state)
 	if err != nil {
+		return a.applyFailed(state.Version, "invalid_desired_state", err, nil)
+	}
+	if err := a.validateDesiredOriginPools(state); err != nil {
 		return a.applyFailed(state.Version, "invalid_desired_state", err, nil)
 	}
 	udpPorts, err := desiredPublicUDPPorts(state)
@@ -728,18 +842,28 @@ func (a *Agent) apply(state domain.DesiredState) error {
 		restoreConfigurationFiles(configurationBackups)
 		return a.applyFailed(state.Version, "config_write_failed", fmt.Errorf("write Nginx stream configuration: %w", err), nil)
 	}
+	originStage, err := a.stageOriginPools(state.OriginPools)
+	if err != nil {
+		restoreBackups(backups)
+		restoreConfigurationFiles(configurationBackups)
+		return a.applyFailed(state.Version, "origin_pool_write_failed", err, nil)
+	}
+	defer originStage.Rollback()
 	if err := prepareManagedCacheLayout(nginx.DefaultCachePath, state.NginxConfig); err != nil {
 		restoreBackups(backups)
+		originStage.Rollback()
 		a.restorePreviousConfigs(configurationBackups)
 		return a.applyFailed(state.Version, "cache_layout_failed", err, nil)
 	}
 	if err := a.Config.Runner.Test(); err != nil {
 		restoreBackups(backups)
+		originStage.Rollback()
 		a.restorePreviousConfigs(configurationBackups)
 		return a.applyFailed(state.Version, "nginx_config_invalid", err, nil)
 	}
 	if err := a.Config.Runner.Apply(); err != nil {
 		restoreBackups(backups)
+		originStage.Rollback()
 		a.restorePreviousConfigs(configurationBackups)
 		conflicts := make([]domain.PortConflict, 0)
 		if listeners, inspectErr := a.Config.Runner.PortListeners(ports); inspectErr == nil {
@@ -756,42 +880,60 @@ func (a *Agent) apply(state domain.DesiredState) error {
 	listeners, err = a.waitForNginxListeners(ports)
 	if err != nil {
 		restoreBackups(backups)
+		originStage.Rollback()
 		a.restorePreviousConfigs(configurationBackups)
 		return a.applyFailed(state.Version, "port_check_failed", err, nil)
 	}
 	if conflicts := foreignListeners(listeners); len(conflicts) > 0 {
 		restoreBackups(backups)
+		originStage.Rollback()
 		a.restorePreviousConfigs(configurationBackups)
 		return a.applyFailed(state.Version, "port_conflict", fmt.Errorf("public port is already held by another service: %s", formatPortConflicts(conflicts)), conflicts)
 	}
 	udpListeners, err = a.waitForNginxUDPListeners(udpPorts)
 	if err != nil {
 		restoreBackups(backups)
+		originStage.Rollback()
 		a.restorePreviousConfigs(configurationBackups)
 		return a.applyFailed(state.Version, "port_check_failed", err, nil)
 	}
 	if conflicts := foreignListeners(udpListeners); len(conflicts) > 0 {
 		restoreBackups(backups)
+		originStage.Rollback()
 		a.restorePreviousConfigs(configurationBackups)
 		return a.applyFailed(state.Version, "port_conflict", fmt.Errorf("public port is already held by another service: %s", formatPortConflicts(conflicts)), conflicts)
 	}
 	if !nginxOwnsPorts(listeners, ports) || !nginxOwnsPorts(udpListeners, udpPorts) {
 		restoreBackups(backups)
+		originStage.Rollback()
 		a.restorePreviousConfigs(configurationBackups)
 		return a.applyFailed(state.Version, "nginx_not_listening", fmt.Errorf("Nginx did not retain all required public listeners after applying configuration: %s", formatPublicPorts(ports, udpPorts)), nil)
 	}
+	cacheCleanupErr := reconcileInstalledCacheLayout(nginx.DefaultCachePath, state.NginxConfig)
+	if err := originStage.Persist(); err != nil {
+		restoreBackups(backups)
+		originStage.Rollback()
+		a.restorePreviousConfigs(configurationBackups)
+		return a.applyFailed(state.Version, "origin_pool_state_write_failed", err, nil)
+	}
+	if err := atomicWriteFile(filepath.Join(a.Config.StateDir, "applied-version"), []byte(fmt.Sprintf("%d\n", state.Version)), 0o640); err != nil {
+		restoreBackups(backups)
+		originStage.Rollback()
+		a.restorePreviousConfigs(configurationBackups)
+		return a.applyFailed(state.Version, "applied_version_write_failed", err, nil)
+	}
+	poolCleanupErr := originStage.Commit()
 	fragmentsActivated = true
 	if a.cacheUsage != nil {
 		a.cacheUsage.SetTotalBytes(state.CacheMaxBytes)
-	}
-	cacheCleanupErr := reconcileInstalledCacheLayout(nginx.DefaultCachePath, state.NginxConfig)
-	if err := atomicWriteFile(filepath.Join(a.Config.StateDir, "applied-version"), []byte(fmt.Sprintf("%d\n", state.Version)), 0o640); err != nil {
-		return a.applyFailed(state.Version, "applied_version_write_failed", err, nil)
 	}
 	a.cleanupOldFragmentDirectories(activeFragmentDirectories)
 	detail := "Nginx is listening on " + formatPublicPorts(ports, udpPorts)
 	if cacheCleanupErr != nil {
 		detail += "; cache cleanup warning: " + cacheCleanupErr.Error()
+	}
+	if poolCleanupErr != nil {
+		detail += "; origin pool cleanup warning: " + poolCleanupErr.Error()
 	}
 	a.setApplyReport(&domain.ApplyReport{Version: state.Version, Status: domain.ApplySucceeded, Detail: detail})
 	return nil

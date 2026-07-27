@@ -357,6 +357,8 @@ type nginxLog struct {
 	DurationSeconds      json.Number `json:"duration_seconds"`
 	Upstream             string      `json:"upstream"`
 	UpstreamStatus       string      `json:"upstream_status"`
+	UpstreamConnectTime  string      `json:"upstream_connect_time"`
+	UpstreamHeaderTime   string      `json:"upstream_header_time"`
 	UpstreamResponseTime string      `json:"upstream_response_time"`
 	CacheStatus          string      `json:"cache_status"`
 	UserAgent            string      `json:"user_agent"`
@@ -388,7 +390,8 @@ func decodeNginxLog(line []byte) (domain.AccessLogEvent, error) {
 		Host: raw.Host, Scheme: raw.Scheme, Protocol: raw.Protocol, Method: raw.Method,
 		Path: strings.SplitN(raw.Path, "?", 2)[0], Status: raw.Status, RequestBytes: raw.RequestBytes,
 		Bytes: raw.Bytes, DurationMS: int64(duration * 1000), Upstream: raw.Upstream,
-		UpstreamStatus: raw.UpstreamStatus, UpstreamResponseTime: raw.UpstreamResponseTime,
+		UpstreamStatus: raw.UpstreamStatus, UpstreamConnectTime: raw.UpstreamConnectTime,
+		UpstreamHeaderTime: raw.UpstreamHeaderTime, UpstreamResponseTime: raw.UpstreamResponseTime,
 		CacheStatus: raw.CacheStatus, UserAgent: raw.UserAgent, Referer: raw.Referer,
 		ContentType: raw.ContentType, ResponseContentType: raw.ResponseContentType,
 		Accept: raw.Accept, Range: raw.Range,

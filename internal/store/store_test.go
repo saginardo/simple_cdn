@@ -52,6 +52,12 @@ func TestNodeStateNginxFragmentsRoundTrip(t *testing.T) {
 			StreamBase: "stream base", StreamSites: []domain.NginxConfigFragment{{Name: "site-a.conf", Content: "stream site"}},
 		},
 		PublicPorts: []int{80, 443}, PublicUDPPorts: []int{443}, CacheMaxBytes: 9 << 30,
+		OriginPools: []domain.OriginPool{{
+			ID: "0123456789abcdef01234567", Address: "203.0.113.10:443", Scheme: "https",
+			HostHeader: "origin.example.test", TLSServerName: "origin.example.test",
+			ConfigPath:           "/opt/cdn-edge/config/nginx/origin-pools/0123456789abcdef01234567.conf",
+			KeepaliveConnections: 32, References: []domain.OriginPoolReference{{SiteID: "site-a", Role: "primary"}},
+		}},
 	}
 	if err := database.SaveNodeState(node.ID, state, nil); err != nil {
 		t.Fatal(err)
@@ -63,7 +69,8 @@ func TestNodeStateNginxFragmentsRoundTrip(t *testing.T) {
 	if loaded.NginxFragments == nil || loaded.NginxFragments.HTTPBase != "HTTP base" || loaded.NginxMainConfig != "worker_processes auto;" ||
 		loaded.NginxEventsConfig != "worker_connections 4096;" || loaded.CacheMaxBytes != 9<<30 ||
 		len(loaded.NginxFragments.HTTPSites) != 1 || loaded.NginxFragments.StreamSites[0].Content != "stream site" ||
-		len(loaded.PublicUDPPorts) != 1 || loaded.PublicUDPPorts[0] != 443 {
+		len(loaded.PublicUDPPorts) != 1 || loaded.PublicUDPPorts[0] != 443 || len(loaded.OriginPools) != 1 ||
+		loaded.OriginPools[0].KeepaliveConnections != 32 || loaded.OriginPools[0].References[0].SiteID != "site-a" {
 		t.Fatalf("stored Nginx fragments = %#v", loaded.NginxFragments)
 	}
 }

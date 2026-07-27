@@ -45,7 +45,7 @@ func TestHTTP3MigrationAddsPublicUDPPorts(t *testing.T) {
 	if _, err := database.db.Exec(`ALTER TABLE node_states DROP COLUMN public_udp_ports_json`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.db.Exec(`DELETE FROM schema_migrations WHERE version = 19`); err != nil {
+	if _, err := database.db.Exec(`DELETE FROM schema_migrations WHERE version >= 19`); err != nil {
 		t.Fatal(err)
 	}
 	if err := database.Migrate(); err != nil {
@@ -54,6 +54,27 @@ func TestHTTP3MigrationAddsPublicUDPPorts(t *testing.T) {
 	found, err := columnExists(database.db, "node_states", "public_udp_ports_json")
 	if err != nil || !found {
 		t.Fatalf("public UDP ports column = %v, %v", found, err)
+	}
+}
+
+func TestOriginConnectionMigrationAddsPoolState(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err := database.db.Exec(`ALTER TABLE node_states DROP COLUMN origin_pools_json`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`DELETE FROM schema_migrations WHERE version = 20`); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	found, err := columnExists(database.db, "node_states", "origin_pools_json")
+	if err != nil || !found {
+		t.Fatalf("origin pool state column = %v, %v", found, err)
 	}
 }
 

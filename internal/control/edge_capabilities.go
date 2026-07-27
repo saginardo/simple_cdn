@@ -17,10 +17,19 @@ func (s *Server) reconcileEdgeRuntimeCapabilities(nodeID string, capabilities []
 	if err != nil {
 		return err
 	}
-	if !http3StateNeedsRebuild(state, capabilities) {
+	if !http3StateNeedsRebuild(state, capabilities) && !originPoolStateNeedsRebuild(state, capabilities) {
 		return nil
 	}
 	return s.Publisher.PublishNode(nodeID)
+}
+
+func originPoolStateNeedsRebuild(state domain.DesiredState, capabilities []string) bool {
+	hasHTTPOrigin := strings.Contains(state.NginxConfig, "proxy_pass ") || strings.Contains(state.NginxConfig, "grpc_pass ")
+	if !hasHTTPOrigin {
+		return false
+	}
+	wanted := slices.Contains(capabilities, domain.EdgeCapabilityOriginConnection)
+	return wanted != (len(state.OriginPools) > 0)
 }
 
 func http3StateNeedsRebuild(state domain.DesiredState, capabilities []string) bool {

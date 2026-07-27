@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"sort"
 	"strings"
@@ -20,6 +21,7 @@ type SiteConfig struct {
 
 const (
 	DefaultCachePath                          = "/opt/cdn-edge/cache"
+	DefaultOriginPoolConfigDirectory          = "/opt/cdn-edge/config/nginx/origin-pools"
 	DefaultCacheMaxBytes                int64 = 1 << 30
 	defaultClientKeepaliveRequests            = 1000
 	defaultUpstreamConnectTimeout             = "10s"
@@ -50,7 +52,7 @@ map "$request_method:$cdn_is_websocket:$cdn_accepts_event_stream:$cdn_forced_str
 
 {{range .CachePaths}}proxy_cache_path {{.Path}} levels=1:2 keys_zone={{.Zone}}:{{.ZoneSize}} inactive=7d max_size={{.MaxSize}} use_temp_path=off;
 {{end}}
-log_format cdn_json escape=json '{"request_id":"$request_id","timestamp":"$time_iso8601","site_id":"$cdn_site_id","client_ip":"$remote_addr","host":"$host","scheme":"$scheme","protocol":"$server_protocol","method":"$request_method","path":"$uri","status":$status,"request_bytes":$request_length,"bytes":$body_bytes_sent,"duration_seconds":$request_time,"upstream":"$upstream_addr","upstream_status":"$upstream_status","upstream_response_time":"$upstream_response_time","cache_status":"$upstream_cache_status","user_agent":"$http_user_agent","referer":"$http_referer","content_type":"$http_content_type","response_content_type":"$sent_http_content_type","accept":"$http_accept","range":"$http_range"}';
+log_format cdn_json escape=json '{"request_id":"$request_id","timestamp":"$time_iso8601","site_id":"$cdn_site_id","client_ip":"$remote_addr","host":"$host","scheme":"$scheme","protocol":"$server_protocol","method":"$request_method","path":"$uri","status":$status,"request_bytes":$request_length,"bytes":$body_bytes_sent,"duration_seconds":$request_time,"upstream":"$upstream_addr","upstream_status":"$upstream_status","upstream_connect_time":"$upstream_connect_time","upstream_header_time":"$upstream_header_time","upstream_response_time":"$upstream_response_time","cache_status":"$upstream_cache_status","user_agent":"$http_user_agent","referer":"$http_referer","content_type":"$http_content_type","response_content_type":"$sent_http_content_type","accept":"$http_accept","range":"$http_range"}';
 {{if .HTTP3Enabled}}quic_retry on;
 {{end}}
 {{end}}
@@ -90,8 +92,21 @@ server {
 }
 {{end}}
 
+{{if .ManagedOriginPools}}
+{{range .OriginPools}}
+upstream {{.Name}} {
+    include {{.ConfigPath}};
+    keepalive {{.KeepaliveConnections}};
+    keepalive_timeout 45s;
+    keepalive_requests 1000;
+    keepalive_time 1h;
+}
+{{end}}
+{{end}}
+
 {{range .Sites}}
 # CDN HTTP site fragment {{.ID}} begin
+{{if not $.ManagedOriginPools}}
 {{if .BackupHostPort}}
 upstream origin_{{.ID}}_primary {
     server {{.PrimaryHostPort}} max_fails=2 fail_timeout=10s;
@@ -107,6 +122,7 @@ upstream origin_{{.ID}} {
     server {{.PrimaryHostPort}} max_fails=2 fail_timeout=10s;
     keepalive {{$.UpstreamKeepaliveConnections}};
 }
+{{end}}
 {{end}}
 
 server {
@@ -169,7 +185,7 @@ server {
         {{if $.RateLimitEnabled}}access_by_lua_block { package.loaded.simple_cdn_rate_limit.access() }
         header_filter_by_lua_block { package.loaded.simple_cdn_rate_limit.response() }
         {{end}}
-        grpc_pass {{.PrimaryScheme}}://origin_{{.ID}}{{if .BackupHostPort}}_primary{{end}};
+		grpc_pass {{.PrimaryScheme}}://{{.PrimaryUpstreamName}};
         grpc_set_header Host {{.HostHeader}};
         grpc_set_header X-Real-IP $remote_addr;
         grpc_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -198,7 +214,7 @@ server {
         internal;
         {{if $.RateLimitEnabled}}header_filter_by_lua_block { package.loaded.simple_cdn_rate_limit.response() }
         {{end}}
-        grpc_pass {{.PrimaryScheme}}://origin_{{.ID}}_backup;
+		grpc_pass {{.PrimaryScheme}}://{{.BackupUpstreamName}};
         grpc_set_header Host {{.BackupHostHeader}};
         grpc_set_header X-Real-IP $remote_addr;
         grpc_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -251,7 +267,7 @@ server {
 		{{if $.RateLimitEnabled}}access_by_lua_block { package.loaded.simple_cdn_rate_limit.access() }
 		header_filter_by_lua_block { package.loaded.simple_cdn_rate_limit.response() }
 		{{end}}
-		proxy_pass {{.PrimaryScheme}}://origin_{{.ID}}{{if .BackupHostPort}}_primary{{end}};
+		proxy_pass {{.PrimaryScheme}}://{{.PrimaryUpstreamName}};
 		proxy_set_header Host {{.HostHeader}};
 		proxy_set_header Upgrade "";
 		proxy_set_header Connection "";
@@ -276,6 +292,7 @@ server {
         proxy_ssl_verify on;
         proxy_ssl_verify_depth 3;
         proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
+        proxy_ssl_session_reuse on;
         {{end}}
         {{if .BackupHostPort}}
         proxy_intercept_errors on;
@@ -288,7 +305,7 @@ server {
 		{{if $.RateLimitEnabled}}access_by_lua_block { package.loaded.simple_cdn_rate_limit.access() }
 		header_filter_by_lua_block { package.loaded.simple_cdn_rate_limit.response() }
 		{{end}}
-		proxy_pass {{.PrimaryScheme}}://origin_{{.ID}}{{if .BackupHostPort}}_primary{{end}};
+		proxy_pass {{.PrimaryScheme}}://{{.PrimaryUpstreamName}};
 		proxy_set_header Host {{.HostHeader}};
 		proxy_set_header Upgrade $cdn_upstream_upgrade;
 		proxy_set_header Connection $cdn_connection_upgrade;
@@ -313,6 +330,7 @@ server {
 		proxy_ssl_verify on;
 		proxy_ssl_verify_depth 3;
 		proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
+		proxy_ssl_session_reuse on;
 		{{end}}
 		{{if .BackupHostPort}}
 		proxy_intercept_errors on;
@@ -325,7 +343,7 @@ server {
 		internal;
 		{{if $.RateLimitEnabled}}header_filter_by_lua_block { package.loaded.simple_cdn_rate_limit.response() }
 		{{end}}
-		proxy_pass {{.PrimaryScheme}}://origin_{{.ID}}_backup;
+		proxy_pass {{.PrimaryScheme}}://{{.BackupUpstreamName}};
 		proxy_set_header Host {{.BackupHostHeader}};
 		proxy_set_header Upgrade "";
 		proxy_set_header Connection "";
@@ -350,6 +368,7 @@ server {
         proxy_ssl_verify on;
         proxy_ssl_verify_depth 3;
         proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
+		proxy_ssl_session_reuse on;
 		{{end}}
 	}
 
@@ -357,7 +376,7 @@ server {
 		internal;
 		{{if $.RateLimitEnabled}}header_filter_by_lua_block { package.loaded.simple_cdn_rate_limit.response() }
 		{{end}}
-		proxy_pass {{.PrimaryScheme}}://origin_{{.ID}}_backup;
+		proxy_pass {{.PrimaryScheme}}://{{.BackupUpstreamName}};
 		proxy_set_header Host {{.BackupHostHeader}};
 		proxy_set_header Upgrade $cdn_upstream_upgrade;
 		proxy_set_header Connection $cdn_connection_upgrade;
@@ -382,6 +401,7 @@ server {
         proxy_ssl_verify on;
         proxy_ssl_verify_depth 3;
         proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
+		proxy_ssl_session_reuse on;
 		{{end}}
 	}
 	{{end}}
@@ -398,10 +418,12 @@ type renderedSite struct {
 	PrimaryHostPort        string
 	PrimaryTLSName         string
 	PrimaryScheme          string
+	PrimaryUpstreamName    string
 	UseTLS                 bool
 	BackupHostPort         string
 	BackupTLSName          string
 	BackupHostHeader       string
+	BackupUpstreamName     string
 	HostHeader             string
 	CacheGeneration        int64
 	GRPC                   bool
@@ -413,6 +435,17 @@ type renderedSite struct {
 	AlwaysUnbuffered       bool
 }
 
+type renderedOriginPool struct {
+	Name                 string
+	ConfigPath           string
+	KeepaliveConnections int
+}
+
+type originPoolBuilder struct {
+	pool domain.OriginPool
+	name string
+}
+
 type renderedCachePath struct {
 	Path     string
 	Zone     string
@@ -422,6 +455,8 @@ type renderedCachePath struct {
 
 type renderInput struct {
 	Sites                         []renderedSite
+	OriginPools                   []renderedOriginPool
+	ManagedOriginPools            bool
 	CachePaths                    []renderedCachePath
 	DefaultHTTP                   bool
 	HTTP3Enabled                  bool
@@ -458,8 +493,27 @@ func RenderWithLegacyCache(sites []domain.Site, securityPolicies []domain.Securi
 }
 
 type RenderRuntimeOptions struct {
-	DefaultCacheSizeGB int
-	HTTP3Enabled       bool
+	DefaultCacheSizeGB        int
+	HTTP3Enabled              bool
+	ManagedOriginPools        bool
+	NginxWorkerConnections    int
+	OriginPoolConfigDirectory string
+	originPoolsOutput         *[]domain.OriginPool
+}
+
+type RenderedNodeConfiguration struct {
+	NginxConfig string
+	OriginPools []domain.OriginPool
+}
+
+func RenderNodeWithRuntimeOptions(sites []domain.Site, securityPolicies []domain.SecurityPolicy, rateLimitPolicies []domain.RateLimitPolicy, options RenderRuntimeOptions) (RenderedNodeConfiguration, error) {
+	var pools []domain.OriginPool
+	options.originPoolsOutput = &pools
+	configuration, err := RenderWithRuntimeOptions(sites, securityPolicies, rateLimitPolicies, options)
+	if err != nil {
+		return RenderedNodeConfiguration{}, err
+	}
+	return RenderedNodeConfiguration{NginxConfig: configuration, OriginPools: pools}, nil
 }
 
 func RenderWithRuntimeOptions(sites []domain.Site, securityPolicies []domain.SecurityPolicy, rateLimitPolicies []domain.RateLimitPolicy, options RenderRuntimeOptions) (string, error) {
@@ -475,6 +529,11 @@ func RenderWithRuntimeOptions(sites []domain.Site, securityPolicies []domain.Sec
 		}
 	}
 	items := make([]renderedSite, 0, len(sites))
+	poolBuilders := make(map[string]*originPoolBuilder)
+	poolDirectory := strings.TrimRight(strings.TrimSpace(options.OriginPoolConfigDirectory), "/")
+	if poolDirectory == "" {
+		poolDirectory = DefaultOriginPoolConfigDirectory
+	}
 	cachePaths := make([]renderedCachePath, 0, 1)
 	cacheEnabled := false
 	dedicatedTCP := false
@@ -513,6 +572,7 @@ func RenderWithRuntimeOptions(sites []domain.Site, securityPolicies []domain.Sec
 			CacheEnabled:           primary.Scheme == "http" || primary.Scheme == "https",
 			AlwaysUnbuffered:       site.Passthrough || domain.IsWebSocketScheme(primary.Scheme),
 		}
+		item.PrimaryUpstreamName = "origin_" + item.ID
 		item.CacheEnabled = item.CacheEnabled && !site.Passthrough
 		if item.CacheEnabled {
 			cacheEnabled = true
@@ -540,10 +600,33 @@ func RenderWithRuntimeOptions(sites []domain.Site, securityPolicies []domain.Sec
 			if item.BackupTLSName == "" {
 				item.BackupTLSName = backup.Hostname()
 			}
+			item.PrimaryUpstreamName = "origin_" + item.ID + "_primary"
+			item.BackupUpstreamName = "origin_" + item.ID + "_backup"
+		}
+		if options.ManagedOriginPools {
+			primaryPool, err := addOriginPool(poolBuilders, poolDirectory, item.PrimaryScheme, item.PrimaryHostPort, item.HostHeader, tlsName(item.UseTLS, item.PrimaryTLSName), site.ID, "primary")
+			if err != nil {
+				return "", fmt.Errorf("site %s primary origin pool: %w", site.Name, err)
+			}
+			item.PrimaryUpstreamName = primaryPool.name
+			if item.BackupHostPort != "" {
+				backupPool, err := addOriginPool(poolBuilders, poolDirectory, item.PrimaryScheme, item.BackupHostPort, item.BackupHostHeader, tlsName(item.UseTLS, item.BackupTLSName), site.ID, "backup")
+				if err != nil {
+					return "", fmt.Errorf("site %s backup origin pool: %w", site.Name, err)
+				}
+				item.BackupUpstreamName = backupPool.name
+			}
 		}
 		items = append(items, item)
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].ID < items[j].ID })
+	originPools, renderedOriginPools, err := finalizeOriginPools(poolBuilders, options.NginxWorkerConnections)
+	if err != nil {
+		return "", err
+	}
+	if options.originPoolsOutput != nil {
+		*options.originPoolsOutput = append([]domain.OriginPool(nil), originPools...)
+	}
 	if cacheEnabled {
 		cachePaths = append(cachePaths, renderedCachePath{Path: DefaultCachePath, Zone: "cdn_cache", ZoneSize: cacheZoneSize(cacheSizeGB, len(cacheEnabledItems(items))), MaxSize: fmt.Sprintf("%dg", cacheSizeGB)})
 	}
@@ -554,6 +637,8 @@ func RenderWithRuntimeOptions(sites []domain.Site, securityPolicies []domain.Sec
 	var out bytes.Buffer
 	if err := template.Execute(&out, renderInput{
 		Sites:                         items,
+		OriginPools:                   renderedOriginPools,
+		ManagedOriginPools:            options.ManagedOriginPools,
 		CachePaths:                    cachePaths,
 		DefaultHTTP:                   !dedicatedTCP,
 		HTTP3Enabled:                  options.HTTP3Enabled,
@@ -571,6 +656,139 @@ func RenderWithRuntimeOptions(sites []domain.Site, securityPolicies []domain.Sec
 		return "", err
 	}
 	return out.String(), nil
+}
+
+func addOriginPool(builders map[string]*originPoolBuilder, directory, scheme, address, hostHeader, serverName, siteID, role string) (*originPoolBuilder, error) {
+	normalizedAddress, err := normalizeOriginPoolAddress(scheme, address)
+	if err != nil {
+		return nil, err
+	}
+	address = normalizedAddress
+	hostHeader = strings.ToLower(hostHeader)
+	serverName = strings.ToLower(serverName)
+	key := strings.Join([]string{scheme, address, hostHeader, serverName}, "\x00")
+	if existing := builders[key]; existing != nil {
+		existing.pool.References = append(existing.pool.References, domain.OriginPoolReference{SiteID: siteID, Role: role})
+		return existing, nil
+	}
+	digest := sha256.Sum256([]byte(key))
+	id := fmt.Sprintf("%x", digest[:12])
+	builder := &originPoolBuilder{
+		name: "origin_pool_" + id,
+		pool: domain.OriginPool{
+			ID: id, Address: address, Scheme: scheme, HostHeader: hostHeader, TLSServerName: serverName,
+			ConfigPath: directory + "/" + id + ".conf",
+			References: []domain.OriginPoolReference{{SiteID: siteID, Role: role}},
+		},
+	}
+	builders[key] = builder
+	return builder, nil
+}
+
+func normalizeOriginPoolAddress(scheme, address string) (string, error) {
+	parsed, err := url.Parse(scheme + "://" + address)
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("invalid origin address %q", address)
+	}
+	host := parsed.Hostname()
+	port := parsed.Port()
+	if port == "" {
+		switch scheme {
+		case "http", "grpc":
+			port = "80"
+		case "https", "grpcs":
+			port = "443"
+		default:
+			return "", fmt.Errorf("unsupported origin scheme %q", scheme)
+		}
+	}
+	normalized, err := domain.NormalizeMonitoringAddress(net.JoinHostPort(host, port))
+	if err != nil {
+		return "", err
+	}
+	return normalized, nil
+}
+
+func tlsName(enabled bool, value string) string {
+	if !enabled {
+		return ""
+	}
+	return value
+}
+
+func finalizeOriginPools(builders map[string]*originPoolBuilder, workerConnections int) ([]domain.OriginPool, []renderedOriginPool, error) {
+	if len(builders) > domain.MaxOriginPools {
+		return nil, nil, fmt.Errorf("node has %d origin connection pools; maximum is %d", len(builders), domain.MaxOriginPools)
+	}
+	ordered := make([]*originPoolBuilder, 0, len(builders))
+	for _, builder := range builders {
+		sort.Slice(builder.pool.References, func(i, j int) bool {
+			if builder.pool.References[i].SiteID != builder.pool.References[j].SiteID {
+				return builder.pool.References[i].SiteID < builder.pool.References[j].SiteID
+			}
+			return builder.pool.References[i].Role < builder.pool.References[j].Role
+		})
+		ordered = append(ordered, builder)
+	}
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].pool.ID < ordered[j].pool.ID })
+	if len(ordered) == 0 {
+		return nil, nil, nil
+	}
+	if workerConnections <= 0 {
+		workerConnections = domain.DefaultNginxWorkerConnections
+	}
+	budget := workerConnections / 16
+	if budget < 16 {
+		budget = 16
+	}
+	if budget > 1024 {
+		budget = 1024
+	}
+	if budget < len(ordered) {
+		budget = len(ordered)
+	}
+	maximum := 64
+	if workerConnections >= 16384 {
+		maximum = 128
+	}
+	if budget > len(ordered)*maximum {
+		budget = len(ordered) * maximum
+	}
+	sizes := make([]int, len(ordered))
+	for index := range sizes {
+		sizes[index] = 1
+	}
+	for remaining := budget - len(ordered); remaining > 0; remaining-- {
+		selected := -1
+		selectedRatio := 0.0
+		for index, builder := range ordered {
+			if sizes[index] >= maximum {
+				continue
+			}
+			ratio := float64(sizes[index]) / float64(len(builder.pool.References))
+			if selected == -1 || ratio < selectedRatio {
+				selected = index
+				selectedRatio = ratio
+			}
+		}
+		if selected == -1 {
+			break
+		}
+		sizes[selected]++
+	}
+	pools := make([]domain.OriginPool, 0, len(ordered))
+	rendered := make([]renderedOriginPool, 0, len(ordered))
+	for index, builder := range ordered {
+		builder.pool.KeepaliveConnections = sizes[index]
+		if !domain.ValidOriginPool(builder.pool) {
+			return nil, nil, fmt.Errorf("rendered origin pool %s is invalid", builder.pool.ID)
+		}
+		pools = append(pools, builder.pool)
+		rendered = append(rendered, renderedOriginPool{
+			Name: builder.name, ConfigPath: builder.pool.ConfigPath, KeepaliveConnections: builder.pool.KeepaliveConnections,
+		})
+	}
+	return pools, rendered, nil
 }
 
 func cacheEnabledItems(items []renderedSite) []renderedSite {

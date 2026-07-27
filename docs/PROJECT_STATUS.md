@@ -54,7 +54,7 @@ edge-a 上的 cdn-edge-agent ── HTTPS ${CONTROL_MTLS_PORT} ──> cdn-contr
 - 部署模型：站点先创建和签发证书，再显式发布；发布生成每个边缘节点的 desired state，不直接 SSH 修改边缘。
 - 证书：Certbot `dns-cloudflare` DNS-01，私钥以 `CONTROL_ENCRYPTION_KEY` 进行 AES-GCM 加密后保存在 SQLite，向边缘仅通过 mTLS 下发。
 - 节点健康：每 15 秒启动一轮有截止时间的对账，以固定上限 worker 并发探测并串行写入状态；连续 3 次失败从 DNS 池移除，连续 5 次成功恢复；所有节点均不健康时保留现有 DNS，不发布空记录。每轮聚合全部错误、记录耗时并通过诊断 API 暴露最近结果，上一轮未结束时不会重叠启动下一轮。
-- 日志与指标：ClickHouse 原始请求日志保留 7 天，分钟级聚合保留 30 天；边缘控制面不可达时，本地队列暂存访问日志。5 秒机器状态仅在主控内存中保留最新值，不持久化历史。
+- 日志与指标：ClickHouse 原始请求日志保留 7 天，请求量与回源阶段耗时分钟聚合保留 30 天；边缘控制面不可达时，本地队列暂存访问日志。访问日志包含回源建连、响应头和完整响应时间，站点页显示最近 24 小时连接复用率及按各自样本加权的平均值。5 秒机器状态和主动回源探测只在主控内存中保留最新值，不持久化历史。
 - TCP 监测与智能路由：拨测目标支持唯一名称；SQLite 保存最新评分、目标结果及每节点智能路由策略。评分门控支持双阈值和独立连续轮数，时间门控支持 `Asia/Shanghai` 每周重复窗口，两者同时启用时采用 AND 关系。每轮目标明细在 SQLite 事务提交后进入有界内存队列，由后台批量写入 ClickHouse 并保留 7 天；ClickHouse 写入或查询故障不会阻塞节点上报，也不会清空 SQLite 当前状态。具体规则见 [SMART_ROUTING.md](SMART_ROUTING.md)。
 
 ### 3.2 边缘面
@@ -63,6 +63,7 @@ edge-a 上的 cdn-edge-agent ── HTTPS ${CONTROL_MTLS_PORT} ──> cdn-contr
 - 边缘自有文件统一位于 `/opt/cdn-edge`：`bin/`、`config/`、`data/`、`logs/`、`cache/` 和 `systemd/`。系统路径仅保留 systemd 与 Nginx 的发现链接；Nginx 包、全局配置和 journald 仍由 Debian 管理。
 - Agent 默认每 30 秒发送一次独立心跳，并每 5 秒通过同一个 mTLS HTTP/2 Transport 上报机器状态。主控在心跳响应中合并返回期望状态、监控目标、安全封禁和升级任务修订；边缘仅拉取变化项，慢速配置、拨测和升级任务不会阻塞心跳或机器状态采集。配置或证书写入采用原子替换，先执行 `nginx -t`，仅在成功时 reload，失败会恢复上一个已知可用版本。
 - 主控仅接受采集时间更新的机器快照，只在内存中保存每节点最新值，并通过受管理员会话保护的 SSE 推送到节点详情页，不写入持久化存储。SSE 每 15 秒复核会话并发送保活，前端以 30 秒 GET 作为断线回退，且按采集时间避免旧响应覆盖新事件；没有快照时不显示机器状态区域。
+- `origin_connection_v1` 节点按协议、规范化地址、Host 和 SNI 共享 upstream；每 worker 空闲连接预算由 `worker_connections` 自动分配。Agent 分层探测源站：约 5 秒复用服务连接，32-48 秒新建一次 TCP/TLS；任一层首次失败后加速到约 2 秒和 4-6 秒，单次超时 3 秒。两层分别累计，任一层连续 2 次失败把托管 include 切换为 `down`，两层分别连续成功后恢复。池状态在边缘持久化以跨重启维持熔断，但主控只接收实时快照。详见 [ORIGIN_CONNECTIONS.md](ORIGIN_CONNECTIONS.md)。
 - Agent 上报自身 SHA-256 和 `online_upgrade_v1` 能力；主控可对单节点下发当前制品，独立 updater 在替换主进程后等待新 Agent 完成 mTLS 心跳，失败恢复旧二进制和 systemd/Nginx 集成。
 - 安全工作台管理全局请求路径策略、活动 IP 封禁和最近命中；Nginx 在回源前按正则返回 444，Agent 使用自有 nftables 表即时封禁 TCP 80/443 与 QUIC UDP 443，并通过 mTLS 在节点间同步和自动过期。
 - Nginx 为 HTTP 与 stream 分别生成共享 `00-base.conf` 和每站点 `site-<id>.conf`；Agent 使用版本与内容摘要目录同时暂存两个配置族，再原子切换稳定索引。每个站点仍拥有独立 `server` 和 `upstream`：80 强制跳转 HTTPS，TCP 443 保留 TLS 1.2/1.3 与 HTTP/1.1/2；报告 `http3_v1` 的节点额外监听 UDP 443、广告 `Alt-Svc` 并启用 QUIC 地址验证重试。Agent 在应用前后分别检查 TCP/UDP 端口归属，能力变化会触发节点期望状态自动重建。节点级 `worker_processes`、`worker_connections` 和 `worker_rlimit_nofile` 分别由主配置与 `events` include 管理。

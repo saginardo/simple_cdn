@@ -11,23 +11,24 @@ import (
 // CPU and network rates are averages over SampleSeconds; a zero interval means
 // the agent has not collected a second sample yet.
 type MachineStatus struct {
-	Distribution         string    `json:"distribution"`
-	Version              string    `json:"version"`
-	UptimeSeconds        int64     `json:"uptime_seconds"`
-	Load1                float64   `json:"load_1"`
-	Load5                float64   `json:"load_5"`
-	Load15               float64   `json:"load_15"`
-	CPUUsagePercent      float64   `json:"cpu_usage_percent"`
-	CPULogicalCores      int       `json:"cpu_logical_cores"`
-	MemoryUsedBytes      int64     `json:"memory_used_bytes"`
-	MemoryTotalBytes     int64     `json:"memory_total_bytes"`
-	DiskUsedBytes        int64     `json:"disk_used_bytes"`
-	DiskTotalBytes       int64     `json:"disk_total_bytes"`
-	NetworkInterface     string    `json:"network_interface"`
-	NetworkRXBytesPerSec int64     `json:"network_rx_bytes_per_second"`
-	NetworkTXBytesPerSec int64     `json:"network_tx_bytes_per_second"`
-	SampleSeconds        float64   `json:"sample_seconds"`
-	CollectedAt          time.Time `json:"collected_at"`
+	Distribution         string              `json:"distribution"`
+	Version              string              `json:"version"`
+	UptimeSeconds        int64               `json:"uptime_seconds"`
+	Load1                float64             `json:"load_1"`
+	Load5                float64             `json:"load_5"`
+	Load15               float64             `json:"load_15"`
+	CPUUsagePercent      float64             `json:"cpu_usage_percent"`
+	CPULogicalCores      int                 `json:"cpu_logical_cores"`
+	MemoryUsedBytes      int64               `json:"memory_used_bytes"`
+	MemoryTotalBytes     int64               `json:"memory_total_bytes"`
+	DiskUsedBytes        int64               `json:"disk_used_bytes"`
+	DiskTotalBytes       int64               `json:"disk_total_bytes"`
+	NetworkInterface     string              `json:"network_interface"`
+	NetworkRXBytesPerSec int64               `json:"network_rx_bytes_per_second"`
+	NetworkTXBytesPerSec int64               `json:"network_tx_bytes_per_second"`
+	SampleSeconds        float64             `json:"sample_seconds"`
+	OriginProbes         []OriginProbeStatus `json:"origin_probes,omitempty"`
+	CollectedAt          time.Time           `json:"collected_at"`
 }
 
 func ValidMachineStatus(status MachineStatus) bool {
@@ -52,7 +53,21 @@ func ValidMachineStatus(status MachineStatus) bool {
 		status.NetworkRXBytesPerSec >= 0 && status.NetworkRXBytesPerSec <= maxBytes &&
 		status.NetworkTXBytesPerSec >= 0 && status.NetworkTXBytesPerSec <= maxBytes &&
 		validMachineFloat(status.SampleSeconds, 0, maxSample) &&
-		!status.CollectedAt.IsZero()
+		!status.CollectedAt.IsZero() && validOriginProbeStatuses(status.OriginProbes)
+}
+
+func validOriginProbeStatuses(statuses []OriginProbeStatus) bool {
+	if len(statuses) > MaxOriginPools {
+		return false
+	}
+	seen := make(map[string]bool, len(statuses))
+	for _, status := range statuses {
+		if !ValidOriginProbeStatus(status) || seen[status.PoolID] {
+			return false
+		}
+		seen[status.PoolID] = true
+	}
+	return true
 }
 
 func validMachineText(value string, maximum int, required bool) bool {

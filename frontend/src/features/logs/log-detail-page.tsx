@@ -179,8 +179,16 @@ function LogDetails({
               value={entry.upstream_status || "--"}
             />
             <DetailRow
-              label={t("上游响应时间")}
-              value={entry.upstream_response_time || "--"}
+              label={t("回源建连时间")}
+              value={formatUpstreamTime(entry.upstream_connect_time)}
+            />
+            <DetailRow
+              label={t("回源首字节时间")}
+              value={formatUpstreamTime(entry.upstream_header_time)}
+            />
+            <DetailRow
+              label={t("回源完整响应时间")}
+              value={formatUpstreamTime(entry.upstream_response_time)}
             />
             <DetailRow
               label={t("响应 Content-Type")}
@@ -238,6 +246,18 @@ function DetailRow({ label, value }: { label: string; value: string }) {
       <span className="break-all font-mono text-xs leading-5">{value}</span>
     </div>
   );
+}
+function formatUpstreamTime(value: string) {
+  if (!value || value === "-") return "--";
+  return value
+    .split(/([,:])/)
+    .map((part) => {
+      const seconds = Number(part.trim());
+      return Number.isFinite(seconds)
+        ? `${formatNumber(seconds * 1000)} ms`
+        : part;
+    })
+    .join("");
 }
 function nameFor(
   items:

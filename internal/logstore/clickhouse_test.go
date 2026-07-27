@@ -38,7 +38,7 @@ func TestGetReturnsExtendedRequestDetails(t *testing.T) {
 		if !strings.Contains(query, "WHERE request_id = {request_id:String}") || request.URL.Query().Get("param_request_id") != "request-1" {
 			t.Fatalf("unexpected detail query: %s", request.URL.RawQuery)
 		}
-		_, _ = io.WriteString(response, `{"request_id":"request-1","timestamp":"2026-07-18 10:20:30.123","node_id":"node-1","site_id":"site-1","client_ip":"203.0.113.5","host":"cdn.example.test","scheme":"https","protocol":"HTTP/2.0","method":"GET","path":"/asset.js","status":404,"request_bytes":512,"bytes":2048,"duration_ms":37,"upstream":"192.0.2.10:443","upstream_status":"404","upstream_response_time":"0.036","cache_status":"MISS","user_agent":"test-agent","referer":"https://example.test/","request_content_type":"application/json","response_content_type":"text/javascript","request_accept":"*/*","request_range":"bytes=0-1023"}`+"\n")
+		_, _ = io.WriteString(response, `{"request_id":"request-1","timestamp":"2026-07-18 10:20:30.123","node_id":"node-1","site_id":"site-1","client_ip":"203.0.113.5","host":"cdn.example.test","scheme":"https","protocol":"HTTP/2.0","method":"GET","path":"/asset.js","status":404,"request_bytes":512,"bytes":2048,"duration_ms":37,"upstream":"192.0.2.10:443","upstream_status":"404","upstream_connect_time":"0.004","upstream_header_time":"0.020","upstream_response_time":"0.036","cache_status":"MISS","user_agent":"test-agent","referer":"https://example.test/","request_content_type":"application/json","response_content_type":"text/javascript","request_accept":"*/*","request_range":"bytes=0-1023"}`+"\n")
 	}))
 	defer server.Close()
 
@@ -48,6 +48,9 @@ func TestGetReturnsExtendedRequestDetails(t *testing.T) {
 	}
 	if event.ID != "request-1" || event.RequestBytes != 512 || event.Bytes != 2048 || event.UserAgent != "test-agent" || event.ResponseContentType != "text/javascript" || event.Range != "bytes=0-1023" {
 		t.Fatalf("unexpected detail event: %#v", event)
+	}
+	if event.UpstreamConnectTime != "0.004" || event.UpstreamHeaderTime != "0.020" || event.UpstreamResponseTime != "0.036" {
+		t.Fatalf("unexpected timing details: %#v", event)
 	}
 }
 
@@ -126,18 +129,43 @@ func TestSearchUsesDefaultsAndNeverEmitsNegativeOffset(t *testing.T) {
 
 func TestMetricsDecodesJSONEachRow(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if !strings.Contains(request.URL.Query().Get("query"), "cdn_site_minute") {
-			t.Fatalf("unexpected query: %s", request.URL.Query().Get("query"))
+		query := request.URL.Query().Get("query")
+		for _, expected := range []string{"cdn_site_minute", "cdn_origin_minute", "LEFT JOIN", "sum(connect_samples)", "upstream_connect_ms"} {
+			if !strings.Contains(query, expected) {
+				t.Fatalf("metrics query does not contain %q: %s", expected, query)
+			}
 		}
-		_, _ = io.WriteString(response, "{\"minute\":\"2026-01-02T03:04:00Z\",\"requests\":12,\"bytes\":1200,\"errors\":1,\"cache_hits\":9}\n")
+		_, _ = io.WriteString(response, "{\"minute\":\"2026-01-02T03:04:00Z\",\"requests\":12,\"bytes\":1200,\"errors\":1,\"cache_hits\":9,\"upstream_samples\":10,\"upstream_header_samples\":9,\"upstream_response_samples\":8,\"upstream_reused\":8,\"upstream_connect_ms\":1.5,\"upstream_header_ms\":12.5,\"upstream_response_ms\":25.5}\n")
 	}))
 	defer server.Close()
 	metrics, err := (ClickHouse{Endpoint: server.URL}).Metrics(context.Background(), "site", time.Now().Add(-time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(metrics) != 1 || metrics[0].Requests != 12 || metrics[0].CacheHits != 9 {
+	if len(metrics) != 1 || metrics[0].Requests != 12 || metrics[0].CacheHits != 9 || metrics[0].UpstreamSamples != 10 ||
+		metrics[0].UpstreamHeaderSamples != 9 || metrics[0].UpstreamResponseSamples != 8 || metrics[0].UpstreamReused != 8 ||
+		metrics[0].UpstreamConnectMS != 1.5 || metrics[0].UpstreamHeaderMS != 12.5 || metrics[0].UpstreamResponseMS != 25.5 {
 		t.Fatalf("unexpected metrics: %#v", metrics)
+	}
+}
+
+func TestEnsureSchemaCreatesOriginTimingAggregate(t *testing.T) {
+	var queries []string
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		queries = append(queries, request.URL.Query().Get("query"))
+	}))
+	defer server.Close()
+	if err := (ClickHouse{Endpoint: server.URL}).EnsureSchema(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(queries, "\n")
+	for _, expected := range []string{
+		"cdn_origin_minute", "cdn_access_to_origin_minute", "upstream_connect_time",
+		"connect_samples UInt64", "sum(length(connect_values))", "sum(arraySum(connect_values))",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("origin timing schema is missing %q:\n%s", expected, joined)
+		}
 	}
 }
 

@@ -212,7 +212,42 @@ export interface MachineReport {
   network_rx_bytes_per_second: number;
   network_tx_bytes_per_second: number;
   sample_seconds: number;
+  origin_probes?: OriginProbeStatus[];
   collected_at: string;
+}
+
+export interface OriginPoolReference {
+  site_id: string;
+  role: "primary" | "backup";
+}
+
+export interface OriginProbeSample {
+  healthy: boolean;
+  connection_reused: boolean;
+  connect_ms: number;
+  tls_handshake_ms: number;
+  header_ms: number;
+  total_ms: number;
+  http_status?: number;
+  error?: string;
+  checked_at: string;
+}
+
+export interface OriginProbeStatus {
+  pool_id: string;
+  address: string;
+  scheme: "http" | "https" | "grpc" | "grpcs";
+  keepalive_connections: number;
+  references: OriginPoolReference[];
+  healthy: boolean;
+  circuit_state: "closed" | "open" | "recovering";
+  service_consecutive_failures: number;
+  service_consecutive_successes: number;
+  cold_consecutive_failures: number;
+  cold_consecutive_successes: number;
+  service_probe?: OriginProbeSample;
+  cold_probe?: OriginProbeSample;
+  checked_at: string;
 }
 
 export interface NodeMachineStatus {
@@ -413,6 +448,8 @@ export interface AccessLog {
   duration_ms: number;
   upstream: string;
   upstream_status: string;
+  upstream_connect_time: string;
+  upstream_header_time: string;
   upstream_response_time: string;
   cache_status: string;
   user_agent: string;
@@ -421,6 +458,21 @@ export interface AccessLog {
   response_content_type: string;
   accept: string;
   range: string;
+}
+
+export interface SiteMinuteMetric {
+  minute: string;
+  requests: number;
+  bytes: number;
+  errors: number;
+  cache_hits: number;
+  upstream_samples: number;
+  upstream_header_samples: number;
+  upstream_response_samples: number;
+  upstream_reused: number;
+  upstream_connect_ms: number;
+  upstream_header_ms: number;
+  upstream_response_ms: number;
 }
 
 export interface LogPage {

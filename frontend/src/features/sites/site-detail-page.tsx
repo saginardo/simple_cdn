@@ -59,7 +59,7 @@ import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { api, ApiError, errorMessage } from "@/lib/api";
-import { formatNumber } from "@/lib/format";
+import { formatNumber, formatPercent } from "@/lib/format";
 import { useListPagination } from "@/hooks/use-list-pagination";
 import type {
   DeploymentTask,
@@ -67,6 +67,7 @@ import type {
   PublishStatus,
   Settings,
   Site,
+  SiteMinuteMetric,
   TCPForward,
 } from "@/lib/types";
 import { t, useI18n } from "@/lib/i18n";
@@ -176,6 +177,12 @@ export function SiteDetailPage() {
     queryKey: ["site-allowlist", siteId],
     queryFn: () => api<Allowlist>(`/api/sites/${encodedID}/origin-allowlist`),
     enabled: allowlistOpen && !isNew,
+  });
+  const metrics = useQuery({
+    queryKey: ["site-metrics", siteId],
+    queryFn: () => api<SiteMinuteMetric[]>(`/api/sites/${encodedID}/metrics`),
+    enabled: !isNew && Boolean(site),
+    refetchInterval: 30_000,
   });
   useEffect(() => {
     if (deletion.data?.task?.status !== "succeeded") return;
@@ -462,6 +469,7 @@ export function SiteDetailPage() {
                   </Button>
                 </CardContent>
               </Card>
+              <OriginPerformance metrics={metrics.data} />
               {site ? (
                 <SiteOperations
                   site={site}
@@ -537,6 +545,57 @@ export function SiteDetailPage() {
         loading={allowlist.isLoading}
       />
     </>
+  );
+}
+function OriginPerformance({ metrics }: { metrics?: SiteMinuteMetric[] }) {
+  const samples =
+    metrics?.reduce((total, metric) => total + metric.upstream_samples, 0) ?? 0;
+  if (!samples) return null;
+  const reused =
+    metrics?.reduce((total, metric) => total + metric.upstream_reused, 0) ?? 0;
+  const weighted = (
+    field: keyof SiteMinuteMetric,
+    sampleField:
+      | "upstream_samples"
+      | "upstream_header_samples"
+      | "upstream_response_samples",
+  ) => {
+    const count =
+      metrics?.reduce((total, metric) => total + metric[sampleField], 0) ?? 0;
+    if (!count) return 0;
+    return (
+      (metrics?.reduce(
+        (total, metric) => total + Number(metric[field]) * metric[sampleField],
+        0,
+      ) ?? 0) / count
+    );
+  };
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{t("回源性能")}</CardTitle>
+        <CardDescription>{t("最近 24 小时的真实请求样本")}</CardDescription>
+      </CardHeader>
+      <CardContent className="grid grid-cols-2 gap-x-4 gap-y-3">
+        <Fact
+          label={t("连接复用率")}
+          value={formatPercent(reused / samples, 1)}
+        />
+        <Fact label={t("回源样本")} value={formatNumber(samples)} />
+        <Fact
+          label={t("平均建连")}
+          value={`${formatNumber(weighted("upstream_connect_ms", "upstream_samples"))} ms`}
+        />
+        <Fact
+          label={t("平均首字节")}
+          value={`${formatNumber(weighted("upstream_header_ms", "upstream_header_samples"))} ms`}
+        />
+        <Fact
+          label={t("平均完整响应")}
+          value={`${formatNumber(weighted("upstream_response_ms", "upstream_response_samples"))} ms`}
+        />
+      </CardContent>
+    </Card>
   );
 }
 function BasicSettings({

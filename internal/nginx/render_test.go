@@ -14,7 +14,7 @@ func TestRenderIncludesCacheAndFailoverPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"proxy_cache_path /opt/cdn-edge/cache levels=1:2 keys_zone=cdn_cache:16m inactive=7d max_size=1g use_temp_path=off", `map $uri $cdn_static_cache_zone { default off; ~*\.(?:css|js|mjs|map|wasm|woff|woff2|ttf|otf|eot|jpg|jpeg|png|apng|gif|webp|avif|svg|ico|bmp|tif|tiff|webmanifest)$ cdn_cache; }`, `map "$http_authorization:$http_cookie" $cdn_private_cache_bypass { default 1; ":" 0; }`, "proxy_cache $cdn_static_cache_zone", "proxy_cache_bypass $cdn_private_cache_bypass;", "proxy_no_cache $cdn_private_cache_bypass;", "listen 443 ssl default_server;", "ssl_reject_handshake on;", "client_max_body_size 128m;", "keepalive_timeout 120s;", "keepalive_requests 1000;", "keepalive 30;", "proxy_connect_timeout 10s;", "recursive_error_pages on;", "ssl_certificate /opt/cdn-edge/config/certs/site-1.crt", "access_log /opt/cdn-edge/logs/access.json cdn_json", `"request_id":"$request_id"`, `"user_agent":"$http_user_agent"`, "proxy_cache_lock on", "proxy_cache_background_update on", "proxy_cache_use_stale error timeout", "upstream origin_site-1_primary", "upstream origin_site-1_backup", "proxy_ssl_name origin.example.test", "proxy_ssl_name backup.example.test", "proxy_set_header Host backup.example.test", "proxy_set_header Upgrade \"\";", "proxy_set_header Connection \"\";", "location @cdn_http_site-1", "location @cdn_stream_site-1", "location @cdn_backup_site-1", "location @cdn_stream_backup_site-1", "site-1:7:$scheme$host$request_uri", "location = /__cdn_health", `return 200 "site=site-1\n";`} {
+	for _, expected := range []string{"proxy_cache_path /opt/cdn-edge/cache levels=1:2 keys_zone=cdn_cache:16m inactive=7d max_size=1g use_temp_path=off", `map $uri $cdn_static_cache_zone { default off; ~*\.(?:css|js|mjs|map|wasm|woff|woff2|ttf|otf|eot|jpg|jpeg|png|apng|gif|webp|avif|svg|ico|bmp|tif|tiff|webmanifest)$ cdn_cache; }`, `map "$http_authorization:$http_cookie" $cdn_private_cache_bypass { default 1; ":" 0; }`, "proxy_cache $cdn_static_cache_zone", "proxy_cache_bypass $cdn_private_cache_bypass;", "proxy_no_cache $cdn_private_cache_bypass;", "listen 443 ssl default_server;", "ssl_reject_handshake on;", "client_max_body_size 128m;", "keepalive_timeout 120s;", "keepalive_requests 1000;", "keepalive 30;", "proxy_connect_timeout 10s;", "recursive_error_pages on;", "ssl_certificate /opt/cdn-edge/config/certs/site-1.crt", "access_log /opt/cdn-edge/logs/access.json cdn_json", `"request_id":"$request_id"`, `"upstream_connect_time":"$upstream_connect_time"`, `"upstream_header_time":"$upstream_header_time"`, `"user_agent":"$http_user_agent"`, "proxy_cache_lock on", "proxy_cache_background_update on", "proxy_cache_use_stale error timeout", "upstream origin_site-1_primary", "upstream origin_site-1_backup", "proxy_ssl_name origin.example.test", "proxy_ssl_name backup.example.test", "proxy_set_header Host backup.example.test", "proxy_set_header Upgrade \"\";", "proxy_set_header Connection \"\";", "location @cdn_http_site-1", "location @cdn_stream_site-1", "location @cdn_backup_site-1", "location @cdn_stream_backup_site-1", "site-1:7:$scheme$host$request_uri", "location = /__cdn_health", `return 200 "site=site-1\n";`} {
 		if !strings.Contains(configuration, expected) {
 			t.Fatalf("missing %q from config:\n%s", expected, configuration)
 		}
@@ -94,6 +94,77 @@ func TestRenderHTTP3IsCapabilityGated(t *testing.T) {
 	}
 	if strings.Contains(configuration, "ssl_early_data") {
 		t.Fatalf("HTTP/3 configuration unexpectedly enables replayable 0-RTT data:\n%s", configuration)
+	}
+}
+
+func TestRenderManagedOriginPoolsSharesCompatibleConnections(t *testing.T) {
+	sites := []domain.Site{
+		{ID: "site-a", Name: "a", Domains: []string{"a.example.test"}, PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, Enabled: true},
+		{ID: "site-b", Name: "b", Domains: []string{"b.example.test"}, PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, Enabled: true},
+	}
+	rendered, err := RenderNodeWithRuntimeOptions(sites, nil, nil, RenderRuntimeOptions{
+		DefaultCacheSizeGB: domain.DefaultCacheMaxSizeGB, ManagedOriginPools: true,
+		NginxWorkerConnections: 4096, OriginPoolConfigDirectory: "/tmp/cdn-origin-pools",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rendered.OriginPools) != 1 {
+		t.Fatalf("origin pools = %#v, want one shared pool", rendered.OriginPools)
+	}
+	pool := rendered.OriginPools[0]
+	if pool.Address != "origin.example.test:443" || pool.KeepaliveConnections != 64 || len(pool.References) != 2 || pool.ConfigPath != "/tmp/cdn-origin-pools/"+pool.ID+".conf" {
+		t.Fatalf("shared pool = %#v", pool)
+	}
+	for _, expected := range []string{
+		"upstream origin_pool_" + pool.ID,
+		"include " + pool.ConfigPath + ";",
+		"keepalive 64;",
+		"keepalive_timeout 45s;",
+		"keepalive_requests 1000;",
+		"keepalive_time 1h;",
+		"proxy_pass https://origin_pool_" + pool.ID,
+		"proxy_ssl_session_reuse on;",
+	} {
+		if !strings.Contains(rendered.NginxConfig, expected) {
+			t.Fatalf("managed configuration is missing %q:\n%s", expected, rendered.NginxConfig)
+		}
+	}
+	if strings.Count(rendered.NginxConfig, "upstream origin_pool_") != 1 || strings.Contains(rendered.NginxConfig, "server origin.example.test:443;") {
+		t.Fatalf("compatible origins were not fully shared:\n%s", rendered.NginxConfig)
+	}
+}
+
+func TestRenderManagedOriginPoolsIsolatesVirtualHostsAndWeightsCapacity(t *testing.T) {
+	sites := []domain.Site{
+		{ID: "site-a", Name: "a", Domains: []string{"a.example.test"}, PrimaryOrigin: domain.Origin{URL: "https://203.0.113.10:443", HostHeader: "shared.example.test", TLSServerName: "shared.example.test", Enabled: true}, Enabled: true},
+		{ID: "site-b", Name: "b", Domains: []string{"b.example.test"}, PrimaryOrigin: domain.Origin{URL: "https://203.0.113.10:443", HostHeader: "shared.example.test", TLSServerName: "shared.example.test", Enabled: true}, Enabled: true},
+		{ID: "site-c", Name: "c", Domains: []string{"c.example.test"}, PrimaryOrigin: domain.Origin{URL: "https://203.0.113.10:443", HostHeader: "shared.example.test", TLSServerName: "shared.example.test", Enabled: true}, Enabled: true},
+		{ID: "site-d", Name: "d", Domains: []string{"d.example.test"}, PrimaryOrigin: domain.Origin{URL: "https://203.0.113.10:443", HostHeader: "isolated.example.test", TLSServerName: "isolated.example.test", Enabled: true}, Enabled: true},
+	}
+	rendered, err := RenderNodeWithRuntimeOptions(sites, nil, nil, RenderRuntimeOptions{
+		DefaultCacheSizeGB: domain.DefaultCacheMaxSizeGB, ManagedOriginPools: true,
+		NginxWorkerConnections: 1024, OriginPoolConfigDirectory: "/tmp/cdn-origin-pools",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rendered.OriginPools) != 2 {
+		t.Fatalf("origin pools = %#v, want Host/SNI-isolated pools", rendered.OriginPools)
+	}
+	var shared, isolated domain.OriginPool
+	for _, pool := range rendered.OriginPools {
+		if pool.HostHeader == "shared.example.test" {
+			shared = pool
+		} else if pool.HostHeader == "isolated.example.test" {
+			isolated = pool
+		}
+	}
+	if shared.KeepaliveConnections != 48 || isolated.KeepaliveConnections != 16 {
+		t.Fatalf("weighted pool sizes = shared %d, isolated %d", shared.KeepaliveConnections, isolated.KeepaliveConnections)
+	}
+	if shared.ID == isolated.ID || shared.TLSServerName == isolated.TLSServerName {
+		t.Fatalf("virtual-host isolation was lost: shared=%#v isolated=%#v", shared, isolated)
 	}
 }
 
