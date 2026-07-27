@@ -39,7 +39,7 @@ edge-a 上的 cdn-edge-agent ── HTTPS ${CONTROL_MTLS_PORT} ──> cdn-contr
        └─ 上报心跳、5 秒机器状态、应用版本、代理摘要、日志
 
                          业务请求路径
-客户端 ── Cloudflare DNS-only A ──> Edge Nginx TCP :80/:443、QUIC UDP :443
+客户端 ── Cloudflare DNS-only A ──> Edge Nginx TCP :80/:443、按站点启用的 QUIC UDP :443
                                           │
                                           ├─ 磁盘缓存 / stale 回退
                                           ├─ WebSocket / SSE 流式代理
@@ -66,7 +66,7 @@ edge-a 上的 cdn-edge-agent ── HTTPS ${CONTROL_MTLS_PORT} ──> cdn-contr
 - `origin_connection_v1` 节点按协议、规范化地址、Host 和 SNI 共享 upstream；每 worker 空闲连接预算由 `worker_connections` 自动分配。Agent 分层探测源站：约 5 秒复用服务连接，32-48 秒新建一次 TCP/TLS；任一层首次失败后加速到约 2 秒和 4-6 秒，单次超时 3 秒。两层分别累计，任一层连续 2 次失败把托管 include 切换为 `down`，两层分别连续成功后恢复。池状态在边缘持久化以跨重启维持熔断，但主控只接收实时快照。详见 [ORIGIN_CONNECTIONS.md](ORIGIN_CONNECTIONS.md)。
 - Agent 上报自身 SHA-256 和 `online_upgrade_v1` 能力；主控可对单节点下发当前制品，独立 updater 在替换主进程后等待新 Agent 完成 mTLS 心跳，失败恢复旧二进制和 systemd/Nginx 集成。
 - 安全工作台管理全局请求路径策略、活动 IP 封禁和最近命中；Nginx 在回源前按正则返回 444，Agent 使用自有 nftables 表即时封禁 TCP 80/443 与 QUIC UDP 443，并通过 mTLS 在节点间同步和自动过期。
-- Nginx 为 HTTP 与 stream 分别生成共享 `00-base.conf` 和每站点 `site-<id>.conf`；Agent 使用版本与内容摘要目录同时暂存两个配置族，再原子切换稳定索引。每个站点仍拥有独立 `server` 和 `upstream`：80 强制跳转 HTTPS，TCP 443 保留 TLS 1.2/1.3 与 HTTP/1.1/2；报告 `http3_v1` 的节点额外监听 UDP 443、广告 `Alt-Svc` 并启用 QUIC 地址验证重试。Agent 在应用前后分别检查 TCP/UDP 端口归属，能力变化会触发节点期望状态自动重建。节点级 `worker_processes`、`worker_connections` 和 `worker_rlimit_nofile` 分别由主配置与 `events` include 管理。
+- Nginx 为 HTTP 与 stream 分别生成共享 `00-base.conf` 和每站点 `site-<id>.conf`；Agent 使用版本与内容摘要目录同时暂存两个配置族，再原子切换稳定索引。每个站点仍拥有独立 `server` 和 `upstream`：80 强制跳转 HTTPS，TCP 443 保留 TLS 1.2/1.3 与 HTTP/1.1/2；站点默认关闭 HTTP/3，只有主动开启且节点报告 `http3_v1` 时才额外监听 UDP 443、广告 `Alt-Svc` 并启用 QUIC 地址验证重试。Agent 在应用前后分别检查 TCP/UDP 端口归属，站点设置发布或节点能力变化会触发节点期望状态自动重建。节点级 `worker_processes`、`worker_connections` 和 `worker_rlimit_nofile` 分别由主配置与 `events` include 管理。
 - CDN 业务 HTTP/HTTPS server 默认显式使用 `keepalive_timeout 120s` 和 `keepalive_requests 1000`，并可按站点覆盖客户端保活秒数；每个 upstream、每个 worker 的空闲回源连接池为 `keepalive 30`，HTTP/gRPC 回源连接超时统一为 10 秒。普通 HTTP 代理显式清空 `Upgrade`/`Connection`，确保 HTTP/1.1 上游连接可以复用；WebSocket、SSE 和 POST 由请求特征自动进入独立无缓存分支。
 
 ### 3.3 请求处理策略
@@ -181,7 +181,7 @@ edge-a 上的 cdn-edge-agent ── HTTPS ${CONTROL_MTLS_PORT} ──> cdn-contr
 ### P2：连接与容量调优
 
 - 节点默认使用 `worker_processes auto`、`worker_connections 4096` 和 `worker_rlimit_nofile 65536`；Node 详情可按 VPS 的文件描述符、内存和源站能力调整三项值。`sendfile on`、`tcp_nopush on` 等发行版 HTTP 参数仍由 Debian Nginx 主配置管理。
-- HTTP/3/QUIC 已按运行时能力启用：安装器仅在 Nginx 包含 `ngx_http_v3_module` 时声明能力，配置保留 HTTP/1.1/2 回退，并将 UDP 443 冲突、监听确认、回滚和 IP 封禁纳入既有事务。上线仍需逐节点确认云厂商与主机防火墙开放 UDP 443，并从外部执行 `curl --http3-only` 验收。
+- HTTP/3/QUIC 已实现按站点选择并默认关闭：安装器仅在 Nginx 包含 `ngx_http_v3_module` 时声明能力，主动开启的站点仍需节点能力门控；配置保留 HTTP/1.1/2 回退，并将 UDP 443 冲突、监听确认、回滚和 IP 封禁纳入既有事务。上线时仅需为承载已开启站点的节点确认云厂商与主机防火墙开放 UDP 443，并从外部执行 `curl --http3-only` 验收。
 - 可配置的客户端保活和 2-60 分钟回源读写空闲超时不能代替应用层保活。WebSocket 应发送 ping/pong，SSE 应定期发送注释或事件心跳；持续有数据的连接总时长不受该档位限制。
 
 ### P3：产品与安全边界

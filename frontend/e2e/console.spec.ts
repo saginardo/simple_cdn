@@ -68,6 +68,7 @@ const site = {
   },
   stream_paths: [],
   passthrough: false,
+  http3_enabled: false,
   client_max_body_size_mb: 128,
   client_keepalive_timeout_seconds: 120,
   read_write_timeout_seconds: 360,
@@ -1087,6 +1088,62 @@ test("new site discovers its Cloudflare zone from domains", async ({
   await expect(
     page.getByText("站点已创建，TLS 证书正在自动申请"),
   ).toBeVisible();
+});
+
+test("HTTP/3 is opt-in per site and saved explicitly", async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await mockAPI(page, {
+    "/api/nodes": [
+      {
+        id: "node-http3",
+        name: "edge-http3",
+        public_ipv4: "203.0.113.93",
+        status: "active",
+        capabilities: ["http3_v1"],
+        applied_version: 1,
+        created_at: now.toISOString(),
+        updated_at: now.toISOString(),
+      },
+    ],
+  });
+  await page.goto("/#/sites/new");
+
+  const http3Toggle = page.getByRole("switch", { name: "HTTP/3 / QUIC" });
+  await expect(http3Toggle).not.toBeChecked();
+  await http3Toggle.click();
+  await expect(http3Toggle).toBeChecked();
+
+  await page.getByLabel("站点名称").fill("HTTP3 站点");
+  await page.getByLabel("域名").fill("h3.example.com");
+  await page.getByLabel("源站 URL").fill("https://origin.example.com");
+  await page.getByText("edge-http3", { exact: true }).click();
+  await page.screenshot({
+    path: testInfo.outputPath("site-http3-opt-in.png"),
+    fullPage: true,
+  });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(http3Toggle).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth + 1,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: testInfo.outputPath("site-http3-opt-in-mobile.png"),
+    fullPage: true,
+  });
+
+  const createRequest = page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === "/api/sites" &&
+      request.method() === "POST",
+  );
+  await page.getByRole("button", { name: "创建站点" }).click();
+  const request = await createRequest;
+  expect(request.postDataJSON()).toMatchObject({ http3_enabled: true });
 });
 
 test("site publish waits while automatic TLS issuance is active", async ({

@@ -83,6 +83,7 @@ interface SiteDraft {
   backup_host: string;
   backup_sni: string;
   passthrough: boolean;
+  http3_enabled: boolean;
   client_max_body_size_mb: number;
   client_keepalive_timeout_seconds: number;
   read_write_timeout_seconds: number;
@@ -428,6 +429,12 @@ export function SiteDetailPage() {
                           : "HTTP / gRPC / WS"
                     }
                   />
+                  {!draft.tcp_only ? (
+                    <Fact
+                      label="HTTP/3 / QUIC"
+                      value={draft.http3_enabled ? t("已开启") : t("已关闭")}
+                    />
+                  ) : null}
                   <Fact
                     label={t("边缘节点")}
                     value={t("{value0} 个", {
@@ -688,6 +695,7 @@ function TrafficSettings({
             setDraft({
               ...draft,
               tcp_only: value === "tcp",
+              http3_enabled: value === "tcp" ? false : draft.http3_enabled,
             })
           }
         >
@@ -696,6 +704,28 @@ function TrafficSettings({
             <TabsTrigger value="tcp">{t("仅 TCP / TLS")}</TabsTrigger>
           </TabsList>
           <TabsContent value="http" className="mt-5 space-y-5">
+            <div className="flex items-start justify-between gap-4">
+              <div className="space-y-1">
+                <Label htmlFor="http3-enabled">HTTP/3 / QUIC</Label>
+                <p className="max-w-2xl text-xs leading-5 text-muted-foreground">
+                  {t(
+                    "仅在支持的边缘节点使用 UDP 443；部分运营商可能限流，关闭时继续使用 HTTP/1.1 与 HTTP/2。",
+                  )}
+                </p>
+              </div>
+              <Switch
+                id="http3-enabled"
+                className="mt-0.5 shrink-0"
+                checked={draft.http3_enabled}
+                onCheckedChange={(http3_enabled) =>
+                  setDraft({
+                    ...draft,
+                    http3_enabled,
+                  })
+                }
+              />
+            </div>
+            <Separator />
             <OriginFields
               title={t("主源站")}
               required
@@ -1768,6 +1798,7 @@ function emptyDraft(ttl: number): SiteDraft {
     backup_host: "",
     backup_sni: "",
     passthrough: false,
+    http3_enabled: false,
     client_max_body_size_mb: 128,
     client_keepalive_timeout_seconds: 120,
     read_write_timeout_seconds: 120,
@@ -1804,6 +1835,7 @@ function draftFromSite(site: Site, ttl: number): SiteDraft {
     backup_host: site.backup_origin?.host_header || "",
     backup_sni: site.backup_origin?.tls_server_name || "",
     passthrough: site.passthrough,
+    http3_enabled: site.http3_enabled ?? false,
     client_max_body_size_mb: site.client_max_body_size_mb ?? 128,
     client_keepalive_timeout_seconds:
       site.client_keepalive_timeout_seconds ?? 120,
@@ -1837,6 +1869,7 @@ function sitePayload(draft: SiteDraft) {
       enabled: true,
     },
     passthrough: draft.passthrough,
+    http3_enabled: draft.tcp_only ? false : draft.http3_enabled,
     client_max_body_size_mb: draft.client_max_body_size_mb,
     client_keepalive_timeout_seconds: draft.client_keepalive_timeout_seconds,
     read_write_timeout_seconds: draft.read_write_timeout_seconds,

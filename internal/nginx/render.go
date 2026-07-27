@@ -150,7 +150,7 @@ server {
 server {
     listen 443 ssl;
     http2 on;
-{{if $.HTTP3Enabled}}    listen 443 quic;
+{{if .HTTP3Enabled}}    listen 443 quic;
     http3 on;
     add_header Alt-Svc 'h3=":443"; ma=86400' always;
 {{end}}
@@ -428,6 +428,7 @@ type renderedSite struct {
 	CacheGeneration        int64
 	GRPC                   bool
 	Passthrough            bool
+	HTTP3Enabled           bool
 	ClientMaxBodySizeMB    int
 	ClientKeepaliveTimeout string
 	ReadWriteTimeout       string
@@ -494,7 +495,7 @@ func RenderWithLegacyCache(sites []domain.Site, securityPolicies []domain.Securi
 
 type RenderRuntimeOptions struct {
 	DefaultCacheSizeGB        int
-	HTTP3Enabled              bool
+	HTTP3Capable              bool
 	ManagedOriginPools        bool
 	NginxWorkerConnections    int
 	OriginPoolConfigDirectory string
@@ -536,6 +537,7 @@ func RenderWithRuntimeOptions(sites []domain.Site, securityPolicies []domain.Sec
 	}
 	cachePaths := make([]renderedCachePath, 0, 1)
 	cacheEnabled := false
+	http3Enabled := false
 	dedicatedTCP := false
 	for _, site := range sites {
 		if site.TCPOnly {
@@ -566,12 +568,13 @@ func RenderWithRuntimeOptions(sites []domain.Site, securityPolicies []domain.Sec
 		item := renderedSite{
 			ID: site.ID, DomainList: strings.Join(site.Domains, " "), HealthBody: SiteHealthBody(site.ID), PrimaryHostPort: primary.Host, PrimaryTLSName: site.PrimaryOrigin.TLSServerName,
 			PrimaryScheme: domain.ProxyScheme(primary.Scheme), UseTLS: domain.OriginUsesTLS(primary.Scheme), HostHeader: site.PrimaryOrigin.HostHeader, CacheGeneration: site.CacheGeneration,
-			GRPC: domain.IsGRPCScheme(primary.Scheme), Passthrough: site.Passthrough, ClientMaxBodySizeMB: clientMaxBodySizeMB,
+			GRPC: domain.IsGRPCScheme(primary.Scheme), Passthrough: site.Passthrough, HTTP3Enabled: options.HTTP3Capable && site.HTTP3Enabled, ClientMaxBodySizeMB: clientMaxBodySizeMB,
 			ClientKeepaliveTimeout: fmt.Sprintf("%ds", clientKeepaliveTimeoutSeconds),
 			ReadWriteTimeout:       fmt.Sprintf("%ds", readWriteTimeoutSeconds),
 			CacheEnabled:           primary.Scheme == "http" || primary.Scheme == "https",
 			AlwaysUnbuffered:       site.Passthrough || domain.IsWebSocketScheme(primary.Scheme),
 		}
+		http3Enabled = http3Enabled || item.HTTP3Enabled
 		item.PrimaryUpstreamName = "origin_" + item.ID
 		item.CacheEnabled = item.CacheEnabled && !site.Passthrough
 		if item.CacheEnabled {
@@ -641,7 +644,7 @@ func RenderWithRuntimeOptions(sites []domain.Site, securityPolicies []domain.Sec
 		ManagedOriginPools:            options.ManagedOriginPools,
 		CachePaths:                    cachePaths,
 		DefaultHTTP:                   !dedicatedTCP,
-		HTTP3Enabled:                  options.HTTP3Enabled,
+		HTTP3Enabled:                  http3Enabled,
 		SecurityEnabled:               len(enabledSecurityPolicies(securityPolicies)) > 0 && !dedicatedTCP,
 		SecurityConfig:                renderSecurityConfig(securityPolicies, !dedicatedTCP),
 		RateLimitEnabled:              len(enabledRateLimitPolicies(rateLimitPolicies)) > 0 && !dedicatedTCP,

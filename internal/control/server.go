@@ -650,6 +650,7 @@ type siteRequest struct {
 	BackupOrigin                  *originRequest       `json:"backup_origin"`
 	StreamPaths                   *[]string            `json:"stream_paths"`
 	Passthrough                   *bool                `json:"passthrough"`
+	HTTP3Enabled                  *bool                `json:"http3_enabled"`
 	ClientMaxBodySizeMB           *int                 `json:"client_max_body_size_mb"`
 	ClientKeepaliveTimeoutSeconds *int                 `json:"client_keepalive_timeout_seconds"`
 	ReadWriteTimeoutSeconds       *int                 `json:"read_write_timeout_seconds"`
@@ -671,6 +672,10 @@ func (input siteRequest) site(id string, current *domain.Site) domain.Site {
 	passthrough := false
 	if input.Passthrough != nil {
 		passthrough = *input.Passthrough
+	}
+	http3Enabled := false
+	if input.HTTP3Enabled != nil {
+		http3Enabled = *input.HTTP3Enabled
 	}
 	clientMaxBodySizeMB := domain.DefaultClientMaxBodySizeMB
 	if input.ClientMaxBodySizeMB != nil {
@@ -714,7 +719,7 @@ func (input siteRequest) site(id string, current *domain.Site) domain.Site {
 	if input.TCPForwards != nil {
 		tcpForwards = append([]domain.TCPForward(nil), (*input.TCPForwards)...)
 	}
-	return domain.Site{ID: id, Name: input.Name, Domains: input.Domains, Nodes: input.NodeIDs, PrimaryOrigin: input.PrimaryOrigin.origin(currentPrimary), BackupOrigin: backupOrigin, StreamPaths: streamPaths, Passthrough: passthrough, ClientMaxBodySizeMB: clientMaxBodySizeMB, ClientKeepaliveTimeoutSeconds: clientKeepaliveTimeoutSeconds, ReadWriteTimeoutSeconds: readWriteTimeoutSeconds, DNSTTLSeconds: dnsTTLSeconds, TCPOnly: tcpOnly, TCPForwards: tcpForwards, Enabled: enabled}
+	return domain.Site{ID: id, Name: input.Name, Domains: input.Domains, Nodes: input.NodeIDs, PrimaryOrigin: input.PrimaryOrigin.origin(currentPrimary), BackupOrigin: backupOrigin, StreamPaths: streamPaths, Passthrough: passthrough, HTTP3Enabled: http3Enabled, ClientMaxBodySizeMB: clientMaxBodySizeMB, ClientKeepaliveTimeoutSeconds: clientKeepaliveTimeoutSeconds, ReadWriteTimeoutSeconds: readWriteTimeoutSeconds, DNSTTLSeconds: dnsTTLSeconds, TCPOnly: tcpOnly, TCPForwards: tcpForwards, Enabled: enabled}
 }
 
 func (input siteRequest) validateClientMaxBodySize() error {
@@ -828,6 +833,9 @@ func (s *Server) updateSite(response http.ResponseWriter, request *http.Request)
 	}
 	if input.Passthrough == nil {
 		siteInput.Passthrough = current.Passthrough
+	}
+	if input.HTTP3Enabled == nil {
+		siteInput.HTTP3Enabled = current.HTTP3Enabled
 	}
 	if input.ClientMaxBodySizeMB == nil {
 		siteInput.ClientMaxBodySizeMB = current.ClientMaxBodySizeMB

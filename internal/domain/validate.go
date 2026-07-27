@@ -74,6 +74,9 @@ func NormalizeAndValidateSite(site *Site) error {
 	if err := normalizeTCPForwards(site); err != nil {
 		return err
 	}
+	if site.TCPOnly {
+		site.HTTP3Enabled = false
+	}
 	var primary *url.URL
 	if !site.TCPOnly {
 		if err := ValidateOrigin(&site.PrimaryOrigin); err != nil {

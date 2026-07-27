@@ -66,7 +66,7 @@ func TestOriginConnectionMigrationAddsPoolState(t *testing.T) {
 	if _, err := database.db.Exec(`ALTER TABLE node_states DROP COLUMN origin_pools_json`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.db.Exec(`DELETE FROM schema_migrations WHERE version = 20`); err != nil {
+	if _, err := database.db.Exec(`DELETE FROM schema_migrations WHERE version >= 20`); err != nil {
 		t.Fatal(err)
 	}
 	if err := database.Migrate(); err != nil {
@@ -75,6 +75,41 @@ func TestOriginConnectionMigrationAddsPoolState(t *testing.T) {
 	found, err := columnExists(database.db, "node_states", "origin_pools_json")
 	if err != nil || !found {
 		t.Fatalf("origin pool state column = %v, %v", found, err)
+	}
+}
+
+func TestSiteHTTP3MigrationDefaultsExistingSitesOff(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	node, err := database.CreateNode("migration-edge", "203.0.113.29")
+	if err != nil {
+		t.Fatal(err)
+	}
+	site, err := database.CreateSite(domain.Site{
+		Name: "migration-site", Domains: []string{"migration.example.test"}, Nodes: []string{node.ID},
+		PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, Enabled: true,
+	}, "zone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`ALTER TABLE sites DROP COLUMN http3_enabled`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`DELETE FROM schema_migrations WHERE version = 21`); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	var enabled int
+	if err := database.db.QueryRow(`SELECT http3_enabled FROM sites WHERE id = ?`, site.ID).Scan(&enabled); err != nil {
+		t.Fatal(err)
+	}
+	if enabled != 0 {
+		t.Fatalf("migrated HTTP/3 default = %d, want 0", enabled)
 	}
 }
 

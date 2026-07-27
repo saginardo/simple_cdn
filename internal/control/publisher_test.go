@@ -352,7 +352,7 @@ func TestPublishEnablesHTTP3OnlyForCapableNodes(t *testing.T) {
 	}
 	site, err := database.CreateSite(domain.Site{
 		Name: "protocols", Domains: []string{"protocols.example.test"}, Nodes: []string{http3Node.ID, legacyNode.ID},
-		PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, Enabled: true,
+		PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, HTTP3Enabled: true, Enabled: true,
 	}, "zone")
 	if err != nil {
 		t.Fatal(err)
@@ -378,6 +378,51 @@ func TestPublishEnablesHTTP3OnlyForCapableNodes(t *testing.T) {
 	}
 	if len(legacyState.PublicUDPPorts) != 0 || strings.Contains(legacyState.NginxConfig, "listen 443 quic") || strings.Contains(legacyState.NginxConfig, "Alt-Svc") {
 		t.Fatalf("legacy node received HTTP/3 state = %#v\n%s", legacyState.PublicUDPPorts, legacyState.NginxConfig)
+	}
+}
+
+func TestPublishKeepsHTTP3OffByDefaultOnCapableNode(t *testing.T) {
+	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	key, err := NewEncryptionKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := NewCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := database.CreateNode("edge-http3-default-off", "203.0.113.28")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetNodeCapabilities(node.ID, []string{domain.EdgeCapabilityHTTP3}); err != nil {
+		t.Fatal(err)
+	}
+	site, err := database.CreateSite(domain.Site{
+		Name: "default-off", Domains: []string{"default-off.example.test"}, Nodes: []string{node.ID},
+		PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, Enabled: true,
+	}, "zone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	publisher := Publisher{Store: database, Cipher: cipher}
+	certificate, privateKey, notAfter := testCertificate(t, site.Domains...)
+	if err := publisher.StoreCertificate(site.ID, certificate, privateKey, notAfter); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := publisher.PublishSite(site.ID); err != nil {
+		t.Fatal(err)
+	}
+	state, _, err := database.NodeState(node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(state.PublicUDPPorts, 443) || strings.Contains(state.NginxConfig, "listen 443 quic") || strings.Contains(state.NginxConfig, "Alt-Svc") {
+		t.Fatalf("default-off site received HTTP/3 state = %#v\n%s", state.PublicUDPPorts, state.NginxConfig)
 	}
 }
 

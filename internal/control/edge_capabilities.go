@@ -17,10 +17,38 @@ func (s *Server) reconcileEdgeRuntimeCapabilities(nodeID string, capabilities []
 	if err != nil {
 		return err
 	}
-	if !http3StateNeedsRebuild(state, capabilities) && !originPoolStateNeedsRebuild(state, capabilities) {
+	http3Wanted, err := s.nodeWantsHTTP3(nodeID, capabilities)
+	if err != nil {
+		return err
+	}
+	if !http3StateNeedsRebuild(state, http3Wanted) && !originPoolStateNeedsRebuild(state, capabilities) {
 		return nil
 	}
 	return s.Publisher.PublishNode(nodeID)
+}
+
+func (s *Server) nodeWantsHTTP3(nodeID string, capabilities []string) (bool, error) {
+	capable := false
+	for _, capability := range capabilities {
+		if strings.TrimSpace(capability) == domain.EdgeCapabilityHTTP3 {
+			capable = true
+			break
+		}
+	}
+	if !capable {
+		return false, nil
+	}
+	publications, err := s.Store.ListSitePublications()
+	if err != nil {
+		return false, err
+	}
+	for _, publication := range publications {
+		site := publication.Site
+		if site.Enabled && !site.TCPOnly && site.HTTP3Enabled && siteHasNode(site, nodeID) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func originPoolStateNeedsRebuild(state domain.DesiredState, capabilities []string) bool {
@@ -32,22 +60,8 @@ func originPoolStateNeedsRebuild(state domain.DesiredState, capabilities []strin
 	return wanted != (len(state.OriginPools) > 0)
 }
 
-func http3StateNeedsRebuild(state domain.DesiredState, capabilities []string) bool {
+func http3StateNeedsRebuild(state domain.DesiredState, wanted bool) bool {
 	configured := strings.Contains(state.NginxConfig, "listen 443 quic")
 	declared := slices.Contains(state.PublicUDPPorts, 443)
-	hasHTTPSSite := configured || strings.Contains(state.NginxConfig, "listen 443 ssl;")
-	if !hasHTTPSSite && len(state.PublicUDPPorts) == 0 {
-		return false
-	}
-	wanted := false
-	for _, capability := range capabilities {
-		if strings.TrimSpace(capability) == domain.EdgeCapabilityHTTP3 {
-			wanted = true
-			break
-		}
-	}
-	if wanted {
-		return !configured || !declared
-	}
-	return configured || len(state.PublicUDPPorts) != 0
+	return configured != wanted || declared != wanted
 }

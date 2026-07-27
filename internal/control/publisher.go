@@ -295,7 +295,7 @@ func (p Publisher) renderNodeStateUpdates(materials []publicationMaterial, affec
 			nodeSecurityPolicies = securityPolicies
 		}
 		nodeRateLimitPolicies := rateLimitPoliciesForCapabilities(rateLimitPolicies, node.Capabilities)
-		http3Enabled := slices.Contains(node.Capabilities, domain.EdgeCapabilityHTTP3)
+		http3Capable := slices.Contains(node.Capabilities, domain.EdgeCapabilityHTTP3)
 		managedOriginPools := slices.Contains(node.Capabilities, domain.EdgeCapabilityOriginConnection)
 		cacheSizeGB, err := domain.EffectiveNodeCacheMaxSizeGB(node, settings.CacheDefaultSizeGB)
 		if err != nil {
@@ -303,7 +303,7 @@ func (p Publisher) renderNodeStateUpdates(materials []publicationMaterial, affec
 		}
 		renderedConfig, err := nginx.RenderNodeWithRuntimeOptions(nodeSites, nodeSecurityPolicies, nodeRateLimitPolicies, nginx.RenderRuntimeOptions{
 			DefaultCacheSizeGB:     cacheSizeGB,
-			HTTP3Enabled:           http3Enabled,
+			HTTP3Capable:           http3Capable,
 			ManagedOriginPools:     managedOriginPools,
 			NginxWorkerConnections: node.NginxCapacity.WorkerConnections,
 		})
@@ -322,7 +322,7 @@ func (p Publisher) renderNodeStateUpdates(materials []publicationMaterial, affec
 			return nil, nil, fmt.Errorf("split Nginx configuration for node %s: %w", node.Name, err)
 		}
 		ports := requiredPublicPorts(nodeSites)
-		udpPorts := requiredPublicUDPPorts(nodeSites, http3Enabled)
+		udpPorts := requiredPublicUDPPorts(nodeSites, http3Capable)
 		mainConfig, eventsConfig, err := nginx.RenderCapacity(node.NginxCapacity)
 		if err != nil {
 			return nil, nil, fmt.Errorf("node %s capacity: %w", node.Name, err)
@@ -478,12 +478,12 @@ func requiredPublicPorts(sites []domain.Site) []int {
 	return result
 }
 
-func requiredPublicUDPPorts(sites []domain.Site, http3Enabled bool) []int {
-	if !http3Enabled {
+func requiredPublicUDPPorts(sites []domain.Site, http3Capable bool) []int {
+	if !http3Capable {
 		return nil
 	}
 	for _, site := range sites {
-		if site.Enabled && !site.TCPOnly {
+		if site.Enabled && !site.TCPOnly && site.HTTP3Enabled {
 			return []int{443}
 		}
 	}

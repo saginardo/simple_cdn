@@ -168,6 +168,53 @@ func TestSiteClientMaxBodySizeAPI(t *testing.T) {
 	}
 }
 
+func TestSiteHTTP3APIIsOptInAndPreservesOmission(t *testing.T) {
+	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.CreateInitialAdmin("hash", "secret"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CreateSession("admin", "session-token", "csrf-token", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	node, err := database.CreateNode("http3-edge", "203.0.113.30")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{Store: database}
+	base := map[string]any{
+		"name": "http3-opt-in", "zone_id": "zone", "domains": []string{"http3.example.test"}, "node_ids": []string{node.ID},
+		"primary_origin": map[string]any{"url": "https://origin.example.test", "enabled": true}, "enabled": true,
+	}
+	created := requestSite(t, server, http.MethodPost, "/api/sites", base)
+	if created.HTTP3Enabled {
+		t.Fatal("new site enabled HTTP/3 by default")
+	}
+	base["http3_enabled"] = true
+	updated := requestSite(t, server, http.MethodPut, "/api/sites/"+created.ID, base)
+	if !updated.HTTP3Enabled {
+		t.Fatal("site HTTP/3 opt-in was not saved")
+	}
+	delete(base, "http3_enabled")
+	preserved := requestSite(t, server, http.MethodPut, "/api/sites/"+created.ID, base)
+	if !preserved.HTTP3Enabled {
+		t.Fatal("omitted HTTP/3 update did not preserve the current value")
+	}
+	base["http3_enabled"] = true
+	base["tcp_only"] = true
+	base["tcp_forwards"] = []map[string]any{{
+		"name": "HTTPS passthrough", "listen_port": 8443,
+		"upstream_host": "origin.example.test", "upstream_port": 443,
+	}}
+	tcpOnly := requestSite(t, server, http.MethodPut, "/api/sites/"+created.ID, base)
+	if tcpOnly.HTTP3Enabled {
+		t.Fatal("TCP-only site retained an HTTP/3 setting")
+	}
+}
+
 func TestSiteClientKeepaliveTimeoutAPI(t *testing.T) {
 	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
 	if err != nil {

@@ -55,7 +55,7 @@ func TestRenderIncludesCacheAndFailoverPolicy(t *testing.T) {
 	}
 }
 
-func TestRenderHTTP3IsCapabilityGated(t *testing.T) {
+func TestRenderHTTP3RequiresSiteOptInAndCapability(t *testing.T) {
 	site := domain.Site{
 		ID: "site-h3", Name: "HTTP/3 site", Domains: []string{"h3.example.test"},
 		PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, Enabled: true,
@@ -70,9 +70,27 @@ func TestRenderHTTP3IsCapabilityGated(t *testing.T) {
 		}
 	}
 
-	configuration, err := RenderWithRuntimeOptions([]domain.Site{site}, nil, nil, RenderRuntimeOptions{
+	capableButDisabled, err := RenderWithRuntimeOptions([]domain.Site{site}, nil, nil, RenderRuntimeOptions{
 		DefaultCacheSizeGB: domain.DefaultCacheMaxSizeGB,
-		HTTP3Enabled:       true,
+		HTTP3Capable:       true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, unexpected := range []string{"listen 443 quic", "http3 on;", "quic_retry on;", "Alt-Svc"} {
+		if strings.Contains(capableButDisabled, unexpected) {
+			t.Fatalf("site without HTTP/3 opt-in unexpectedly contains %q:\n%s", unexpected, capableButDisabled)
+		}
+	}
+
+	site.HTTP3Enabled = true
+	http2Site := domain.Site{
+		ID: "site-http2", Name: "HTTP/2 site", Domains: []string{"h2.example.test"},
+		PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, Enabled: true,
+	}
+	configuration, err := RenderWithRuntimeOptions([]domain.Site{site, http2Site}, nil, nil, RenderRuntimeOptions{
+		DefaultCacheSizeGB: domain.DefaultCacheMaxSizeGB,
+		HTTP3Capable:       true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -91,6 +109,12 @@ func TestRenderHTTP3IsCapabilityGated(t *testing.T) {
 		if !strings.Contains(configuration, expected) {
 			t.Fatalf("HTTP/3 configuration is missing %q:\n%s", expected, configuration)
 		}
+	}
+	if count := strings.Count(configuration, "    listen 443 quic;\n"); count != 1 {
+		t.Fatalf("site QUIC listeners = %d, want one opted-in site:\n%s", count, configuration)
+	}
+	if count := strings.Count(configuration, "add_header Alt-Svc"); count != 1 {
+		t.Fatalf("Alt-Svc headers = %d, want one opted-in site:\n%s", count, configuration)
 	}
 	if strings.Contains(configuration, "ssl_early_data") {
 		t.Fatalf("HTTP/3 configuration unexpectedly enables replayable 0-RTT data:\n%s", configuration)

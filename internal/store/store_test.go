@@ -665,7 +665,7 @@ func TestPublishedSnapshotAndDomainClaimsSurviveDraftChanges(t *testing.T) {
 	}
 	site, err := database.CreateSite(domain.Site{
 		Name: "snapshot", Domains: []string{"old.example.test"}, Nodes: []string{node.ID},
-		PrimaryOrigin: domain.Origin{URL: "https://old-origin.example.test", Enabled: true}, Enabled: true,
+		PrimaryOrigin: domain.Origin{URL: "https://old-origin.example.test", Enabled: true}, HTTP3Enabled: true, Enabled: true,
 	}, "zone")
 	if err != nil {
 		t.Fatal(err)
@@ -684,6 +684,7 @@ func TestPublishedSnapshotAndDomainClaimsSurviveDraftChanges(t *testing.T) {
 	}
 	draft.Domains = []string{"draft.example.test"}
 	draft.PrimaryOrigin.URL = "https://draft-origin.example.test"
+	draft.HTTP3Enabled = false
 	draft, err = database.UpdateSite(draft, zoneID)
 	if err != nil {
 		t.Fatal(err)
@@ -697,7 +698,7 @@ func TestPublishedSnapshotAndDomainClaimsSurviveDraftChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(publication.Site.Domains) != 1 || publication.Site.Domains[0] != "old.example.test" || publication.Site.PrimaryOrigin.URL != "https://old-origin.example.test" {
+	if len(publication.Site.Domains) != 1 || publication.Site.Domains[0] != "old.example.test" || publication.Site.PrimaryOrigin.URL != "https://old-origin.example.test" || !publication.Site.HTTP3Enabled {
 		t.Fatalf("published site changed with its draft: %#v", publication.Site)
 	}
 	if string(publication.CertificateCiphertext) != string(oldCertificate) || string(publication.KeyCiphertext) != string(oldKey) {
@@ -719,7 +720,7 @@ func TestPublishedSnapshotAndDomainClaimsSurviveDraftChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if publication.Site.Domains[0] != "draft.example.test" || string(publication.CertificateCiphertext) != string(newCertificate) {
+	if publication.Site.Domains[0] != "draft.example.test" || publication.Site.HTTP3Enabled || string(publication.CertificateCiphertext) != string(newCertificate) {
 		t.Fatalf("draft was not promoted: %#v", publication)
 	}
 	if _, err := database.CreateSite(domain.Site{

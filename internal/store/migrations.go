@@ -36,6 +36,11 @@ var schemaMigrations = []schemaMigration{
 	{Version: 18, Name: "smart-routing-minimum-recovery-rounds", Apply: migrateSmartRoutingMinimumRecoveryRounds},
 	{Version: 19, Name: "http3-public-udp-ports", Apply: migrateHTTP3PublicUDPPorts},
 	{Version: 20, Name: "origin-connection-pools", Apply: migrateOriginConnectionPools},
+	{Version: 21, Name: "site-http3-opt-in", Apply: migrateSiteHTTP3OptIn},
+}
+
+func migrateSiteHTTP3OptIn(tx *sql.Tx) error {
+	return addColumnIfMissing(tx, "sites", "http3_enabled", "http3_enabled INTEGER NOT NULL DEFAULT 0")
 }
 
 func migrateOriginConnectionPools(tx *sql.Tx) error {
@@ -490,8 +495,11 @@ func migrateTaskInvariants(tx *sql.Tx) error {
 
 func migratePublishedState(tx *sql.Tx) error {
 	// A partially migrated legacy database may reach this migration before the
-	// later timeout migration. The publication scanner needs this column now.
+	// later site migrations. The publication scanner needs these columns now.
 	if err := addColumnIfMissing(tx, "sites", "client_keepalive_timeout_seconds", "client_keepalive_timeout_seconds INTEGER NOT NULL DEFAULT 120"); err != nil {
+		return err
+	}
+	if err := addColumnIfMissing(tx, "sites", "http3_enabled", "http3_enabled INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
 	if err := seedBuiltinSecurityPoliciesTx(tx); err != nil {

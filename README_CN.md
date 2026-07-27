@@ -15,7 +15,7 @@
 - 边缘代理以原子方式暂存版本化 Nginx 基础配置、每站点 HTTP 和 `stream` 配置片段及证书；检查本机公网 TCP 与 UDP 端口占用，执行 `nginx -t`，重新加载健康的 Nginx，或拉起已失败/停止的 Nginx。代理会确认重新加载确实创建了新一代 worker 进程；失败时恢复最后一份正常配置和 TLS 文件，并在不阻塞心跳循环的前提下上报 Linux 主机状态和 `/opt/cdn-edge/cache` 磁盘用量。
 - Nginx OSS 静态资源缓存策略：每个边缘节点共享一个缓存区，默认总磁盘上限为 1 GiB。全局节点默认值可被单个节点覆盖，站点共享该节点配额。只有常见 CSS、JavaScript、字体、图片、WebAssembly 和 Web Manifest 后缀会选择缓存，其他 URI 均使用 `proxy_cache off`。携带 Authorization 或 Cookie 的请求不会读取或写入共享缓存，但这些请求头仍会原样回源。策略包括规范化缓存代际、缓存锁、重新验证、后台刷新、`STALE` 回退，以及 HTTP(S) 主备源站故障切换。HTTP(S) 站点会自动对 WebSocket Upgrade、SSE Accept、`X-CDN-Stream: 1` 和 POST 响应关闭缓存与响应缓冲；整站透传模式会对整个主机名禁用缓存和缓冲，同时转发字节范围。`grpc://` 和 `grpcs://` 源站通过客户端 HTTP/2 监听器使用原生 gRPC 代理。
 - 按能力下发共享回源连接池：相同协议、地址、Host 和 SNI 的站点复用同一 upstream，池容量按节点 `worker_connections` 和引用权重自动分配。边缘以约 5 秒的复用服务探测持续确认应用路径，并以 32-48 秒的低频冷探测验证新建 TCP/TLS；任一层连续 2 次失败会熔断，恢复需两层分别确认。Nginx include 切换与站点发布串行、可回滚。访问日志和 30 天分钟聚合提供真实请求的回源建连、首字节、完整响应及连接复用率，节点详情只实时展示最新双层探测状态且不持久化历史。详见 [docs/ORIGIN_CONNECTIONS.md](docs/ORIGIN_CONNECTIONS.md)。
-- 按能力启用基于 UDP 443 的 HTTP/3/QUIC。安装器仅在 Nginx 报告 `--with-http_v3_module` 时声明 `http3_v1`；兼容节点会增加 QUIC 监听、`Alt-Svc`、地址验证重试、UDP 冲突检查、重载后监听确认和能力自动对账，同时保留 TCP 443 上的 HTTP/1.1 与 HTTP/2 回退。IP 封禁同时覆盖 UDP 443 和 TCP 80/443。
+- 按站点、按能力启用基于 UDP 443 的 HTTP/3/QUIC，默认关闭。安装器仅在 Nginx 报告 `--with-http_v3_module` 时声明 `http3_v1`；主动开启的站点在兼容节点上会增加 QUIC 监听、`Alt-Svc`、地址验证重试、UDP 冲突检查、重载后监听确认和能力自动对账，同时保留 TCP 443 上的 HTTP/1.1 与 HTTP/2 回退。IP 封禁同时覆盖 UDP 443 和 TCP 80/443。
 - Nginx stream TCP 转发：客户端 TLS 终止和上游 TLS/SNI 校验可独立选择，支持动态上游 DNS 解析、按端口配置超时、原子多文件回滚，以及不监听 80/443 的纯 TCP 站点。
 - Cloudflare DNS-only A 记录对账：节点可达性和站点级 HTTPS/SNI/证书健康检查都带滞回。连续 3 次探测失败时移除节点，连续 5 次成功时恢复；若所有节点均异常，则有意保持 DNS 不变。
 - 经过身份验证的运行时设置：支持 60-300 秒 DNS TTL、按站点发布的 TTL 覆盖、加密保存 Cloudflare 与 SMTP 设置，以及加密保存 Restic S3/R2 备份凭据和计划。数据库覆盖优先于环境变量回退值，修改后无需重启控制器。
@@ -122,7 +122,7 @@ sudo docker compose ps
 
 同一条生成命令可以安装新边缘节点、迁移旧的分散目录布局，或升级现有 `/opt/cdn-edge` 部署。迁移时会保留节点身份、证书、已应用版本、待发送访问日志队列、读取偏移和访问日志；可重建的 Nginx 缓存会从空状态开始。旧布局和已迁移节点共存期间不要发布新的站点状态。目录布局、迁移检查、备份边界和回滚行为见 [docs/EDGE_DEPLOYMENT.md](docs/EDGE_DEPLOYMENT.md)。
 
-安装器根据 `nginx -V` 检测 HTTP/3，不会向不兼容节点下发 QUIC 指令。新能力上报控制器后，该节点的期望状态会自动重建。公网 HTTP/3 还要求主机防火墙和云厂商防火墙同时允许 UDP 443；阻断 UDP 不会移除 TCP 回退，但客户端可能先经历一次失败的 QUIC 尝试。
+安装器根据 `nginx -V` 检测 HTTP/3，不会向不兼容节点下发 QUIC 指令。所有新建和已有站点都默认关闭 HTTP/3，需要在对应站点的流量设置中主动开启；更新后的站点设置发布后，或节点能力发生变化时，节点期望状态会自动重建。公网 HTTP/3 还要求主机防火墙和云厂商防火墙同时允许 UDP 443；阻断 UDP 不会移除 TCP 回退，但客户端可能先经历一次失败的 QUIC 尝试。
 
 具备 `machine_status_stream_v1` 能力的代理每 5 秒采集一次主机快照，并通过复用的 mTLS HTTP/2 控制连接上报；常规 30 秒心跳仍携带最新快照作为滚动升级兼容路径。主控只在内存中保存最新值，并通过受认证的 SSE 实时更新节点详情页；页面保留 30 秒详情刷新作为断线兜底。机器状态及其中的实时回源探测结果不持久化历史数据，尚未收到快照时页面不显示对应区域。节点详情显示 Linux 发行版和版本、运行时长、1/5/15 分钟负载、逻辑 CPU 数与区间利用率、内存和根文件系统用量、默认路由接口的 RX/TX 速率，以及有样本时的回源池状态。CPU 和网络速率根据相邻 5 秒样本计算，因此代理重启后要到第二次采样才会结束短暂的采样状态。
 
@@ -155,7 +155,7 @@ sudo docker compose ps
 
 对于 SMTPS、IMAPS 或其他 TCP 服务，可在同一站点添加一条或多条 TCP 规则。每条规则定义公网监听端口、上游主机/端口、监听器 TLS、上游 TLS/SNI 和超时。需要专用节点且不应监听 80/443 时选择“纯 TCP”。节点首次发布 TCP 配置前，应重新执行生成的部署/升级命令；安装器会添加 `libnginx-mod-stream`、主配置上下文中的 `stream` include，以及声明 `tcp_stream_v1` 能力的代理。所有受影响节点上报该能力前，发布会被拒绝。纯 TCP 和 HTTP 站点不能共享节点，公网 80/443 端口始终保留给 HTTP 渲染器。如果 Nginx 已通过手写配置占用目标端口，代理会将其报告为非托管冲突；保留回滚副本后移除手动监听器，校验 Nginx，再从控制器发布。TCP 会话和错误日志保存在边缘节点 `/var/log/nginx/cdn-platform-tcp-*.log`，使用主机 Nginx 日志轮转，不会混入 HTTP 请求分析。
 
-HTTP 边缘节点提供 `http://EDGE_IPV4/__cdn_health`。已发布 HTTP 配置还提供站点专属的 `https://SITE_DOMAIN/__cdn_health`；控制器会直接连接每个已分配边缘 IP，同时保留真实 Host、SNI 和证书校验。纯 TCP 节点改为连接每个期望的已发布 TCP 端口，不要求开放 80/443。请在节点与云厂商防火墙中开放 TCP 80/443，并为 `http3_v1` 节点开放 UDP 443。控制器有意继续用 TCP 回退路径判定健康，因此应按边缘部署文档单独验证 QUIC。源站本身应只允许返回的边缘 CIDR 入站。
+HTTP 边缘节点提供 `http://EDGE_IPV4/__cdn_health`。已发布 HTTP 配置还提供站点专属的 `https://SITE_DOMAIN/__cdn_health`；控制器会直接连接每个已分配边缘 IP，同时保留真实 Host、SNI 和证书校验。纯 TCP 节点改为连接每个期望的已发布 TCP 端口，不要求开放 80/443。请在节点与云厂商防火墙中开放 TCP 80/443；当 `http3_v1` 节点上至少有一个已发布站点开启 HTTP/3 时，还需开放 UDP 443。控制器有意继续用 TCP 回退路径判定健康，因此应按边缘部署文档单独验证 QUIC。源站本身应只允许返回的边缘 CIDR 入站。
 
 如果通过 IP 访问 HTTPS/WSS/GRPCS 源站，而证书只覆盖 DNS 主机名，请分别配置源站 URL、Host 请求头和 TLS SNI。IP 连接示例、证书要求及边缘校验命令见 [docs/ORIGIN_TLS_SNI.md](docs/ORIGIN_TLS_SNI.md)。
 

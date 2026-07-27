@@ -148,6 +148,7 @@ type Site struct {
 	// StreamPaths is retained as an empty compatibility field for older API clients.
 	StreamPaths                   []string     `json:"stream_paths"`
 	Passthrough                   bool         `json:"passthrough"`
+	HTTP3Enabled                  bool         `json:"http3_enabled"`
 	ClientMaxBodySizeMB           int          `json:"client_max_body_size_mb"`
 	ClientKeepaliveTimeoutSeconds int          `json:"client_keepalive_timeout_seconds"`
 	ReadWriteTimeoutSeconds       int          `json:"read_write_timeout_seconds"`

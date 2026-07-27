@@ -527,6 +527,8 @@ const english = {
   添加站点: "Add site",
   "无 HTTP 域名": "No HTTP domains",
   已停用: "Disabled",
+  已开启: "On",
+  已关闭: "Off",
   "域名、源站、边缘节点与发布状态":
     "Domains, origins, edge nodes, and publish status",
   "{value0} 个受影响的边缘节点未能应用配置":
@@ -579,6 +581,8 @@ const english = {
   个: "items",
   个转发端口: "forwarding ports",
   关闭缓存并直接代理到源站: "Disable caching and proxy directly to the origin",
+  "仅在支持的边缘节点使用 UDP 443；部分运营商可能限流，关闭时继续使用 HTTP/1.1 与 HTTP/2。":
+    "Use UDP 443 only on supported edge nodes. Some carriers may throttle it; when off, clients continue over HTTP/1.1 and HTTP/2.",
   过渡期保留: "Retained during transition",
   缓存版本: "Cache version",
   缓存失效已发布: "Cache invalidation published",

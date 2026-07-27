@@ -52,8 +52,8 @@ func TestRenderedHTTP3ServesARealQUICRequest(t *testing.T) {
 	const siteID = "http3-integration"
 	configuration, err := RenderWithRuntimeOptions([]domain.Site{{
 		ID: siteID, Name: "HTTP/3 integration", Domains: []string{"h3.test"},
-		PrimaryOrigin: domain.Origin{URL: origin.URL, Enabled: true}, Enabled: true,
-	}}, nil, nil, RenderRuntimeOptions{DefaultCacheSizeGB: domain.DefaultCacheMaxSizeGB, HTTP3Enabled: true})
+		PrimaryOrigin: domain.Origin{URL: origin.URL, Enabled: true}, HTTP3Enabled: true, Enabled: true,
+	}}, nil, nil, RenderRuntimeOptions{DefaultCacheSizeGB: domain.DefaultCacheMaxSizeGB, HTTP3Capable: true})
 	if err != nil {
 		t.Fatal(err)
 	}
