@@ -117,9 +117,19 @@ func (p *networkOriginProber) reusableHTTPClient(pool domain.OriginPool) *origin
 }
 
 func newOriginHTTPProbeClient(pool domain.OriginPool, disableKeepAlives bool) *originHTTPProbeClient {
+	protocols := new(http.Protocols)
+	switch effectivePoolHTTPVersion(pool) {
+	case domain.OriginHTTPVersionHTTP2:
+		protocols.SetHTTP2(true)
+	case domain.OriginHTTPVersionH2C:
+		protocols.SetUnencryptedHTTP2(true)
+	default:
+		protocols.SetHTTP1(true)
+	}
 	transport := &http.Transport{
 		DisableKeepAlives:   disableKeepAlives,
-		ForceAttemptHTTP2:   false,
+		ForceAttemptHTTP2:   effectivePoolHTTPVersion(pool) == domain.OriginHTTPVersionHTTP2,
+		Protocols:           protocols,
 		MaxIdleConns:        1,
 		MaxIdleConnsPerHost: 1,
 		MaxConnsPerHost:     1,
@@ -281,6 +291,13 @@ func probeOriginHTTP(ctx context.Context, pool domain.OriginPool, client *http.C
 	measurement.HTTPStatus = response.StatusCode
 	result := measurement
 	traceMu.Unlock()
+	wantedVersion := effectivePoolHTTPVersion(pool)
+	if (wantedVersion == domain.OriginHTTPVersionHTTP2 || wantedVersion == domain.OriginHTTPVersionH2C) && response.ProtoMajor != 2 {
+		return result, fmt.Errorf("origin negotiated %s instead of HTTP/2", response.Proto)
+	}
+	if wantedVersion == domain.OriginHTTPVersionHTTP1 && response.ProtoMajor != 1 {
+		return result, fmt.Errorf("origin negotiated %s instead of HTTP/1.1", response.Proto)
+	}
 	if readErr != nil || closeErr != nil {
 		return result, errors.Join(readErr, closeErr)
 	}
@@ -511,6 +528,7 @@ func (a *Agent) stageOriginPools(pools []domain.OriginPool) (*originPoolStage, e
 				status := cloneOriginProbeStatus(previous.Status)
 				status.Address = pool.Address
 				status.Scheme = pool.Scheme
+				status.HTTPVersion = pool.HTTPVersion
 				status.KeepaliveConnections = pool.KeepaliveConnections
 				status.References = append([]domain.OriginPoolReference(nil), pool.References...)
 				runtime.Status = status
@@ -623,7 +641,15 @@ func cloneOriginPool(pool domain.OriginPool) domain.OriginPool {
 
 func sameOriginTransport(left, right domain.OriginPool) bool {
 	return left.ID == right.ID && left.Address == right.Address && left.Scheme == right.Scheme &&
-		left.HostHeader == right.HostHeader && left.TLSServerName == right.TLSServerName
+		left.HostHeader == right.HostHeader && left.TLSServerName == right.TLSServerName &&
+		effectivePoolHTTPVersion(left) == effectivePoolHTTPVersion(right)
+}
+
+func effectivePoolHTTPVersion(pool domain.OriginPool) domain.OriginHTTPVersion {
+	if pool.HTTPVersion == "" {
+		return domain.OriginHTTPVersionHTTP1
+	}
+	return pool.HTTPVersion
 }
 
 func originServerDirective(pool domain.OriginPool, state domain.OriginCircuitState) []byte {
@@ -887,7 +913,7 @@ func (a *Agent) applyOriginProbeResult(pool domain.OriginPool, kind domain.Origi
 	}
 	checkedAt := time.Now().UTC()
 	*status = domain.OriginProbeStatus{
-		PoolID: pool.ID, Address: pool.Address, Scheme: pool.Scheme,
+		PoolID: pool.ID, Address: pool.Address, Scheme: pool.Scheme, HTTPVersion: pool.HTTPVersion,
 		KeepaliveConnections: pool.KeepaliveConnections, References: append([]domain.OriginPoolReference(nil), pool.References...),
 		CircuitState:               next.CircuitState,
 		ServiceConsecutiveFailures: next.ServiceConsecutiveFailures, ServiceConsecutiveSuccesses: next.ServiceConsecutiveSuccesses,

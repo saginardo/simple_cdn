@@ -14,6 +14,10 @@ func TestValidMachineStatus(t *testing.T) {
 		DiskUsedBytes: 40 << 30, DiskTotalBytes: 100 << 30,
 		NetworkInterface: "eth0", NetworkRXBytesPerSec: 1024, NetworkTXBytesPerSec: 2048,
 		SampleSeconds: 30, CollectedAt: time.Now().UTC(),
+		Nginx: &NginxRuntimeStatus{
+			ActiveConnections: 3, AcceptedConnections: 10, HandledConnections: 10,
+			Requests: 14, Reading: 1, Writing: 1, Waiting: 1,
+		},
 	}
 	if !ValidMachineStatus(valid) {
 		t.Fatalf("valid machine status was rejected: %#v", valid)
@@ -26,6 +30,13 @@ func TestValidMachineStatus(t *testing.T) {
 		func() MachineStatus { value := valid; value.MemoryUsedBytes = 9 << 30; return value }(),
 		func() MachineStatus { value := valid; value.NetworkRXBytesPerSec = -1; return value }(),
 		func() MachineStatus { value := valid; value.CollectedAt = time.Time{}; return value }(),
+		func() MachineStatus {
+			value := valid
+			invalidNginx := *valid.Nginx
+			invalidNginx.Waiting++
+			value.Nginx = &invalidNginx
+			return value
+		}(),
 	}
 	for index, status := range invalid {
 		if ValidMachineStatus(status) {

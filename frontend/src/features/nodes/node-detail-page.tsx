@@ -773,11 +773,59 @@ function MachineStatus({ detail }: { detail: NodeDetail }) {
             {formatDateTime(report.collected_at)}
           </span>
         </div>
+        {report.nginx ? <NginxRuntime detail={detail} /> : null}
         {report.origin_probes?.length ? (
           <OriginConnections detail={detail} />
         ) : null}
       </CardContent>
     </Card>
+  );
+}
+
+function NginxRuntime({ detail }: { detail: NodeDetail }) {
+  const report = detail.machine.report;
+  if (!report?.nginx) return null;
+  const nginx = report.nginx;
+  const workers =
+    detail.node.nginx_capacity.worker_processes || report.cpu_logical_cores;
+  const capacity = Math.max(
+    1,
+    workers * detail.node.nginx_capacity.worker_connections,
+  );
+  const usage = (nginx.active_connections / capacity) * 100;
+  return (
+    <div className="sm:col-span-2 xl:col-span-3 min-w-0 border-t pt-4">
+      <div className="mb-4">
+        <h3 className="font-heading text-sm font-medium">
+          {t("Nginx 运行状态")}
+        </h3>
+        <p className="mt-1 text-xs text-muted-foreground">
+          {t("仅通过节点本地接口实时采集")}
+        </p>
+      </div>
+      <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-4">
+        <Usage
+          label={t("活动连接")}
+          value={usage}
+          detail={t("{value0} / {value1} 连接容量", {
+            value0: formatNumber(nginx.active_connections),
+            value1: formatNumber(capacity),
+          })}
+        />
+        <dl className="grid grid-cols-3 gap-4 sm:col-span-1 xl:col-span-1">
+          <Datum label={t("读取")} value={formatNumber(nginx.reading)} />
+          <Datum label={t("写入")} value={formatNumber(nginx.writing)} />
+          <Datum label={t("等待")} value={formatNumber(nginx.waiting)} />
+        </dl>
+        <dl className="grid grid-cols-2 gap-4 sm:col-span-2 xl:col-span-2">
+          <Datum label={t("累计请求")} value={formatNumber(nginx.requests)} />
+          <Datum
+            label={t("连接处理")}
+            value={`${formatNumber(nginx.handled_connections)} / ${formatNumber(nginx.accepted_connections)}`}
+          />
+        </dl>
+      </div>
+    </div>
   );
 }
 
@@ -838,6 +886,16 @@ function OriginConnections({ detail }: { detail: NodeDetail }) {
                     </div>
                     <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
                       <span className="uppercase">{probe.scheme}</span>
+                      {probe.scheme === "http" || probe.scheme === "https" ? (
+                        <span>
+                          ·{" "}
+                          {probe.http_version === "h2c"
+                            ? "H2C"
+                            : probe.http_version === "http2"
+                              ? "HTTP/2"
+                              : "HTTP/1.1"}
+                        </span>
+                      ) : null}
                     </div>
                   </TableCell>
                   <TableCell className="max-w-56 text-xs">

@@ -196,6 +196,51 @@ func TestPublishCapabilityGatesSharedOriginPools(t *testing.T) {
 	}
 }
 
+func TestPublishRequiresHTTP2OriginCapability(t *testing.T) {
+	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	key, _ := NewEncryptionKey()
+	cipher, _ := NewCipher(key)
+	node, err := database.CreateNode("h2-origin-edge", "203.0.113.32")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetNodeCapabilities(node.ID, []string{domain.EdgeCapabilityOriginConnection}); err != nil {
+		t.Fatal(err)
+	}
+	site, err := database.CreateSite(domain.Site{
+		Name: "h2-origin", Domains: []string{"h2-origin.example.test"}, Nodes: []string{node.ID},
+		PrimaryOrigin: domain.Origin{URL: "http://origin.example.test:8080", HTTPVersion: domain.OriginHTTPVersionH2C, Enabled: true}, Enabled: true,
+	}, "zone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	publisher := Publisher{Store: database, Cipher: cipher}
+	certificate, privateKey, notAfter := testCertificate(t, site.Domains...)
+	if err := publisher.StoreCertificate(site.ID, certificate, privateKey, notAfter); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := publisher.PublishSite(site.ID); err == nil || !strings.Contains(err.Error(), "must be upgraded before publishing HTTP/2 origin connections") {
+		t.Fatalf("publish without HTTP/2 capability = %v", err)
+	}
+	if err := database.SetNodeCapabilities(node.ID, []string{domain.EdgeCapabilityOriginConnection, domain.EdgeCapabilityOriginHTTP2}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := publisher.PublishSite(site.ID); err != nil {
+		t.Fatal(err)
+	}
+	state, _, err := database.NodeState(node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(state.NginxConfig, "proxy_http_version 2;") || len(state.OriginPools) != 1 || state.OriginPools[0].HTTPVersion != domain.OriginHTTPVersionH2C {
+		t.Fatalf("published H2C state = %#v\n%s", state.OriginPools, state.NginxConfig)
+	}
+}
+
 func TestPublishNodeUpdatesNginxCapacityState(t *testing.T) {
 	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
 	if err != nil {
@@ -1190,6 +1235,25 @@ func TestStoreCertificateRejectsMismatchedPrivateKey(t *testing.T) {
 	publisher := Publisher{Store: database, Cipher: cipher}
 	if err := publisher.StoreCertificate("site", certificate, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: otherKeyDER}), notAfter); err == nil {
 		t.Fatal("expected mismatched private key to be rejected")
+	}
+}
+
+func TestOriginPoolsEqualIncludesHTTPVersion(t *testing.T) {
+	base := domain.OriginPool{
+		ID:                   "0123456789abcdef01234567",
+		Address:              "origin.example.test:443",
+		Scheme:               "https",
+		HTTPVersion:          domain.OriginHTTPVersionHTTP1,
+		HostHeader:           "origin.example.test",
+		TLSServerName:        "origin.example.test",
+		ConfigPath:           "/opt/cdn-edge/config/nginx/origin-pools/0123456789abcdef01234567.conf",
+		KeepaliveConnections: 32,
+		References:           []domain.OriginPoolReference{{SiteID: "site", Role: "primary"}},
+	}
+	http2 := base
+	http2.HTTPVersion = domain.OriginHTTPVersionHTTP2
+	if originPoolsEqual([]domain.OriginPool{base}, []domain.OriginPool{http2}) {
+		t.Fatal("origin pools with different HTTP versions compared equal")
 	}
 }
 

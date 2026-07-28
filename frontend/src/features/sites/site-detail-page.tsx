@@ -64,6 +64,7 @@ import { useListPagination } from "@/hooks/use-list-pagination";
 import type {
   DeploymentTask,
   Node,
+  OriginHTTPVersion,
   PublishStatus,
   Settings,
   Site,
@@ -79,10 +80,12 @@ interface SiteDraft {
   primary_url: string;
   primary_host: string;
   primary_sni: string;
+  primary_http_version: OriginHTTPVersion;
   backup_enabled: boolean;
   backup_url: string;
   backup_host: string;
   backup_sni: string;
+  backup_http_version: OriginHTTPVersion;
   passthrough: boolean;
   http3_enabled: boolean;
   client_max_body_size_mb: number;
@@ -733,12 +736,14 @@ function TrafficSettings({
               url={draft.primary_url}
               host={draft.primary_host}
               sni={draft.primary_sni}
+              httpVersion={draft.primary_http_version}
               onChange={(values) =>
                 setDraft({
                   ...draft,
                   primary_url: values.url,
                   primary_host: values.host,
                   primary_sni: values.sni,
+                  primary_http_version: values.httpVersion,
                 })
               }
             />
@@ -767,12 +772,14 @@ function TrafficSettings({
                 url={draft.backup_url}
                 host={draft.backup_host}
                 sni={draft.backup_sni}
+                httpVersion={draft.backup_http_version}
                 onChange={(values) =>
                   setDraft({
                     ...draft,
                     backup_url: values.url,
                     backup_host: values.host,
                     backup_sni: values.sni,
+                    backup_http_version: values.httpVersion,
                   })
                 }
               />
@@ -907,6 +914,7 @@ function OriginFields({
   url,
   host,
   sni,
+  httpVersion,
   onChange,
 }: {
   title: string;
@@ -914,9 +922,16 @@ function OriginFields({
   url: string;
   host: string;
   sni: string;
-  onChange: (values: { url: string; host: string; sni: string }) => void;
+  httpVersion: OriginHTTPVersion;
+  onChange: (values: {
+    url: string;
+    host: string;
+    sni: string;
+    httpVersion: OriginHTTPVersion;
+  }) => void;
 }) {
   const tls = /^(https|wss|grpcs):/i.test(url);
+  const supportsHTTPVersion = /^https?:/i.test(url);
   return (
     <div className="grid gap-4 sm:grid-cols-2">
       <div className="sm:col-span-2 text-sm font-medium">{title}</div>
@@ -930,6 +945,10 @@ function OriginFields({
               url: event.target.value,
               host,
               sni,
+              httpVersion: compatibleOriginHTTPVersion(
+                event.target.value,
+                httpVersion,
+              ),
             })
           }
           placeholder="https://origin.example.com:443"
@@ -944,11 +963,27 @@ function OriginFields({
               url,
               host: event.target.value,
               sni,
+              httpVersion,
             })
           }
           placeholder="origin.example.com"
         />
       </Field>
+      {supportsHTTPVersion ? (
+        <SelectField
+          label={t("回源 HTTP 协议")}
+          value={httpVersion}
+          onChange={(value) =>
+            onChange({
+              url,
+              host,
+              sni,
+              httpVersion: value as OriginHTTPVersion,
+            })
+          }
+          options={originHTTPVersionOptions(url)}
+        />
+      ) : null}
       {tls ? (
         <div className="grid gap-2 sm:col-span-2">
           <Label htmlFor={`${title}-sni`}>{t("回源 TLS SNI")}</Label>
@@ -960,6 +995,7 @@ function OriginFields({
                 url,
                 host,
                 sni: event.target.value,
+                httpVersion,
               })
             }
             placeholder="origin.example.com"
@@ -1775,10 +1811,12 @@ function emptyDraft(ttl: number): SiteDraft {
     primary_url: "https://",
     primary_host: "",
     primary_sni: "",
+    primary_http_version: "http1",
     backup_enabled: false,
     backup_url: "",
     backup_host: "",
     backup_sni: "",
+    backup_http_version: "http1",
     passthrough: false,
     http3_enabled: false,
     client_max_body_size_mb: 128,
@@ -1812,10 +1850,12 @@ function draftFromSite(site: Site, ttl: number): SiteDraft {
     primary_url: site.primary_origin.url,
     primary_host: site.primary_origin.host_header || "",
     primary_sni: site.primary_origin.tls_server_name || "",
+    primary_http_version: site.primary_origin.http_version || "http1",
     backup_enabled: Boolean(site.backup_origin),
     backup_url: site.backup_origin?.url || "",
     backup_host: site.backup_origin?.host_header || "",
     backup_sni: site.backup_origin?.tls_server_name || "",
+    backup_http_version: site.backup_origin?.http_version || "http1",
     passthrough: site.passthrough,
     http3_enabled: site.http3_enabled ?? false,
     client_max_body_size_mb: site.client_max_body_size_mb ?? 128,
@@ -1848,6 +1888,9 @@ function sitePayload(draft: SiteDraft) {
       tls_server_name: /^(https|wss|grpcs):/i.test(draft.primary_url)
         ? draft.primary_sni
         : "",
+      http_version: /^(https?|wss?):/i.test(draft.primary_url)
+        ? draft.primary_http_version
+        : undefined,
       enabled: true,
     },
     passthrough: draft.passthrough,
@@ -1867,7 +1910,33 @@ function sitePayload(draft: SiteDraft) {
       tls_server_name: /^(https|wss|grpcs):/i.test(draft.backup_url)
         ? draft.backup_sni
         : "",
+      http_version: /^(https?|wss?):/i.test(draft.backup_url)
+        ? draft.backup_http_version
+        : undefined,
       enabled: true,
     };
   return payload;
+}
+
+function compatibleOriginHTTPVersion(
+  url: string,
+  current: OriginHTTPVersion,
+): OriginHTTPVersion {
+  if (/^https:/i.test(url) && (current === "http1" || current === "http2"))
+    return current;
+  if (/^http:/i.test(url) && (current === "http1" || current === "h2c"))
+    return current;
+  return "http1";
+}
+
+function originHTTPVersionOptions(url: string): string[][] {
+  if (/^https:/i.test(url))
+    return [
+      ["http1", "HTTP/1.1"],
+      ["http2", "HTTP/2"],
+    ];
+  return [
+    ["http1", "HTTP/1.1"],
+    ["h2c", "HTTP/2 (H2C)"],
+  ];
 }

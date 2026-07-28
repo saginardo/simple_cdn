@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"path/filepath"
 	"sort"
 	"strings"
 	"text/template"
@@ -22,6 +23,7 @@ type SiteConfig struct {
 const (
 	DefaultCachePath                          = "/opt/cdn-edge/cache"
 	DefaultOriginPoolConfigDirectory          = "/opt/cdn-edge/config/nginx/origin-pools"
+	DefaultQUICHostKeyPath                    = "/opt/cdn-edge/config/nginx/quic-host.key"
 	DefaultCacheMaxBytes                int64 = 1 << 30
 	defaultClientKeepaliveRequests            = 1000
 	defaultUpstreamConnectTimeout             = "10s"
@@ -53,13 +55,16 @@ map "$request_method:$cdn_is_websocket:$cdn_accepts_event_stream:$cdn_forced_str
 {{range .CachePaths}}proxy_cache_path {{.Path}} levels=1:2 keys_zone={{.Zone}}:{{.ZoneSize}} inactive=7d max_size={{.MaxSize}} use_temp_path=off;
 {{end}}
 log_format cdn_json escape=json '{"request_id":"$request_id","timestamp":"$time_iso8601","site_id":"$cdn_site_id","client_ip":"$remote_addr","host":"$host","scheme":"$scheme","protocol":"$server_protocol","method":"$request_method","path":"$uri","status":$status,"request_bytes":$request_length,"bytes":$body_bytes_sent,"duration_seconds":$request_time,"upstream":"$upstream_addr","upstream_status":"$upstream_status","upstream_connect_time":"$upstream_connect_time","upstream_header_time":"$upstream_header_time","upstream_response_time":"$upstream_response_time","cache_status":"$upstream_cache_status","user_agent":"$http_user_agent","referer":"$http_referer","content_type":"$http_content_type","response_content_type":"$sent_http_content_type","accept":"$http_accept","range":"$http_range"}';
-{{if .HTTP3Enabled}}quic_retry on;
+{{if .HTTP3Enabled}}quic_host_key {{.QUICHostKeyPath}};
+quic_retry on;
 {{end}}
 {{end}}
 
 {{if .DefaultHTTP}}server {
     listen 80 default_server;
     server_name _;
+{{if .Sites}}    set $cdn_site_id "";
+{{end}}
 	keepalive_timeout {{.DefaultClientKeepaliveTimeout}};
 	keepalive_requests {{.ClientKeepaliveRequests}};
 {{if .SecurityEnabled}}    access_log /opt/cdn-edge/logs/security.json cdn_security_json if=$cdn_security_policy_id;
@@ -87,6 +92,7 @@ server {
 {{if .HTTP3Enabled}}    listen 443 quic reuseport default_server;
 {{end}}
     ssl_reject_handshake on;
+    set $cdn_site_id "";
     keepalive_timeout {{.DefaultClientKeepaliveTimeout}};
     keepalive_requests {{.ClientKeepaliveRequests}};
 }
@@ -101,6 +107,11 @@ upstream {{.Name}} {
     keepalive_requests 1000;
     keepalive_time 1h;
 }
+{{if .HTTP1AliasName}}
+upstream {{.HTTP1AliasName}} {
+    include {{.ConfigPath}};
+}
+{{end}}
 {{end}}
 {{end}}
 
@@ -112,22 +123,38 @@ upstream origin_{{.ID}}_primary {
     server {{.PrimaryHostPort}} max_fails=2 fail_timeout=10s;
     keepalive {{$.UpstreamKeepaliveConnections}};
 }
+{{if .PrimaryUsesHTTP2}}
+upstream origin_{{.ID}}_primary_http1 {
+    server {{.PrimaryHostPort}} max_fails=2 fail_timeout=10s;
+}
+{{end}}
 
 upstream origin_{{.ID}}_backup {
     server {{.BackupHostPort}} max_fails=2 fail_timeout=10s;
     keepalive {{$.UpstreamKeepaliveConnections}};
 }
+{{if .BackupUsesHTTP2}}
+upstream origin_{{.ID}}_backup_http1 {
+    server {{.BackupHostPort}} max_fails=2 fail_timeout=10s;
+}
+{{end}}
 {{else}}
 upstream origin_{{.ID}} {
     server {{.PrimaryHostPort}} max_fails=2 fail_timeout=10s;
     keepalive {{$.UpstreamKeepaliveConnections}};
 }
+{{if .PrimaryUsesHTTP2}}
+upstream origin_{{.ID}}_http1 {
+    server {{.PrimaryHostPort}} max_fails=2 fail_timeout=10s;
+}
+{{end}}
 {{end}}
 {{end}}
 
 server {
     listen 80;
     server_name {{.DomainList}};
+	set $cdn_site_id "{{.ID}}";
 	keepalive_timeout {{.ClientKeepaliveTimeout}};
 	keepalive_requests {{$.ClientKeepaliveRequests}};
     {{if $.SecurityEnabled}}access_log /opt/cdn-edge/logs/security.json cdn_security_json if=$cdn_security_policy_id;
@@ -155,6 +182,7 @@ server {
     add_header Alt-Svc 'h3=":443"; ma=86400' always;
 {{end}}
     server_name {{.DomainList}};
+	set $cdn_site_id "{{.ID}}";
     client_max_body_size {{.ClientMaxBodySizeMB}}m;
     keepalive_timeout {{.ClientKeepaliveTimeout}};
     keepalive_requests {{$.ClientKeepaliveRequests}};
@@ -170,8 +198,8 @@ server {
     ssl_certificate_key /opt/cdn-edge/config/certs/{{.ID}}.key;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_session_cache shared:TLS:10m;
+    ssl_session_timeout 30m;
 
-    set $cdn_site_id "{{.ID}}";
     access_log /opt/cdn-edge/logs/access.json cdn_json;
 
     location = /__cdn_health {
@@ -233,7 +261,6 @@ server {
     }
     {{end}}
 	{{else}}
-	proxy_http_version 1.1;
 	proxy_next_upstream error timeout invalid_header http_500 http_502 http_503 http_504;
 	proxy_next_upstream_tries 2;
 	proxy_connect_timeout {{$.UpstreamConnectTimeout}};
@@ -256,14 +283,21 @@ server {
 	{{end}}
 
 	location / {
+		{{if .DedicatedWebSocket}}
+		error_page 417 = @cdn_websocket_{{.ID}};
+		{{end}}
 		error_page 418 = @cdn_stream_{{.ID}};
 		error_page 419 = @cdn_http_{{.ID}};
+		{{if .DedicatedWebSocket}}
+		if ($cdn_is_websocket) { return 417; }
+		{{end}}
 		if ($cdn_auto_stream) { return 418; }
 		return 419;
 	}
 
 	location @cdn_http_{{.ID}} {
 		internal;
+		proxy_http_version {{.PrimaryProxyHTTPVersion}};
 		{{if $.RateLimitEnabled}}access_by_lua_block { package.loaded.simple_cdn_rate_limit.access() }
 		header_filter_by_lua_block { package.loaded.simple_cdn_rate_limit.response() }
 		{{end}}
@@ -302,13 +336,17 @@ server {
 
 	location @cdn_stream_{{.ID}} {
 		internal;
+		proxy_http_version {{.PrimaryProxyHTTPVersion}};
 		{{if $.RateLimitEnabled}}access_by_lua_block { package.loaded.simple_cdn_rate_limit.access() }
 		header_filter_by_lua_block { package.loaded.simple_cdn_rate_limit.response() }
 		{{end}}
 		proxy_pass {{.PrimaryScheme}}://{{.PrimaryUpstreamName}};
 		proxy_set_header Host {{.HostHeader}};
-		proxy_set_header Upgrade $cdn_upstream_upgrade;
+		{{if .DedicatedWebSocket}}proxy_set_header Upgrade "";
+		proxy_set_header Connection "";
+		{{else}}proxy_set_header Upgrade $cdn_upstream_upgrade;
 		proxy_set_header Connection $cdn_connection_upgrade;
+		{{end}}
 		proxy_set_header X-CDN-Stream "";
 		proxy_set_header X-Real-IP $remote_addr;
 		proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -338,9 +376,44 @@ server {
 		{{end}}
 	}
 
+	{{if .DedicatedWebSocket}}
+	location @cdn_websocket_{{.ID}} {
+		internal;
+		proxy_http_version 1.1;
+		{{if $.RateLimitEnabled}}access_by_lua_block { package.loaded.simple_cdn_rate_limit.access() }
+		header_filter_by_lua_block { package.loaded.simple_cdn_rate_limit.response() }
+		{{end}}
+		proxy_pass {{.PrimaryScheme}}://{{.PrimaryWebSocketUpstreamName}};
+		proxy_set_header Host {{.HostHeader}};
+		proxy_set_header Upgrade $http_upgrade;
+		proxy_set_header Connection upgrade;
+		proxy_set_header X-CDN-Stream "";
+		proxy_set_header X-Real-IP $remote_addr;
+		proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+		proxy_set_header X-Forwarded-Proto https;
+		proxy_cache off;
+		proxy_buffering off;
+		proxy_read_timeout {{.ReadWriteTimeout}};
+		proxy_send_timeout {{.ReadWriteTimeout}};
+		{{if .UseTLS}}
+		proxy_ssl_server_name on;
+		proxy_ssl_name {{.PrimaryTLSName}};
+		proxy_ssl_verify on;
+		proxy_ssl_verify_depth 3;
+		proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
+		proxy_ssl_session_reuse on;
+		{{end}}
+		{{if .BackupHostPort}}
+		proxy_intercept_errors on;
+		error_page 500 502 503 504 = @cdn_websocket_backup_{{.ID}};
+		{{end}}
+	}
+	{{end}}
+
 	{{if .BackupHostPort}}
 	location @cdn_backup_{{.ID}} {
 		internal;
+		proxy_http_version {{.BackupProxyHTTPVersion}};
 		{{if $.RateLimitEnabled}}header_filter_by_lua_block { package.loaded.simple_cdn_rate_limit.response() }
 		{{end}}
 		proxy_pass {{.PrimaryScheme}}://{{.BackupUpstreamName}};
@@ -374,12 +447,16 @@ server {
 
 	location @cdn_stream_backup_{{.ID}} {
 		internal;
+		proxy_http_version {{.BackupProxyHTTPVersion}};
 		{{if $.RateLimitEnabled}}header_filter_by_lua_block { package.loaded.simple_cdn_rate_limit.response() }
 		{{end}}
 		proxy_pass {{.PrimaryScheme}}://{{.BackupUpstreamName}};
 		proxy_set_header Host {{.BackupHostHeader}};
-		proxy_set_header Upgrade $cdn_upstream_upgrade;
+		{{if .DedicatedWebSocket}}proxy_set_header Upgrade "";
+		proxy_set_header Connection "";
+		{{else}}proxy_set_header Upgrade $cdn_upstream_upgrade;
 		proxy_set_header Connection $cdn_connection_upgrade;
+		{{end}}
 		proxy_set_header X-CDN-Stream "";
 		proxy_set_header X-Real-IP $remote_addr;
 		proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -404,6 +481,35 @@ server {
 		proxy_ssl_session_reuse on;
 		{{end}}
 	}
+
+	{{if .DedicatedWebSocket}}
+	location @cdn_websocket_backup_{{.ID}} {
+		internal;
+		proxy_http_version 1.1;
+		{{if $.RateLimitEnabled}}header_filter_by_lua_block { package.loaded.simple_cdn_rate_limit.response() }
+		{{end}}
+		proxy_pass {{.PrimaryScheme}}://{{.BackupWebSocketUpstreamName}};
+		proxy_set_header Host {{.BackupHostHeader}};
+		proxy_set_header Upgrade $http_upgrade;
+		proxy_set_header Connection upgrade;
+		proxy_set_header X-CDN-Stream "";
+		proxy_set_header X-Real-IP $remote_addr;
+		proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+		proxy_set_header X-Forwarded-Proto https;
+		proxy_cache off;
+		proxy_buffering off;
+		proxy_read_timeout {{.ReadWriteTimeout}};
+		proxy_send_timeout {{.ReadWriteTimeout}};
+		{{if .UseTLS}}
+		proxy_ssl_server_name on;
+		proxy_ssl_name {{.BackupTLSName}};
+		proxy_ssl_verify on;
+		proxy_ssl_verify_depth 3;
+		proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
+		proxy_ssl_session_reuse on;
+		{{end}}
+	}
+	{{end}}
 	{{end}}
 		{{end}}
 }
@@ -412,39 +518,49 @@ server {
 `
 
 type renderedSite struct {
-	ID                     string
-	DomainList             string
-	HealthBody             string
-	PrimaryHostPort        string
-	PrimaryTLSName         string
-	PrimaryScheme          string
-	PrimaryUpstreamName    string
-	UseTLS                 bool
-	BackupHostPort         string
-	BackupTLSName          string
-	BackupHostHeader       string
-	BackupUpstreamName     string
-	HostHeader             string
-	CacheGeneration        int64
-	GRPC                   bool
-	Passthrough            bool
-	HTTP3Enabled           bool
-	ClientMaxBodySizeMB    int
-	ClientKeepaliveTimeout string
-	ReadWriteTimeout       string
-	CacheEnabled           bool
-	AlwaysUnbuffered       bool
+	ID                           string
+	DomainList                   string
+	HealthBody                   string
+	PrimaryHostPort              string
+	PrimaryTLSName               string
+	PrimaryScheme                string
+	PrimaryUpstreamName          string
+	PrimaryWebSocketUpstreamName string
+	PrimaryProxyHTTPVersion      string
+	PrimaryUsesHTTP2             bool
+	UseTLS                       bool
+	BackupHostPort               string
+	BackupTLSName                string
+	BackupHostHeader             string
+	BackupUpstreamName           string
+	BackupWebSocketUpstreamName  string
+	BackupProxyHTTPVersion       string
+	BackupOriginHTTPVersion      domain.OriginHTTPVersion
+	BackupUsesHTTP2              bool
+	DedicatedWebSocket           bool
+	HostHeader                   string
+	CacheGeneration              int64
+	GRPC                         bool
+	Passthrough                  bool
+	HTTP3Enabled                 bool
+	ClientMaxBodySizeMB          int
+	ClientKeepaliveTimeout       string
+	ReadWriteTimeout             string
+	CacheEnabled                 bool
+	AlwaysUnbuffered             bool
 }
 
 type renderedOriginPool struct {
 	Name                 string
+	HTTP1AliasName       string
 	ConfigPath           string
 	KeepaliveConnections int
 }
 
 type originPoolBuilder struct {
-	pool domain.OriginPool
-	name string
+	pool           domain.OriginPool
+	name           string
+	http1AliasName string
 }
 
 type renderedCachePath struct {
@@ -471,6 +587,7 @@ type renderInput struct {
 	UpstreamConnectTimeout        string
 	UpstreamKeepaliveConnections  int
 	StaticAssetPathPattern        string
+	QUICHostKeyPath               string
 }
 
 func Render(sites []domain.Site) (string, error) {
@@ -497,8 +614,10 @@ type RenderRuntimeOptions struct {
 	DefaultCacheSizeGB        int
 	HTTP3Capable              bool
 	ManagedOriginPools        bool
+	OriginHTTP2Capable        bool
 	NginxWorkerConnections    int
 	OriginPoolConfigDirectory string
+	QUICHostKeyPath           string
 	originPoolsOutput         *[]domain.OriginPool
 }
 
@@ -535,6 +654,13 @@ func RenderWithRuntimeOptions(sites []domain.Site, securityPolicies []domain.Sec
 	if poolDirectory == "" {
 		poolDirectory = DefaultOriginPoolConfigDirectory
 	}
+	quicHostKeyPath := strings.TrimSpace(options.QUICHostKeyPath)
+	if quicHostKeyPath == "" {
+		quicHostKeyPath = DefaultQUICHostKeyPath
+	}
+	if !filepath.IsAbs(quicHostKeyPath) || filepath.Clean(quicHostKeyPath) != quicHostKeyPath {
+		return "", fmt.Errorf("QUIC host key path must be an absolute clean path")
+	}
 	cachePaths := make([]renderedCachePath, 0, 1)
 	cacheEnabled := false
 	http3Enabled := false
@@ -565,17 +691,27 @@ func RenderWithRuntimeOptions(sites []domain.Site, securityPolicies []domain.Sec
 		if site.Passthrough && primary.Scheme != "http" && primary.Scheme != "https" {
 			return "", fmt.Errorf("site %s passthrough mode is only supported for HTTP and HTTPS origins", site.Name)
 		}
+		primaryHTTPVersion, err := renderOriginHTTPVersion(primary.Scheme, site.PrimaryOrigin.HTTPVersion)
+		if err != nil {
+			return "", fmt.Errorf("site %s primary origin: %w", site.Name, err)
+		}
+		if isHTTP2OriginVersion(primaryHTTPVersion) && !options.OriginHTTP2Capable {
+			return "", fmt.Errorf("site %s requires an edge with HTTP/2 origin support", site.Name)
+		}
 		item := renderedSite{
 			ID: site.ID, DomainList: strings.Join(site.Domains, " "), HealthBody: SiteHealthBody(site.ID), PrimaryHostPort: primary.Host, PrimaryTLSName: site.PrimaryOrigin.TLSServerName,
 			PrimaryScheme: domain.ProxyScheme(primary.Scheme), UseTLS: domain.OriginUsesTLS(primary.Scheme), HostHeader: site.PrimaryOrigin.HostHeader, CacheGeneration: site.CacheGeneration,
 			GRPC: domain.IsGRPCScheme(primary.Scheme), Passthrough: site.Passthrough, HTTP3Enabled: options.HTTP3Capable && site.HTTP3Enabled, ClientMaxBodySizeMB: clientMaxBodySizeMB,
-			ClientKeepaliveTimeout: fmt.Sprintf("%ds", clientKeepaliveTimeoutSeconds),
-			ReadWriteTimeout:       fmt.Sprintf("%ds", readWriteTimeoutSeconds),
-			CacheEnabled:           primary.Scheme == "http" || primary.Scheme == "https",
-			AlwaysUnbuffered:       site.Passthrough || domain.IsWebSocketScheme(primary.Scheme),
+			ClientKeepaliveTimeout:  fmt.Sprintf("%ds", clientKeepaliveTimeoutSeconds),
+			ReadWriteTimeout:        fmt.Sprintf("%ds", readWriteTimeoutSeconds),
+			CacheEnabled:            primary.Scheme == "http" || primary.Scheme == "https",
+			AlwaysUnbuffered:        site.Passthrough || domain.IsWebSocketScheme(primary.Scheme),
+			PrimaryProxyHTTPVersion: nginxProxyHTTPVersion(primaryHTTPVersion),
+			PrimaryUsesHTTP2:        isHTTP2OriginVersion(primaryHTTPVersion),
 		}
 		http3Enabled = http3Enabled || item.HTTP3Enabled
 		item.PrimaryUpstreamName = "origin_" + item.ID
+		item.PrimaryWebSocketUpstreamName = item.PrimaryUpstreamName
 		item.CacheEnabled = item.CacheEnabled && !site.Passthrough
 		if item.CacheEnabled {
 			cacheEnabled = true
@@ -595,6 +731,16 @@ func RenderWithRuntimeOptions(sites []domain.Site, securityPolicies []domain.Sec
 				return "", fmt.Errorf("site %s origins must use the same scheme", site.Name)
 			}
 			item.BackupHostPort = backup.Host
+			backupHTTPVersion, err := renderOriginHTTPVersion(backup.Scheme, site.BackupOrigin.HTTPVersion)
+			if err != nil {
+				return "", fmt.Errorf("site %s backup origin: %w", site.Name, err)
+			}
+			if isHTTP2OriginVersion(backupHTTPVersion) && !options.OriginHTTP2Capable {
+				return "", fmt.Errorf("site %s requires an edge with HTTP/2 origin support", site.Name)
+			}
+			item.BackupProxyHTTPVersion = nginxProxyHTTPVersion(backupHTTPVersion)
+			item.BackupOriginHTTPVersion = backupHTTPVersion
+			item.BackupUsesHTTP2 = isHTTP2OriginVersion(backupHTTPVersion)
 			item.BackupTLSName = site.BackupOrigin.TLSServerName
 			item.BackupHostHeader = site.BackupOrigin.HostHeader
 			if item.BackupHostHeader == "" {
@@ -605,19 +751,36 @@ func RenderWithRuntimeOptions(sites []domain.Site, securityPolicies []domain.Sec
 			}
 			item.PrimaryUpstreamName = "origin_" + item.ID + "_primary"
 			item.BackupUpstreamName = "origin_" + item.ID + "_backup"
+			item.PrimaryWebSocketUpstreamName = item.PrimaryUpstreamName
+			item.BackupWebSocketUpstreamName = item.BackupUpstreamName
 		}
+		if item.PrimaryUsesHTTP2 {
+			item.PrimaryWebSocketUpstreamName = item.PrimaryUpstreamName + "_http1"
+		}
+		if item.BackupUsesHTTP2 {
+			item.BackupWebSocketUpstreamName = item.BackupUpstreamName + "_http1"
+		}
+		item.DedicatedWebSocket = item.PrimaryUsesHTTP2 || item.BackupUsesHTTP2
 		if options.ManagedOriginPools {
-			primaryPool, err := addOriginPool(poolBuilders, poolDirectory, item.PrimaryScheme, item.PrimaryHostPort, item.HostHeader, tlsName(item.UseTLS, item.PrimaryTLSName), site.ID, "primary")
+			primaryPool, err := addOriginPool(poolBuilders, poolDirectory, item.PrimaryScheme, primaryHTTPVersion, item.PrimaryHostPort, item.HostHeader, tlsName(item.UseTLS, item.PrimaryTLSName), site.ID, "primary")
 			if err != nil {
 				return "", fmt.Errorf("site %s primary origin pool: %w", site.Name, err)
 			}
 			item.PrimaryUpstreamName = primaryPool.name
+			item.PrimaryWebSocketUpstreamName = primaryPool.name
+			if item.PrimaryUsesHTTP2 {
+				item.PrimaryWebSocketUpstreamName = primaryPool.http1AliasName
+			}
 			if item.BackupHostPort != "" {
-				backupPool, err := addOriginPool(poolBuilders, poolDirectory, item.PrimaryScheme, item.BackupHostPort, item.BackupHostHeader, tlsName(item.UseTLS, item.BackupTLSName), site.ID, "backup")
+				backupPool, err := addOriginPool(poolBuilders, poolDirectory, item.PrimaryScheme, item.BackupOriginHTTPVersion, item.BackupHostPort, item.BackupHostHeader, tlsName(item.UseTLS, item.BackupTLSName), site.ID, "backup")
 				if err != nil {
 					return "", fmt.Errorf("site %s backup origin pool: %w", site.Name, err)
 				}
 				item.BackupUpstreamName = backupPool.name
+				item.BackupWebSocketUpstreamName = backupPool.name
+				if item.BackupUsesHTTP2 {
+					item.BackupWebSocketUpstreamName = backupPool.http1AliasName
+				}
 			}
 		}
 		items = append(items, item)
@@ -655,13 +818,14 @@ func RenderWithRuntimeOptions(sites []domain.Site, securityPolicies []domain.Sec
 		UpstreamConnectTimeout:        defaultUpstreamConnectTimeout,
 		UpstreamKeepaliveConnections:  defaultUpstreamKeepaliveConnections,
 		StaticAssetPathPattern:        staticAssetPathPattern,
+		QUICHostKeyPath:               quicHostKeyPath,
 	}); err != nil {
 		return "", err
 	}
 	return out.String(), nil
 }
 
-func addOriginPool(builders map[string]*originPoolBuilder, directory, scheme, address, hostHeader, serverName, siteID, role string) (*originPoolBuilder, error) {
+func addOriginPool(builders map[string]*originPoolBuilder, directory, scheme string, httpVersion domain.OriginHTTPVersion, address, hostHeader, serverName, siteID, role string) (*originPoolBuilder, error) {
 	normalizedAddress, err := normalizeOriginPoolAddress(scheme, address)
 	if err != nil {
 		return nil, err
@@ -669,7 +833,11 @@ func addOriginPool(builders map[string]*originPoolBuilder, directory, scheme, ad
 	address = normalizedAddress
 	hostHeader = strings.ToLower(hostHeader)
 	serverName = strings.ToLower(serverName)
-	key := strings.Join([]string{scheme, address, hostHeader, serverName}, "\x00")
+	keyParts := []string{scheme, address, hostHeader, serverName}
+	if httpVersion != "" && httpVersion != domain.OriginHTTPVersionHTTP1 {
+		keyParts = append(keyParts, string(httpVersion))
+	}
+	key := strings.Join(keyParts, "\x00")
 	if existing := builders[key]; existing != nil {
 		existing.pool.References = append(existing.pool.References, domain.OriginPoolReference{SiteID: siteID, Role: role})
 		return existing, nil
@@ -677,15 +845,55 @@ func addOriginPool(builders map[string]*originPoolBuilder, directory, scheme, ad
 	digest := sha256.Sum256([]byte(key))
 	id := fmt.Sprintf("%x", digest[:12])
 	builder := &originPoolBuilder{
-		name: "origin_pool_" + id,
+		name: "origin_pool_" + id, http1AliasName: "origin_pool_" + id + "_http1",
 		pool: domain.OriginPool{
-			ID: id, Address: address, Scheme: scheme, HostHeader: hostHeader, TLSServerName: serverName,
+			ID: id, Address: address, Scheme: scheme, HTTPVersion: httpVersion, HostHeader: hostHeader, TLSServerName: serverName,
 			ConfigPath: directory + "/" + id + ".conf",
 			References: []domain.OriginPoolReference{{SiteID: siteID, Role: role}},
 		},
 	}
 	builders[key] = builder
 	return builder, nil
+}
+
+func renderOriginHTTPVersion(scheme string, version domain.OriginHTTPVersion) (domain.OriginHTTPVersion, error) {
+	if domain.IsGRPCScheme(scheme) {
+		if version != "" {
+			return "", fmt.Errorf("HTTP version is managed by the gRPC upstream")
+		}
+		return "", nil
+	}
+	if version == "" {
+		version = domain.OriginHTTPVersionHTTP1
+	}
+	switch scheme {
+	case "ws", "wss":
+		if version != domain.OriginHTTPVersionHTTP1 {
+			return "", fmt.Errorf("WebSocket origins require HTTP/1.1")
+		}
+	case "http":
+		if version != domain.OriginHTTPVersionHTTP1 && version != domain.OriginHTTPVersionH2C {
+			return "", fmt.Errorf("HTTP origins support only HTTP/1.1 or H2C")
+		}
+	case "https":
+		if version != domain.OriginHTTPVersionHTTP1 && version != domain.OriginHTTPVersionHTTP2 {
+			return "", fmt.Errorf("HTTPS origins support only HTTP/1.1 or HTTP/2")
+		}
+	default:
+		return "", fmt.Errorf("unsupported origin scheme %q", scheme)
+	}
+	return version, nil
+}
+
+func nginxProxyHTTPVersion(version domain.OriginHTTPVersion) string {
+	if isHTTP2OriginVersion(version) {
+		return "2"
+	}
+	return "1.1"
+}
+
+func isHTTP2OriginVersion(version domain.OriginHTTPVersion) bool {
+	return version == domain.OriginHTTPVersionHTTP2 || version == domain.OriginHTTPVersionH2C
 }
 
 func normalizeOriginPoolAddress(scheme, address string) (string, error) {
@@ -789,6 +997,12 @@ func finalizeOriginPools(builders map[string]*originPoolBuilder, workerConnectio
 		pools = append(pools, builder.pool)
 		rendered = append(rendered, renderedOriginPool{
 			Name: builder.name, ConfigPath: builder.pool.ConfigPath, KeepaliveConnections: builder.pool.KeepaliveConnections,
+			HTTP1AliasName: func() string {
+				if builder.pool.HTTPVersion == domain.OriginHTTPVersionHTTP2 || builder.pool.HTTPVersion == domain.OriginHTTPVersionH2C {
+					return builder.http1AliasName
+				}
+				return ""
+			}(),
 		})
 	}
 	return pools, rendered, nil
@@ -830,7 +1044,7 @@ func RenderCapacity(capacity domain.NginxCapacity) (string, string, error) {
 	if capacity.WorkerProcesses > 0 {
 		workerProcesses = fmt.Sprintf("%d", capacity.WorkerProcesses)
 	}
-	return fmt.Sprintf("# Generated by cdn-edge-agent. Do not edit.\nworker_processes %s;\nworker_rlimit_nofile %d;\n", workerProcesses, capacity.WorkerRlimitNoFile),
+	return fmt.Sprintf("# Generated by cdn-edge-agent. Do not edit.\npcre_jit on;\nworker_processes %s;\nworker_rlimit_nofile %d;\nworker_shutdown_timeout 1h;\n", workerProcesses, capacity.WorkerRlimitNoFile),
 		fmt.Sprintf("# Generated by cdn-edge-agent. Do not edit.\nworker_connections %d;\n", capacity.WorkerConnections), nil
 }
 

@@ -131,6 +131,10 @@ For an existing node with a complete local mTLS identity, the generated command 
 
 The managed bundle includes `--with-http_v3_module` on both supported Debian releases, so the Agent advertises `http3_v1` after inspecting the installed binary. HTTP/3 remains disabled by default for every site. Enabling and publishing it for a site adds UDP 443 QUIC while retaining TCP 443 HTTP/1.1 and HTTP/2 fallback.
 
+The installer creates `/opt/cdn-edge/config/nginx/quic-host.key` once with mode `0600` and preserves it across online upgrades and rollbacks. This keeps QUIC address-validation tokens valid across Nginx reloads. The generated main configuration enables PCRE JIT and gives old workers up to one hour to drain long-lived requests. TLS session state uses a shared cache with a 30-minute timeout.
+
+Nginx exposes `stub_status` only on `/opt/cdn-edge/nginx/run/status.sock`; no TCP management port is opened. The Agent samples that socket with a sub-second timeout and includes the optional snapshot in the existing real-time machine report. A missing socket or an Nginx restart leaves the runtime section empty without blocking host status or heartbeat reporting.
+
 Allow UDP 443 in both the host firewall and provider security group. Verify from another HTTP/3-capable host:
 
 ```bash

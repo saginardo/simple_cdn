@@ -516,12 +516,15 @@ func TestSiteOriginTLSServerNameAPI(t *testing.T) {
 
 	created := requestSite(t, server, http.MethodPost, "/api/sites", map[string]any{
 		"name": "ip-origin", "zone_id": "zone", "domains": []string{"lax.dustvm.de"}, "node_ids": []string{node.ID},
-		"primary_origin": map[string]any{"url": "https://203.0.113.20:443", "host_header": "lax.dustvm.de", "tls_server_name": "LAX.DUSTVM.DE", "enabled": true},
-		"backup_origin":  map[string]any{"url": "https://203.0.113.21:443", "host_header": "backup.dustvm.de", "tls_server_name": "backup.dustvm.de", "enabled": true},
+		"primary_origin": map[string]any{"url": "https://203.0.113.20:443", "host_header": "lax.dustvm.de", "tls_server_name": "LAX.DUSTVM.DE", "http_version": "http2", "enabled": true},
+		"backup_origin":  map[string]any{"url": "https://203.0.113.21:443", "host_header": "backup.dustvm.de", "tls_server_name": "backup.dustvm.de", "http_version": "http2", "enabled": true},
 		"enabled":        true,
 	})
 	if created.PrimaryOrigin.TLSServerName != "lax.dustvm.de" || created.BackupOrigin == nil || created.BackupOrigin.TLSServerName != "backup.dustvm.de" {
 		t.Fatalf("unexpected TLS server names: %#v", created)
+	}
+	if created.PrimaryOrigin.HTTPVersion != domain.OriginHTTPVersionHTTP2 || created.BackupOrigin.HTTPVersion != domain.OriginHTTPVersionHTTP2 {
+		t.Fatalf("unexpected origin HTTP versions: %#v", created)
 	}
 	loaded, _, err := database.GetSite(created.ID)
 	if err != nil {
@@ -538,6 +541,9 @@ func TestSiteOriginTLSServerNameAPI(t *testing.T) {
 	})
 	if updated.PrimaryOrigin.TLSServerName != "lax.dustvm.de" || updated.BackupOrigin == nil || updated.BackupOrigin.TLSServerName != "backup.dustvm.de" {
 		t.Fatalf("omitted TLS server names did not preserve the existing values: %#v", updated)
+	}
+	if updated.PrimaryOrigin.HTTPVersion != domain.OriginHTTPVersionHTTP2 || updated.BackupOrigin.HTTPVersion != domain.OriginHTTPVersionHTTP2 {
+		t.Fatalf("omitted origin HTTP versions did not preserve existing values: %#v", updated)
 	}
 	cleared := requestSite(t, server, http.MethodPut, "/api/sites/"+created.ID, map[string]any{
 		"name": updated.Name, "zone_id": updated.ZoneID, "domains": updated.Domains, "node_ids": updated.Nodes,

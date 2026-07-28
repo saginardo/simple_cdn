@@ -67,11 +67,20 @@ func ValidCacheStorageUsage(usage CacheStorageUsage) bool {
 }
 
 type Origin struct {
-	URL           string `json:"url"`
-	HostHeader    string `json:"host_header"`
-	TLSServerName string `json:"tls_server_name,omitempty"`
-	Enabled       bool   `json:"enabled"`
+	URL           string            `json:"url"`
+	HostHeader    string            `json:"host_header"`
+	TLSServerName string            `json:"tls_server_name,omitempty"`
+	HTTPVersion   OriginHTTPVersion `json:"http_version,omitempty"`
+	Enabled       bool              `json:"enabled"`
 }
+
+type OriginHTTPVersion string
+
+const (
+	OriginHTTPVersionHTTP1 OriginHTTPVersion = "http1"
+	OriginHTTPVersionHTTP2 OriginHTTPVersion = "http2"
+	OriginHTTPVersionH2C   OriginHTTPVersion = "h2c"
+)
 
 const (
 	DefaultClientMaxBodySizeMB           = 128
@@ -107,6 +116,7 @@ const (
 	EdgeCapabilityNginxCapacity       = "nginx_capacity_v1"
 	EdgeCapabilityHTTP3               = "http3_v1"
 	EdgeCapabilityOriginConnection    = "origin_connection_v1"
+	EdgeCapabilityOriginHTTP2         = "origin_http2_v1"
 	EdgeCapabilityTCPMonitoring       = "tcp_monitoring_v1"
 	EdgeCapabilityControlManifest     = "control_manifest_v1"
 	EdgeCapabilityNginxBundle         = "nginx_bundle_v1"

@@ -102,6 +102,7 @@ func TestRenderHTTP3RequiresSiteOptInAndCapability(t *testing.T) {
 		"listen 443 quic;",
 		"http2 on;",
 		"http3 on;",
+		"quic_host_key /opt/cdn-edge/config/nginx/quic-host.key;",
 		"quic_retry on;",
 		`add_header Alt-Svc 'h3=":443"; ma=86400' always;`,
 		"ssl_protocols TLSv1.2 TLSv1.3;",
@@ -318,6 +319,90 @@ func TestRenderUsesConfiguredClientKeepaliveTimeout(t *testing.T) {
 	}
 }
 
+func TestRenderOptionalHTTP2AndH2COrigins(t *testing.T) {
+	h2cSite := domain.Site{
+		ID: "h2c-site", Name: "h2c", Domains: []string{"h2c.example.test"},
+		PrimaryOrigin: domain.Origin{URL: "http://origin.example.test:8080", HTTPVersion: domain.OriginHTTPVersionH2C, Enabled: true}, Enabled: true,
+	}
+	if _, err := RenderWithRuntimeOptions([]domain.Site{h2cSite}, nil, nil, RenderRuntimeOptions{DefaultCacheSizeGB: domain.DefaultCacheMaxSizeGB}); err == nil {
+		t.Fatal("H2C origin rendered without an HTTP/2-capable edge")
+	}
+	httpsSite := domain.Site{
+		ID: "h2-site", Name: "h2", Domains: []string{"h2.example.test"},
+		PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", HTTPVersion: domain.OriginHTTPVersionHTTP2, Enabled: true}, Enabled: true,
+	}
+	rendered, err := RenderNodeWithRuntimeOptions([]domain.Site{h2cSite, httpsSite}, nil, nil, RenderRuntimeOptions{
+		DefaultCacheSizeGB: domain.DefaultCacheMaxSizeGB, OriginHTTP2Capable: true, ManagedOriginPools: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"proxy_http_version 2;", "error_page 417 = @cdn_websocket_", "if ($cdn_is_websocket) { return 417; }",
+		"proxy_http_version 1.1;", "_http1 {", "proxy_set_header Connection upgrade;",
+	} {
+		if !strings.Contains(rendered.NginxConfig, expected) {
+			t.Fatalf("HTTP/2 origin configuration is missing %q:\n%s", expected, rendered.NginxConfig)
+		}
+	}
+	if len(rendered.OriginPools) != 2 {
+		t.Fatalf("origin pools = %#v", rendered.OriginPools)
+	}
+	versions := map[domain.OriginHTTPVersion]bool{}
+	for _, pool := range rendered.OriginPools {
+		versions[pool.HTTPVersion] = true
+	}
+	if !versions[domain.OriginHTTPVersionHTTP2] || !versions[domain.OriginHTTPVersionH2C] {
+		t.Fatalf("origin pool protocols = %#v", versions)
+	}
+
+	legacy, err := Render([]domain.Site{{
+		ID: "h1-site", Name: "h1", Domains: []string{"h1.example.test"},
+		PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, Enabled: true,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(legacy, "error_page 417") || strings.Contains(legacy, "_http1 {") || strings.Contains(legacy, "proxy_http_version 2;") {
+		t.Fatalf("default HTTP/1.1 origin gained HTTP/2 routing:\n%s", legacy)
+	}
+}
+
+func TestRenderWebSocketHeadersRemainCorrectForHTTP1AndHTTP2Origins(t *testing.T) {
+	http1Backup := domain.Origin{URL: "https://backup.example.test", Enabled: true}
+	http1, err := Render([]domain.Site{{
+		ID: "http1-site", Name: "http1", Domains: []string{"http1.example.test"},
+		PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, BackupOrigin: &http1Backup, Enabled: true,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(http1, "proxy_set_header Upgrade $cdn_upstream_upgrade;"); got != 2 {
+		t.Fatalf("HTTP/1 origin should forward Upgrade only through its stream route, got %d:\n%s", got, http1)
+	}
+	if got := strings.Count(http1, "proxy_set_header Upgrade \"\";"); got != 2 {
+		t.Fatalf("HTTP/1 origin should clear Upgrade only on its normal route, got %d:\n%s", got, http1)
+	}
+
+	http2Backup := domain.Origin{URL: "https://backup.example.test", HTTPVersion: domain.OriginHTTPVersionHTTP2, Enabled: true}
+	http2, err := RenderWithRuntimeOptions([]domain.Site{{
+		ID: "http2-site", Name: "http2", Domains: []string{"http2.example.test"},
+		PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", HTTPVersion: domain.OriginHTTPVersionHTTP2, Enabled: true}, BackupOrigin: &http2Backup, Enabled: true,
+	}}, nil, nil, RenderRuntimeOptions{DefaultCacheSizeGB: domain.DefaultCacheMaxSizeGB, OriginHTTP2Capable: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(http2, "proxy_set_header Upgrade $cdn_upstream_upgrade;") {
+		t.Fatalf("HTTP/2 origin must not send HTTP/1 Upgrade headers to its normal upstream:\n%s", http2)
+	}
+	if got := strings.Count(http2, "proxy_set_header Upgrade \"\";"); got != 4 {
+		t.Fatalf("HTTP/2 origin should clear Upgrade on normal and stream routes, got %d:\n%s", got, http2)
+	}
+	if got := strings.Count(http2, "proxy_set_header Upgrade $http_upgrade;"); got != 2 {
+		t.Fatalf("HTTP/2 origin should use the dedicated HTTP/1 WebSocket route once, got %d:\n%s", got, http2)
+	}
+}
+
 func TestRenderCapacity(t *testing.T) {
 	mainConfig, eventsConfig, err := RenderCapacity(domain.NginxCapacity{
 		WorkerProcesses: 8, WorkerConnections: 8192, WorkerRlimitNoFile: 16384,
@@ -325,7 +410,7 @@ func TestRenderCapacity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mainConfig != "# Generated by cdn-edge-agent. Do not edit.\nworker_processes 8;\nworker_rlimit_nofile 16384;\n" ||
+	if mainConfig != "# Generated by cdn-edge-agent. Do not edit.\npcre_jit on;\nworker_processes 8;\nworker_rlimit_nofile 16384;\nworker_shutdown_timeout 1h;\n" ||
 		eventsConfig != "# Generated by cdn-edge-agent. Do not edit.\nworker_connections 8192;\n" {
 		t.Fatalf("rendered capacity = main=%q events=%q", mainConfig, eventsConfig)
 	}
@@ -335,6 +420,11 @@ func TestRenderCapacity(t *testing.T) {
 	}
 	if !strings.Contains(mainConfig, "worker_processes auto;") || !strings.Contains(eventsConfig, "worker_connections 4096;") {
 		t.Fatalf("default capacity = main=%q events=%q", mainConfig, eventsConfig)
+	}
+	for _, expected := range []string{"pcre_jit on;", "worker_shutdown_timeout 1h;"} {
+		if !strings.Contains(mainConfig, expected) {
+			t.Fatalf("main configuration is missing %q: %s", expected, mainConfig)
+		}
 	}
 }
 

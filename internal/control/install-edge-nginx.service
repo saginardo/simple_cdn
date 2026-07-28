@@ -6,6 +6,7 @@ Wants=network-online.target
 [Service]
 Type=forking
 PIDFile=/opt/cdn-edge/nginx/run/nginx.pid
+ExecStartPre=-/usr/bin/rm -f /opt/cdn-edge/nginx/run/status.sock
 ExecStartPre=/opt/cdn-edge/nginx/sbin/nginx -t -q
 ExecStart=/opt/cdn-edge/nginx/sbin/nginx
 ExecReload=/opt/cdn-edge/nginx/sbin/nginx -s reload

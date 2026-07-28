@@ -300,6 +300,34 @@ func ValidateOrigin(origin *Origin) error {
 	if !ValidOriginScheme(parsed.Scheme) {
 		return fmt.Errorf("scheme must be http, https, ws, wss, grpc, or grpcs")
 	}
+	origin.HTTPVersion = OriginHTTPVersion(strings.ToLower(strings.TrimSpace(string(origin.HTTPVersion))))
+	switch parsed.Scheme {
+	case "grpc", "grpcs":
+		if origin.HTTPVersion != "" {
+			return fmt.Errorf("HTTP version is managed by the gRPC upstream")
+		}
+	case "ws", "wss":
+		if origin.HTTPVersion == "" {
+			origin.HTTPVersion = OriginHTTPVersionHTTP1
+		}
+		if origin.HTTPVersion != OriginHTTPVersionHTTP1 {
+			return fmt.Errorf("WebSocket origins require HTTP/1.1")
+		}
+	case "http":
+		if origin.HTTPVersion == "" {
+			origin.HTTPVersion = OriginHTTPVersionHTTP1
+		}
+		if origin.HTTPVersion != OriginHTTPVersionHTTP1 && origin.HTTPVersion != OriginHTTPVersionH2C {
+			return fmt.Errorf("HTTP origins support only HTTP/1.1 or H2C")
+		}
+	case "https":
+		if origin.HTTPVersion == "" {
+			origin.HTTPVersion = OriginHTTPVersionHTTP1
+		}
+		if origin.HTTPVersion != OriginHTTPVersionHTTP1 && origin.HTTPVersion != OriginHTTPVersionHTTP2 {
+			return fmt.Errorf("HTTPS origins support only HTTP/1.1 or HTTP/2")
+		}
+	}
 	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
 		return fmt.Errorf("must not include credentials, path, query, or fragment")
 	}
@@ -329,6 +357,13 @@ func ValidateOrigin(origin *Origin) error {
 		}
 	}
 	return nil
+}
+
+func EffectiveOriginHTTPVersion(origin Origin) OriginHTTPVersion {
+	if origin.HTTPVersion == "" {
+		return OriginHTTPVersionHTTP1
+	}
+	return origin.HTTPVersion
 }
 
 func ValidOriginScheme(scheme string) bool {

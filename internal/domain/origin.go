@@ -25,6 +25,7 @@ type OriginPool struct {
 	ID                   string                `json:"id"`
 	Address              string                `json:"address"`
 	Scheme               string                `json:"scheme"`
+	HTTPVersion          OriginHTTPVersion     `json:"http_version,omitempty"`
 	HostHeader           string                `json:"host_header"`
 	TLSServerName        string                `json:"tls_server_name,omitempty"`
 	ConfigPath           string                `json:"config_path"`
@@ -65,6 +66,7 @@ type OriginProbeStatus struct {
 	PoolID                      string                `json:"pool_id"`
 	Address                     string                `json:"address"`
 	Scheme                      string                `json:"scheme"`
+	HTTPVersion                 OriginHTTPVersion     `json:"http_version,omitempty"`
 	KeepaliveConnections        int                   `json:"keepalive_connections"`
 	References                  []OriginPoolReference `json:"references"`
 	Healthy                     bool                  `json:"healthy"`
@@ -90,9 +92,24 @@ func ValidOriginPool(pool OriginPool) bool {
 	}
 	useTLS := false
 	switch pool.Scheme {
-	case "http", "grpc":
-	case "https", "grpcs":
+	case "http":
+		if pool.HTTPVersion != "" && pool.HTTPVersion != OriginHTTPVersionHTTP1 && pool.HTTPVersion != OriginHTTPVersionH2C {
+			return false
+		}
+	case "https":
 		useTLS = true
+		if pool.HTTPVersion != "" && pool.HTTPVersion != OriginHTTPVersionHTTP1 && pool.HTTPVersion != OriginHTTPVersionHTTP2 {
+			return false
+		}
+	case "grpc":
+		if pool.HTTPVersion != "" {
+			return false
+		}
+	case "grpcs":
+		useTLS = true
+		if pool.HTTPVersion != "" {
+			return false
+		}
 	default:
 		return false
 	}
@@ -132,6 +149,13 @@ func ValidOriginProbeStatus(status OriginProbeStatus) bool {
 	}
 	if status.Scheme != "http" && status.Scheme != "https" && status.Scheme != "grpc" && status.Scheme != "grpcs" {
 		return false
+	}
+	if status.HTTPVersion != "" {
+		if status.Scheme == "http" && status.HTTPVersion != OriginHTTPVersionHTTP1 && status.HTTPVersion != OriginHTTPVersionH2C ||
+			status.Scheme == "https" && status.HTTPVersion != OriginHTTPVersionHTTP1 && status.HTTPVersion != OriginHTTPVersionHTTP2 ||
+			(status.Scheme == "grpc" || status.Scheme == "grpcs") {
+			return false
+		}
 	}
 	if status.CircuitState != OriginCircuitClosed && status.CircuitState != OriginCircuitOpen && status.CircuitState != OriginCircuitRecovering {
 		return false

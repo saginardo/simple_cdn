@@ -21,10 +21,29 @@ func (s *Server) reconcileEdgeRuntimeCapabilities(nodeID string, capabilities []
 	if err != nil {
 		return err
 	}
-	if !http3StateNeedsRebuild(state, http3Wanted) && !originPoolStateNeedsRebuild(state, capabilities) {
+	if !http3StateNeedsRebuild(state, http3Wanted) && !originPoolStateNeedsRebuild(state, capabilities) && !originHTTP2StateNeedsRebuild(state, capabilities) && !runtimeOptimizationStateNeedsRebuild(state) {
 		return nil
 	}
 	return s.Publisher.PublishNode(nodeID)
+}
+
+func runtimeOptimizationStateNeedsRebuild(state domain.DesiredState) bool {
+	if !strings.Contains(state.NginxMainConfig, "pcre_jit on;") ||
+		!strings.Contains(state.NginxMainConfig, "worker_shutdown_timeout 1h;") {
+		return true
+	}
+	if strings.Contains(state.NginxConfig, "listen 443 ssl") &&
+		!strings.Contains(state.NginxConfig, "ssl_session_timeout 30m;") {
+		return true
+	}
+	return strings.Contains(state.NginxConfig, "listen 443 quic") &&
+		!strings.Contains(state.NginxConfig, "quic_host_key ")
+}
+
+func originHTTP2StateNeedsRebuild(state domain.DesiredState, capabilities []string) bool {
+	configured := strings.Contains(state.NginxConfig, "proxy_http_version 2;")
+	capable := slices.Contains(capabilities, domain.EdgeCapabilityOriginHTTP2)
+	return configured && !capable
 }
 
 func (s *Server) nodeWantsHTTP3(nodeID string, capabilities []string) (bool, error) {

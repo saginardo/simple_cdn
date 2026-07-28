@@ -241,6 +241,54 @@ func TestNetworkOriginProberReusesServiceHTTPAndIsolatesColdConnections(t *testi
 	}
 }
 
+func TestNetworkOriginProberUsesH2CAndReusesTheSession(t *testing.T) {
+	var accepted atomic.Int64
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.ProtoMajor != 2 {
+			t.Errorf("probe protocol = %s", request.Proto)
+		}
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	protocols := new(http.Protocols)
+	protocols.SetUnencryptedHTTP2(true)
+	server.Config.Protocols = protocols
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			accepted.Add(1)
+		}
+	}
+	server.Start()
+	defer server.Close()
+	parsed, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := domain.OriginPool{
+		ID: strings.Repeat("2", 24), Address: parsed.Host, Scheme: "http", HTTPVersion: domain.OriginHTTPVersionH2C,
+		HostHeader: "health.example.test",
+	}
+	prober := newNetworkOriginProber()
+	defer prober.Close()
+	first, err := prober.Probe(t.Context(), pool, domain.OriginProbeService)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := prober.Probe(t.Context(), pool, domain.OriginProbeService)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ConnectionReused || !second.ConnectionReused || accepted.Load() != 1 {
+		t.Fatalf("H2C probes: first=%#v second=%#v accepted=%d", first, second, accepted.Load())
+	}
+	cold, err := prober.Probe(t.Context(), pool, domain.OriginProbeCold)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cold.ConnectionReused || accepted.Load() != 2 {
+		t.Fatalf("H2C cold probe = %#v, accepted=%d", cold, accepted.Load())
+	}
+}
+
 func TestNetworkOriginProberUsesReusableGRPCHealthClient(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

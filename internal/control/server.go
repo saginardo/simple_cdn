@@ -639,10 +639,11 @@ func (s *Server) listSites(response http.ResponseWriter, request *http.Request) 
 }
 
 type originRequest struct {
-	URL           string  `json:"url"`
-	HostHeader    string  `json:"host_header"`
-	TLSServerName *string `json:"tls_server_name"`
-	Enabled       bool    `json:"enabled"`
+	URL           string                    `json:"url"`
+	HostHeader    string                    `json:"host_header"`
+	TLSServerName *string                   `json:"tls_server_name"`
+	HTTPVersion   *domain.OriginHTTPVersion `json:"http_version"`
+	Enabled       bool                      `json:"enabled"`
 }
 
 type optionalNullableInt struct {
@@ -671,7 +672,13 @@ func (input originRequest) origin(current *domain.Origin) domain.Origin {
 	} else if current != nil && strings.TrimSpace(input.URL) == current.URL {
 		tlsServerName = current.TLSServerName
 	}
-	return domain.Origin{URL: input.URL, HostHeader: input.HostHeader, TLSServerName: tlsServerName, Enabled: input.Enabled}
+	httpVersion := domain.OriginHTTPVersion("")
+	if input.HTTPVersion != nil {
+		httpVersion = *input.HTTPVersion
+	} else if current != nil && strings.TrimSpace(input.URL) == current.URL {
+		httpVersion = current.HTTPVersion
+	}
+	return domain.Origin{URL: input.URL, HostHeader: input.HostHeader, TLSServerName: tlsServerName, HTTPVersion: httpVersion, Enabled: input.Enabled}
 }
 
 type siteRequest struct {

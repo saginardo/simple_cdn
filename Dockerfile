@@ -150,7 +150,7 @@ RUN nginx_version=$(tr -d '[:space:]' </build/NGINX_VERSION) \
     && install -d -o www-data -g www-data -m 0700 \
         /opt/cdn-edge/nginx/tmp/body /opt/cdn-edge/nginx/tmp/fastcgi \
         /opt/cdn-edge/nginx/tmp/proxy /opt/cdn-edge/nginx/tmp/scgi /opt/cdn-edge/nginx/tmp/uwsgi \
-    && printf '%s\n' 'worker_processes 1;' 'worker_rlimit_nofile 1024;' >/opt/cdn-edge/config/nginx/cdn-platform-main.conf \
+    && printf '%s\n' 'pcre_jit on;' 'worker_processes 1;' 'worker_rlimit_nofile 1024;' 'worker_shutdown_timeout 1h;' >/opt/cdn-edge/config/nginx/cdn-platform-main.conf \
     && printf '%s\n' 'worker_connections 128;' >/opt/cdn-edge/config/nginx/cdn-platform-events.conf \
     && : >/opt/cdn-edge/config/nginx/cdn-platform-stream.conf \
     && printf '%s\n' \

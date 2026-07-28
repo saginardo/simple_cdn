@@ -28,7 +28,20 @@ type MachineStatus struct {
 	NetworkTXBytesPerSec int64               `json:"network_tx_bytes_per_second"`
 	SampleSeconds        float64             `json:"sample_seconds"`
 	OriginProbes         []OriginProbeStatus `json:"origin_probes,omitempty"`
+	Nginx                *NginxRuntimeStatus `json:"nginx,omitempty"`
 	CollectedAt          time.Time           `json:"collected_at"`
+}
+
+// NginxRuntimeStatus is an ephemeral ngx_http_stub_status snapshot collected
+// through the edge-local Unix socket. It is never persisted by the control plane.
+type NginxRuntimeStatus struct {
+	ActiveConnections   int64 `json:"active_connections"`
+	AcceptedConnections int64 `json:"accepted_connections"`
+	HandledConnections  int64 `json:"handled_connections"`
+	Requests            int64 `json:"requests"`
+	Reading             int64 `json:"reading"`
+	Writing             int64 `json:"writing"`
+	Waiting             int64 `json:"waiting"`
 }
 
 func ValidMachineStatus(status MachineStatus) bool {
@@ -53,7 +66,23 @@ func ValidMachineStatus(status MachineStatus) bool {
 		status.NetworkRXBytesPerSec >= 0 && status.NetworkRXBytesPerSec <= maxBytes &&
 		status.NetworkTXBytesPerSec >= 0 && status.NetworkTXBytesPerSec <= maxBytes &&
 		validMachineFloat(status.SampleSeconds, 0, maxSample) &&
-		!status.CollectedAt.IsZero() && validOriginProbeStatuses(status.OriginProbes)
+		!status.CollectedAt.IsZero() && validOriginProbeStatuses(status.OriginProbes) &&
+		(status.Nginx == nil || ValidNginxRuntimeStatus(*status.Nginx))
+}
+
+func ValidNginxRuntimeStatus(status NginxRuntimeStatus) bool {
+	const maxCounter int64 = 1<<53 - 1
+	values := [...]int64{
+		status.ActiveConnections, status.AcceptedConnections, status.HandledConnections,
+		status.Requests, status.Reading, status.Writing, status.Waiting,
+	}
+	for _, value := range values {
+		if value < 0 || value > maxCounter {
+			return false
+		}
+	}
+	return status.HandledConnections <= status.AcceptedConnections &&
+		status.Reading+status.Writing+status.Waiting == status.ActiveConnections
 }
 
 func validOriginProbeStatuses(statuses []OriginProbeStatus) bool {

@@ -1821,7 +1821,7 @@ test("log rows truncate long paths, color errors, and open request details", asy
 
 test("node machine status updates from the realtime event stream", async ({
   page,
-}) => {
+}, testInfo) => {
   const errors = trackPageErrors(page);
   const node = {
     id: "node-1",
@@ -1861,6 +1861,15 @@ test("node machine status updates from the realtime event stream", async ({
     network_rx_bytes_per_second: 2_000,
     network_tx_bytes_per_second: 1_000,
     sample_seconds: 5,
+    nginx: {
+      active_connections: 96,
+      accepted_connections: 1_024,
+      handled_connections: 1_024,
+      requests: 2_048,
+      reading: 3,
+      writing: 21,
+      waiting: 72,
+    },
     collected_at: now.toISOString(),
   };
   await mockAPI(page, {
@@ -1881,6 +1890,13 @@ test("node machine status updates from the realtime event stream", async ({
         ...machineReport,
         cpu_usage_percent: 73,
         network_rx_bytes_per_second: 8_192,
+        nginx: {
+          ...machineReport.nginx,
+          active_connections: 128,
+          reading: 4,
+          writing: 28,
+          waiting: 96,
+        },
         collected_at: new Date(now.getTime() + 5_000).toISOString(),
       },
     },
@@ -1921,6 +1937,26 @@ test("node machine status updates from the realtime event stream", async ({
   ).toBeVisible();
   await expect(page.getByText("73.0%", { exact: true })).toBeVisible();
   await expect(page.getByText(/接收\s*8\.0 KiB\/s/)).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Nginx 运行状态", level: 3 }),
+  ).toBeVisible();
+  await expect(page.getByText("128 / 16,384 连接容量")).toBeVisible();
+  await expect(page.getByText("96", { exact: true })).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("node-runtime-status.png"),
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(
+    page.getByRole("heading", { name: "Nginx 运行状态", level: 3 }),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(() => document.documentElement.scrollWidth),
+  ).toBeLessThanOrEqual(390);
+  await page.screenshot({
+    path: testInfo.outputPath("node-runtime-status-mobile.png"),
+    fullPage: true,
+  });
   expect(errors).toEqual([]);
 });
 

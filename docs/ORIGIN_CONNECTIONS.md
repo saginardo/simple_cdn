@@ -10,12 +10,13 @@ HTTP、HTTPS、WebSocket 和 gRPC 站点在具备 `origin_connection_v1` 能力�
 - 规范化后的连接地址和端口；URL 未写端口时，HTTP/GRPC 补 `80`，HTTPS/GRPCS 补 `443`；
 - HTTP Host 请求头；
 - TLS SNI。
+- 回源 HTTP 协议：HTTP/1.1、TLS HTTP/2 或明文 H2C。
 
-四项完全相同的主源或备用源共享一个 Nginx upstream 和空闲连接池。Host 或 SNI 不同的虚拟主机保持隔离，避免把健康判断错误地扩散到另一个源站身份。
+五项完全相同的主源或备用源共享一个 Nginx upstream 和空闲连接池。Host、SNI 或 HTTP 协议不同的虚拟主机保持隔离，避免跨协议复用连接，或把健康判断错误地扩散到另一个源站身份。
 
 Nginx 的 `keepalive` 数量是每个 worker、每个 upstream 的空闲连接上限，不是全节点硬上限。控制面以节点 `worker_connections / 16` 作为每 worker 的总空闲回源预算，限制在 16-1024 之间，再按连接池被站点引用的次数分配；单池上限通常为 64，在 `worker_connections >= 16384` 时为 128。每个池至少保留 1 个槽位。实际连接总数还包括正在使用的连接，因此源站容量规划不能只看 keepalive 数量。
 
-托管 upstream 显式使用 HTTP/1.1 空闲连接复用、45 秒空闲超时、每连接最多 1000 个请求、最长 1 小时连接寿命，以及 HTTPS 会话复用。发布相同配置不会增加 desired-state 版本。
+现有站点和新站点默认使用 HTTP/1.1。HTTPS 源站可显式选择 TLS HTTP/2，HTTP 源站可显式选择 H2C；该配置只会发布到声明 `origin_http2_v1` 的 Nginx 1.29.4+ 节点，不兼容节点会在发布前返回明确的升级要求。HTTP/2 源站另建协议隔离连接池；WebSocket Upgrade 始终进入同地址的独立 HTTP/1.1 upstream，避免从 HTTP/2 keepalive 池取出错误协议的连接。托管 upstream 使用 45 秒空闲超时、每连接最多 1000 个请求、最长 1 小时连接寿命，以及 HTTPS 会话复用。发布相同配置不会增加 desired-state 版本。
 
 ## 主动探测与熔断
 
@@ -29,7 +30,7 @@ Nginx 的 `keepalive` 数量是每个 worker、每个 upstream 的空闲连接�
 
 协议行为如下：
 
-- HTTP/HTTPS 使用源站根路径 `/` 的 `HEAD` 请求，并携带配置的 Host；完整 HTTP 5xx 响应计为失败，其他完整响应表示传输可用。
+- HTTP/HTTPS 使用源站根路径 `/` 的 `HEAD` 请求，并携带配置的 Host；探针严格使用站点选择的 HTTP/1.1、HTTP/2 或 H2C，协议协商不一致即失败。完整 HTTP 5xx 响应计为失败，其他完整响应表示传输可用。
 - HTTPS 使用配置的 SNI 和系统 CA 验证证书，规则与 Nginx 回源一致，不支持跳过验证或自定义 CA。
 - gRPC 服务探测使用标准 Health Check RPC；返回 `SERVING` 视为正常，显式非服务状态视为失败。未实现可选 Health 服务（`UNIMPLEMENTED`）时，已建立的 gRPC 传输仍视为可用。
 - gRPC 冷连接探测验证 TCP；GRPCS 还验证证书并要求 TLS ALPN 协商为 `h2`。
@@ -57,7 +58,7 @@ include 切换、站点配置发布和 Nginx reload 使用同一串行锁。状�
 
 访问日志记录 Nginx 的回源建连、收到响应头和完整响应时间；HTTPS 的建连时间包含 TLS 握手。发生 Nginx 重试或主备切换时，每次 upstream 尝试都单独计入样本和耗时，不会只统计第一段。ClickHouse 原始日志保留 7 天；`cdn_origin_minute` 将各阶段的样本数、总耗时和连接复用数预聚合并保留 30 天，站点详情显示最近 24 小时加权平均值。复用率按建连耗时为 `0 ms` 的尝试推断，因此极低延迟的新连接也可能被计为复用。部署新版本前的请求没有这些阶段字段，不做伪造或回填；新请求到达后才显示回源性能。
 
-两层主动探测结果随 5 秒机器状态上报，在节点详情的“回源连接”区域并列展示。服务探测标明是否复用了探针连接；冷连接探测展示 TCP、TLS 和总耗时；两者都显示响应状态、错误和采样时间。控制面只在内存中保留最新快照并通过受认证 SSE 推送，不写 SQLite 或 ClickHouse；主控重启或尚无新样本时，该区域留空。
+两层主动探测结果随 5 秒机器状态上报，在节点详情的“回源连接”区域并列展示。服务探测标明是否复用了探针连接；冷连接探测展示 TCP、TLS 和总耗时；两者都显示回源 HTTP 协议、响应状态、错误和采样时间。控制面只在内存中保留最新快照并通过受认证 SSE 推送，不写 SQLite 或 ClickHouse；主控重启或尚无新样本时，该区域留空。
 
 ## 排查
 

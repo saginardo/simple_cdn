@@ -1,9 +1,13 @@
 package edge
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math"
+	"net"
+	"net/http"
 	"os"
 	"runtime"
 	"strconv"
@@ -25,6 +29,7 @@ type machineStatusCollector struct {
 	statFilesystem func(string) (int64, int64, error)
 	now            func() time.Time
 	logicalCPUs    func() int
+	nginxStatus    func() (*domain.NginxRuntimeStatus, error)
 	previous       *machineSample
 }
 
@@ -45,12 +50,13 @@ type networkCounters struct {
 	tx uint64
 }
 
-func newMachineStatusCollector() *machineStatusCollector {
+func newMachineStatusCollector(nginxStatusSocketPath string) *machineStatusCollector {
 	return &machineStatusCollector{
 		readFile:       os.ReadFile,
 		statFilesystem: rootFilesystemUsage,
 		now:            time.Now,
 		logicalCPUs:    runtime.NumCPU,
+		nginxStatus:    newNginxStatusReader(nginxStatusSocketPath),
 	}
 }
 
@@ -95,6 +101,11 @@ func (c *machineStatusCollector) Collect() (*domain.MachineStatus, error) {
 		DiskUsedBytes: diskUsed, DiskTotalBytes: diskTotal,
 		NetworkInterface: networkInterface, CollectedAt: collectedAt,
 	}
+	if c.nginxStatus != nil {
+		// Runtime Nginx telemetry is optional. A stopped or restarting Nginx must
+		// not suppress the host snapshot; the UI simply omits this section.
+		status.Nginx, _ = c.nginxStatus()
+	}
 	if c.previous != nil {
 		sampleSeconds := collectedAt.Sub(c.previous.at).Seconds()
 		if sampleSeconds > 0 && sampleSeconds <= 24*60*60 {
@@ -110,6 +121,75 @@ func (c *machineStatusCollector) Collect() (*domain.MachineStatus, error) {
 		return nil, errors.New("collected machine status is invalid")
 	}
 	c.previous = &machineSample{at: collectedAt, cpu: cpu, networkInterface: networkInterface, network: network}
+	return status, nil
+}
+
+const maxNginxStatusBodyBytes = 4096
+
+func newNginxStatusReader(socketPath string) func() (*domain.NginxRuntimeStatus, error) {
+	socketPath = strings.TrimSpace(socketPath)
+	if socketPath == "" {
+		return nil
+	}
+	dialer := &net.Dialer{Timeout: 500 * time.Millisecond}
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return dialer.DialContext(ctx, "unix", socketPath)
+		},
+		MaxIdleConns:        1,
+		MaxIdleConnsPerHost: 1,
+		MaxConnsPerHost:     1,
+		IdleConnTimeout:     30 * time.Second,
+	}
+	client := &http.Client{Transport: transport, Timeout: 750 * time.Millisecond}
+	return func() (*domain.NginxRuntimeStatus, error) {
+		request, err := http.NewRequest(http.MethodGet, "http://nginx/stub_status", nil)
+		if err != nil {
+			return nil, err
+		}
+		response, err := client.Do(request)
+		if err != nil {
+			return nil, fmt.Errorf("read Nginx status: %w", err)
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("read Nginx status: HTTP %d", response.StatusCode)
+		}
+		contents, err := io.ReadAll(io.LimitReader(response.Body, maxNginxStatusBodyBytes+1))
+		if err != nil {
+			return nil, fmt.Errorf("read Nginx status body: %w", err)
+		}
+		if len(contents) > maxNginxStatusBodyBytes {
+			return nil, errors.New("Nginx status body is too large")
+		}
+		return parseNginxStubStatus(contents)
+	}
+}
+
+func parseNginxStubStatus(contents []byte) (*domain.NginxRuntimeStatus, error) {
+	lines := make([]string, 0, 4)
+	for _, line := range strings.Split(string(contents), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) != 4 || lines[1] != "server accepts handled requests" {
+		return nil, errors.New("invalid Nginx stub_status response")
+	}
+	status := &domain.NginxRuntimeStatus{}
+	var trailing string
+	if count, err := fmt.Sscanf(lines[0], "Active connections: %d %s", &status.ActiveConnections, &trailing); count != 1 || err != nil && !errors.Is(err, io.EOF) {
+		return nil, errors.New("invalid Nginx active connection count")
+	}
+	if count, err := fmt.Sscanf(lines[2], "%d %d %d %s", &status.AcceptedConnections, &status.HandledConnections, &status.Requests, &trailing); count != 3 || err != nil && !errors.Is(err, io.EOF) {
+		return nil, errors.New("invalid Nginx connection counters")
+	}
+	if count, err := fmt.Sscanf(lines[3], "Reading: %d Writing: %d Waiting: %d %s", &status.Reading, &status.Writing, &status.Waiting, &trailing); count != 3 || err != nil && !errors.Is(err, io.EOF) {
+		return nil, errors.New("invalid Nginx connection states")
+	}
+	if !domain.ValidNginxRuntimeStatus(*status) {
+		return nil, errors.New("invalid Nginx runtime status")
+	}
 	return status, nil
 }
 

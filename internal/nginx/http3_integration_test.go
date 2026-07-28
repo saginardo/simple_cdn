@@ -69,6 +69,14 @@ func TestRenderedHTTP3ServesARealQUICRequest(t *testing.T) {
 	certificatePath := filepath.Join(directory, siteID+".crt")
 	privateKeyPath := filepath.Join(directory, siteID+".key")
 	writeHTTP3TestCertificate(t, certificatePath, privateKeyPath)
+	quicHostKeyPath := filepath.Join(directory, "quic-host.key")
+	quicHostKey := make([]byte, 32)
+	if _, err := rand.Read(quicHostKey); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(quicHostKeyPath, quicHostKey, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	httpPorts := reserveHTTP3TCPPorts(t, 2)
 	httpsPort := reserveHTTP3DualProtocolPort(t)
 	configuration = strings.Replace(configuration, "listen 80 default_server;", fmt.Sprintf("listen 127.0.0.1:%d default_server;", httpPorts[0]), 1)
@@ -82,6 +90,7 @@ func TestRenderedHTTP3ServesARealQUICRequest(t *testing.T) {
 	configuration = strings.ReplaceAll(configuration, "/opt/cdn-edge/logs/access.json", filepath.Join(directory, "access.json"))
 	configuration = strings.ReplaceAll(configuration, "/opt/cdn-edge/config/certs/"+siteID+".crt", certificatePath)
 	configuration = strings.ReplaceAll(configuration, "/opt/cdn-edge/config/certs/"+siteID+".key", privateKeyPath)
+	configuration = strings.ReplaceAll(configuration, DefaultQUICHostKeyPath, quicHostKeyPath)
 	for _, unsafePath := range []string{"listen 80", "listen 443", "/opt/cdn-edge/config/certs/" + siteID, DefaultCachePath} {
 		if strings.Contains(configuration, unsafePath) {
 			t.Fatalf("isolated HTTP/3 configuration still contains %q:\n%s", unsafePath, configuration)

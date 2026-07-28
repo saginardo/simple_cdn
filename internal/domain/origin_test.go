@@ -16,6 +16,15 @@ func TestValidOriginPoolAndProbeStatus(t *testing.T) {
 	if !ValidOriginPool(pool) {
 		t.Fatalf("valid origin pool was rejected: %#v", pool)
 	}
+	http2Pool := pool
+	http2Pool.HTTPVersion = OriginHTTPVersionHTTP2
+	if !ValidOriginPool(http2Pool) {
+		t.Fatalf("valid HTTP/2 origin pool was rejected: %#v", http2Pool)
+	}
+	http2Pool.Scheme = "http"
+	if ValidOriginPool(http2Pool) {
+		t.Fatal("TLS HTTP/2 mode was accepted for a cleartext HTTP pool")
+	}
 	invalid := pool
 	invalid.ConfigPath = "/opt/cdn-edge/config/nginx/origin-pools/../outside.conf"
 	if ValidOriginPool(invalid) {
@@ -29,6 +38,7 @@ func TestValidOriginPoolAndProbeStatus(t *testing.T) {
 	checkedAt := time.Now().UTC()
 	status := OriginProbeStatus{
 		PoolID: pool.ID, Address: pool.Address, Scheme: pool.Scheme,
+		HTTPVersion:          OriginHTTPVersionHTTP2,
 		KeepaliveConnections: pool.KeepaliveConnections, References: pool.References,
 		Healthy: true, CircuitState: OriginCircuitClosed, CheckedAt: checkedAt,
 		ServiceProbe: &OriginProbeSample{

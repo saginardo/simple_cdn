@@ -50,7 +50,7 @@ func TestReconcileEdgeRuntimeCapabilitiesTracksHTTP3Support(t *testing.T) {
 	if err := server.reconcileEdgeRuntimeCapabilities(node.ID, capabilities); err != nil {
 		t.Fatal(err)
 	}
-	http3State, _, err := database.NodeState(node.ID)
+	http3State, encryptedCertificates, err := database.NodeState(node.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,6 +59,25 @@ func TestReconcileEdgeRuntimeCapabilitiesTracksHTTP3Support(t *testing.T) {
 	}
 	if http3StateNeedsRebuild(http3State, true) {
 		t.Fatal("reconciled HTTP/3 state still requests a rebuild")
+	}
+
+	legacyRuntime := http3State
+	legacyRuntime.NginxMainConfig = strings.ReplaceAll(legacyRuntime.NginxMainConfig, "pcre_jit on;\n", "")
+	legacyRuntime.NginxMainConfig = strings.ReplaceAll(legacyRuntime.NginxMainConfig, "worker_shutdown_timeout 1h;\n", "")
+	legacyRuntime.NginxConfig = strings.ReplaceAll(legacyRuntime.NginxConfig, "    ssl_session_timeout 30m;\n", "")
+	legacyRuntime.NginxConfig = strings.ReplaceAll(legacyRuntime.NginxConfig, "quic_host_key /opt/cdn-edge/config/nginx/quic-host.key;\n", "")
+	if err := database.SaveNodeState(node.ID, legacyRuntime, encryptedCertificates); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.reconcileEdgeRuntimeCapabilities(node.ID, capabilities); err != nil {
+		t.Fatal(err)
+	}
+	optimizedState, _, err := database.NodeState(node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if optimizedState.Version <= legacyRuntime.Version || runtimeOptimizationStateNeedsRebuild(optimizedState) {
+		t.Fatalf("runtime optimization state was not rebuilt: version=%d\nmain:\n%s\nhttp:\n%s", optimizedState.Version, optimizedState.NginxMainConfig, optimizedState.NginxConfig)
 	}
 
 	if err := database.SetNodeCapabilities(node.ID, nil); err != nil {
@@ -90,6 +109,40 @@ func TestHTTP3RebuildTracksPublishedSiteOptIn(t *testing.T) {
 	}
 	if http3StateNeedsRebuild(legacyEnabled, true) {
 		t.Fatal("opted-in HTTP/3 state requested an unnecessary rebuild")
+	}
+}
+
+func TestOriginHTTP2StateRebuildsAfterCapabilityRemoval(t *testing.T) {
+	state := domain.DesiredState{NginxConfig: "location / { proxy_http_version 2; proxy_pass http://origin; }"}
+	if originHTTP2StateNeedsRebuild(state, []string{domain.EdgeCapabilityOriginHTTP2}) {
+		t.Fatal("HTTP/2 state rebuilt while the capability remained present")
+	}
+	if !originHTTP2StateNeedsRebuild(state, nil) {
+		t.Fatal("HTTP/2 state did not rebuild after capability removal")
+	}
+	if originHTTP2StateNeedsRebuild(domain.DesiredState{NginxConfig: "proxy_http_version 1.1;"}, nil) {
+		t.Fatal("HTTP/1.1 state incorrectly requires an HTTP/2 capability")
+	}
+}
+
+func TestRuntimeOptimizationStateNeedsRebuild(t *testing.T) {
+	legacy := domain.DesiredState{
+		NginxMainConfig: "worker_processes auto;\nworker_rlimit_nofile 65536;\n",
+		NginxConfig:     "server { listen 443 ssl; listen 443 quic; }",
+	}
+	if !runtimeOptimizationStateNeedsRebuild(legacy) {
+		t.Fatal("legacy state did not request runtime optimization rebuild")
+	}
+	optimized := domain.DesiredState{
+		NginxMainConfig: "pcre_jit on;\nworker_processes auto;\nworker_shutdown_timeout 1h;\n",
+		NginxConfig:     "server { listen 443 ssl; ssl_session_timeout 30m; listen 443 quic; }\nquic_host_key /opt/cdn-edge/config/nginx/quic-host.key;",
+	}
+	if runtimeOptimizationStateNeedsRebuild(optimized) {
+		t.Fatal("optimized state unexpectedly requested a rebuild")
+	}
+	tcpOnly := domain.DesiredState{NginxMainConfig: "pcre_jit on;\nworker_shutdown_timeout 1h;\n"}
+	if runtimeOptimizationStateNeedsRebuild(tcpOnly) {
+		t.Fatal("TCP-only optimized state unexpectedly requested a rebuild")
 	}
 }
 

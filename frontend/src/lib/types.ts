@@ -213,7 +213,18 @@ export interface MachineReport {
   network_tx_bytes_per_second: number;
   sample_seconds: number;
   origin_probes?: OriginProbeStatus[];
+  nginx?: NginxRuntimeStatus;
   collected_at: string;
+}
+
+export interface NginxRuntimeStatus {
+  active_connections: number;
+  accepted_connections: number;
+  handled_connections: number;
+  requests: number;
+  reading: number;
+  writing: number;
+  waiting: number;
 }
 
 export interface OriginPoolReference {
@@ -237,6 +248,7 @@ export interface OriginProbeStatus {
   pool_id: string;
   address: string;
   scheme: "http" | "https" | "grpc" | "grpcs";
+  http_version?: OriginHTTPVersion;
   keepalive_connections: number;
   references: OriginPoolReference[];
   healthy: boolean;
@@ -306,8 +318,11 @@ export interface Origin {
   url: string;
   host_header: string;
   tls_server_name?: string;
+  http_version?: OriginHTTPVersion;
   enabled: boolean;
 }
+
+export type OriginHTTPVersion = "http1" | "http2" | "h2c";
 
 export interface TCPForward {
   name: string;

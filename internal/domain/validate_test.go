@@ -2,6 +2,38 @@ package domain
 
 import "testing"
 
+func TestOriginHTTPVersionValidation(t *testing.T) {
+	for _, test := range []struct {
+		url     string
+		version OriginHTTPVersion
+		want    OriginHTTPVersion
+	}{
+		{url: "http://origin.example.test", want: OriginHTTPVersionHTTP1},
+		{url: "https://origin.example.test", version: OriginHTTPVersionHTTP2, want: OriginHTTPVersionHTTP2},
+		{url: "http://origin.example.test", version: OriginHTTPVersionH2C, want: OriginHTTPVersionH2C},
+		{url: "wss://origin.example.test", want: OriginHTTPVersionHTTP1},
+		{url: "grpcs://origin.example.test", want: ""},
+	} {
+		origin := Origin{URL: test.url, HTTPVersion: test.version}
+		if err := ValidateOrigin(&origin); err != nil {
+			t.Fatalf("ValidateOrigin(%q, %q): %v", test.url, test.version, err)
+		}
+		if origin.HTTPVersion != test.want {
+			t.Fatalf("ValidateOrigin(%q, %q) version = %q, want %q", test.url, test.version, origin.HTTPVersion, test.want)
+		}
+	}
+	for _, origin := range []Origin{
+		{URL: "http://origin.example.test", HTTPVersion: OriginHTTPVersionHTTP2},
+		{URL: "https://origin.example.test", HTTPVersion: OriginHTTPVersionH2C},
+		{URL: "ws://origin.example.test", HTTPVersion: OriginHTTPVersionH2C},
+		{URL: "grpc://origin.example.test", HTTPVersion: OriginHTTPVersionHTTP2},
+	} {
+		if err := ValidateOrigin(&origin); err == nil {
+			t.Fatalf("invalid origin protocol was accepted: %#v", origin)
+		}
+	}
+}
+
 func TestClientMaxBodySizeDefaultsAndPresetValidation(t *testing.T) {
 	newSite := func(value int) Site {
 		return Site{

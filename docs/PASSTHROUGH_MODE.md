@@ -39,7 +39,7 @@
 - 设置 `proxy_buffering off` 与 `proxy_request_buffering off`。
 - 使用站点配置的 6、15、30 或 60 分钟读写空闲超时，默认 6 分钟。
 - 显式转发 `Range $http_range` 与 `If-Range $http_if_range`。
-- 保留 HTTP/1.1 上游连接复用、SNI/TLS 校验和主备源站故障切换。
+- 保留所选 HTTP/1.1、TLS HTTP/2 或 H2C 上游连接复用、SNI/TLS 校验和主备源站故障切换。
 
 WebSocket/SSE 不再配置路径；WebSocket Upgrade、SSE Accept/控制头和 POST 会自动进入无缓存、无响应缓冲分支。`passthrough` 的作用仍是让整站所有请求都遵循无缓存转发语义，并额外关闭请求缓冲、完整转发 Range 头。
 

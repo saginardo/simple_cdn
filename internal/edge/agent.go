@@ -43,6 +43,7 @@ type Config struct {
 	NginxEventsConfigPath        string
 	NginxBinaryPath              string
 	NginxPIDPath                 string
+	NginxStatusSocketPath        string
 	NginxVersionPath             string
 	NginxSHA256Path              string
 	NginxVersion                 string
@@ -177,6 +178,9 @@ func New(config Config) (*Agent, error) {
 	if config.SecurityLogPath == "" {
 		config.SecurityLogPath = "/opt/cdn-edge/logs/security.json"
 	}
+	if config.NginxStatusSocketPath == "" {
+		config.NginxStatusSocketPath = "/opt/cdn-edge/nginx/run/status.sock"
+	}
 	if config.PollInterval == 0 {
 		config.PollInterval = 30 * time.Second
 	}
@@ -246,6 +250,9 @@ func New(config Config) (*Agent, error) {
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityNginxFragments)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityControlManifest)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityOriginConnection)
+	if managedNginxVersionAtLeast(config.NginxVersion, 1, 29, 4) {
+		config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityOriginHTTP2)
+	}
 	if config.NginxVersion != "" && config.NginxSHA256 != "" {
 		config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityNginxBundle)
 	}
@@ -267,7 +274,7 @@ func New(config Config) (*Agent, error) {
 	agent := &Agent{
 		Config: config, logs: NewLogForwarder(config.StateDir, config.AccessLogPath),
 		cacheUsage:        newCacheUsageCollector(nginx.DefaultCachePath, nginx.DefaultCacheMaxBytes, defaultCacheUsageInterval),
-		machineStatus:     newMachineStatusCollector(),
+		machineStatus:     newMachineStatusCollector(config.NginxStatusSocketPath),
 		componentFailures: make(map[string]string),
 		originPools:       make(map[string]*originPoolRuntime),
 		originProbeWake:   make(chan struct{}, 1),
@@ -554,6 +561,10 @@ func (a *Agent) latestMachineStatus() *domain.MachineStatus {
 }
 
 func cloneMachineStatus(report domain.MachineStatus) domain.MachineStatus {
+	if report.Nginx != nil {
+		copyOfNginx := *report.Nginx
+		report.Nginx = &copyOfNginx
+	}
 	report.OriginProbes = append([]domain.OriginProbeStatus(nil), report.OriginProbes...)
 	for index := range report.OriginProbes {
 		report.OriginProbes[index].References = append([]domain.OriginPoolReference(nil), report.OriginProbes[index].References...)
@@ -778,6 +789,20 @@ func loadManagedNginxMetadata(config *Config) error {
 		return errors.New("managed Nginx VERSION or .bundle-sha256 is invalid")
 	}
 	return nil
+}
+
+func managedNginxVersionAtLeast(version string, wantedMajor, wantedMinor, wantedPatch int) bool {
+	var major, minor, patch int
+	if count, err := fmt.Sscanf(strings.TrimSpace(version), "%d.%d.%d", &major, &minor, &patch); err != nil || count != 3 {
+		return false
+	}
+	if major != wantedMajor {
+		return major > wantedMajor
+	}
+	if minor != wantedMinor {
+		return minor > wantedMinor
+	}
+	return patch >= wantedPatch
 }
 
 func (a *Agent) ReportMachineStatus(ctx context.Context, report domain.MachineStatus) error {

@@ -290,6 +290,10 @@ func (p Publisher) renderNodeStateUpdates(materials []publicationMaterial, affec
 		if siteRequiresTCPStream(nodeSites) && !slices.Contains(node.Capabilities, domain.EdgeCapabilityTCPStream) {
 			return nil, nil, fmt.Errorf("node %s must be upgraded before publishing TCP forwards", node.Name)
 		}
+		originHTTP2Capable := slices.Contains(node.Capabilities, domain.EdgeCapabilityOriginHTTP2)
+		if sitesRequireOriginHTTP2(nodeSites) && !originHTTP2Capable {
+			return nil, nil, fmt.Errorf("node %s must be upgraded before publishing HTTP/2 origin connections", node.Name)
+		}
 		var nodeSecurityPolicies []domain.SecurityPolicy
 		if slices.Contains(node.Capabilities, domain.EdgeCapabilitySecurity) {
 			nodeSecurityPolicies = securityPolicies
@@ -305,6 +309,7 @@ func (p Publisher) renderNodeStateUpdates(materials []publicationMaterial, affec
 			DefaultCacheSizeGB:     cacheSizeGB,
 			HTTP3Capable:           http3Capable,
 			ManagedOriginPools:     managedOriginPools,
+			OriginHTTP2Capable:     originHTTP2Capable,
 			NginxWorkerConnections: node.NginxCapacity.WorkerConnections,
 		})
 		if err != nil {
@@ -354,6 +359,24 @@ func (p Publisher) renderNodeStateUpdates(materials []publicationMaterial, affec
 		}
 	}
 	return updates, targets, nil
+}
+
+func sitesRequireOriginHTTP2(sites []domain.Site) bool {
+	for _, site := range sites {
+		if !site.Enabled || site.TCPOnly {
+			continue
+		}
+		for _, origin := range []*domain.Origin{&site.PrimaryOrigin, site.BackupOrigin} {
+			if origin == nil || !origin.Enabled {
+				continue
+			}
+			version := domain.EffectiveOriginHTTPVersion(*origin)
+			if version == domain.OriginHTTPVersionHTTP2 || version == domain.OriginHTTPVersionH2C {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func rateLimitPoliciesForCapabilities(policies []domain.RateLimitPolicy, capabilities []string) []domain.RateLimitPolicy {
@@ -426,7 +449,7 @@ func (p Publisher) nodeStateMatches(previous domain.DesiredState, encryptedCerti
 
 func originPoolsEqual(left, right []domain.OriginPool) bool {
 	return slices.EqualFunc(left, right, func(a, b domain.OriginPool) bool {
-		return a.ID == b.ID && a.Address == b.Address && a.Scheme == b.Scheme && a.HostHeader == b.HostHeader &&
+		return a.ID == b.ID && a.Address == b.Address && a.Scheme == b.Scheme && a.HTTPVersion == b.HTTPVersion && a.HostHeader == b.HostHeader &&
 			a.TLSServerName == b.TLSServerName && a.ConfigPath == b.ConfigPath && a.KeepaliveConnections == b.KeepaliveConnections &&
 			slices.Equal(a.References, b.References)
 	})

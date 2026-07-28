@@ -33,14 +33,27 @@ func TestNewLoadsManagedNginxMetadataAndCapability(t *testing.T) {
 	if agent.Config.NginxVersion != "1.30.4" || agent.Config.NginxSHA256 != digest {
 		t.Fatalf("managed Nginx metadata = version %q digest %q", agent.Config.NginxVersion, agent.Config.NginxSHA256)
 	}
-	found := false
+	found, foundOriginHTTP2 := false, false
 	for _, capability := range agent.Config.Capabilities {
 		if capability == domain.EdgeCapabilityNginxBundle {
 			found = true
 		}
+		if capability == domain.EdgeCapabilityOriginHTTP2 {
+			foundOriginHTTP2 = true
+		}
 	}
-	if !found {
+	if !found || !foundOriginHTTP2 {
 		t.Fatalf("managed Nginx capability missing from %#v", agent.Config.Capabilities)
+	}
+}
+
+func TestManagedNginxHTTP2OriginVersionGate(t *testing.T) {
+	for version, wanted := range map[string]bool{
+		"": false, "1.29.3": false, "1.29.4": true, "1.30.4": true, "2.0.0": true,
+	} {
+		if got := managedNginxVersionAtLeast(version, 1, 29, 4); got != wanted {
+			t.Fatalf("managedNginxVersionAtLeast(%q) = %t, want %t", version, got, wanted)
+		}
 	}
 }
 

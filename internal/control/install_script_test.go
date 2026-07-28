@@ -52,6 +52,7 @@ func TestInstallEdgeScriptCreatesManagedOptLayout(t *testing.T) {
 		"opt/cdn-edge/nginx/tmp/proxy",
 		"opt/cdn-edge/config/edge.env",
 		"opt/cdn-edge/config/nginx/cdn-platform.conf",
+		"opt/cdn-edge/config/nginx/quic-host.key",
 		"opt/cdn-edge/systemd/nginx.service",
 		"opt/cdn-edge/systemd/cdn-edge-agent.service",
 		"opt/cdn-edge/systemd/cdn-edge-updater@.service",
@@ -90,6 +91,7 @@ func TestInstallEdgeScriptCreatesManagedOptLayout(t *testing.T) {
 		"ENROLLMENT_TOKEN=\n",
 		"NGINX_BINARY_PATH=/opt/cdn-edge/nginx/sbin/nginx",
 		"NGINX_PID_PATH=/opt/cdn-edge/nginx/run/nginx.pid",
+		"NGINX_STATUS_SOCKET_PATH=/opt/cdn-edge/nginx/run/status.sock",
 		"NGINX_VERSION_PATH=/opt/cdn-edge/nginx/VERSION",
 		"NGINX_SHA256_PATH=/opt/cdn-edge/nginx/.bundle-sha256",
 		"EDGE_CAPABILITIES=tcp_stream_v1,edge_rate_limit_v1,nginx_capacity_v1,nginx_bundle_v1",
@@ -97,6 +99,9 @@ func TestInstallEdgeScriptCreatesManagedOptLayout(t *testing.T) {
 		if !strings.Contains(environment, expected) {
 			t.Fatalf("edge.env does not contain %q:\n%s", expected, environment)
 		}
+	}
+	if info, err := os.Stat(filepath.Join(harness.root, "opt/cdn-edge/config/nginx/quic-host.key")); err != nil || info.Mode().Perm() != 0o600 || info.Size() != 32 {
+		t.Fatalf("QUIC host key metadata = %#v, err=%v", info, err)
 	}
 	log := harness.read(t, "mock.log")
 	for _, expected := range []string{"systemctl start nginx.service", "systemctl restart cdn-edge-agent.service", "sysctl --system"} {
@@ -220,6 +225,7 @@ func TestInstallEdgeScriptOnlineUpgradeAndReadinessRollback(t *testing.T) {
 		t.Fatalf("first install failed: %v\n%s", err, output)
 	}
 	oldDigest := harness.read(t, "opt/cdn-edge/nginx/.bundle-sha256")
+	oldQUICHostKey := harness.read(t, "opt/cdn-edge/config/nginx/quic-host.key")
 	harness.write("opt/cdn-edge/data/preserved", "keep\n")
 	harness.write("opt/cdn-edge/cache/cache-object", "cache\n")
 	harness.setNginxVersion(t, "1.30.5")
@@ -233,6 +239,7 @@ func TestInstallEdgeScriptOnlineUpgradeAndReadinessRollback(t *testing.T) {
 	harness.requireContents(t, "opt/cdn-edge/nginx/.bundle-sha256", oldDigest)
 	harness.requireContents(t, "opt/cdn-edge/data/preserved", "keep\n")
 	harness.requireContents(t, "opt/cdn-edge/cache/cache-object", "cache\n")
+	harness.requireContents(t, "opt/cdn-edge/config/nginx/quic-host.key", oldQUICHostKey)
 
 	output, err = harness.runOnline(t, "edge-binary-v2", "")
 	if err != nil {
@@ -241,6 +248,7 @@ func TestInstallEdgeScriptOnlineUpgradeAndReadinessRollback(t *testing.T) {
 	harness.requireContents(t, "opt/cdn-edge/bin/cdn-edge-agent", "edge-binary-v2")
 	harness.requireContents(t, "opt/cdn-edge/nginx/VERSION", "1.30.5\n")
 	harness.requireContents(t, "opt/cdn-edge/data/preserved", "keep\n")
+	harness.requireContents(t, "opt/cdn-edge/config/nginx/quic-host.key", oldQUICHostKey)
 }
 
 func TestInstallEdgeScriptRejectsUnsafeNginxBundleBeforeMutation(t *testing.T) {

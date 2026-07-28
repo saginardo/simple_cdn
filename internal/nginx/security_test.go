@@ -69,6 +69,48 @@ func TestRenderWithSecurityPolicies(t *testing.T) {
 	}
 }
 
+func TestRenderInitializesSiteIDBeforeSecurityRejection(t *testing.T) {
+	site := domain.Site{
+		ID: "site-a", Name: "site-a", Domains: []string{"cdn.example.test"},
+		PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, Enabled: true,
+	}
+	configuration, err := RenderWithSecurity([]domain.Site{site}, defaultSecurityPoliciesForTest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, fragments, err := SplitHTTPConfig(configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fragments) != 1 {
+		t.Fatalf("HTTP site fragments = %d, want 1", len(fragments))
+	}
+
+	const rejection = `if ($cdn_security_policy_id) { return 444; }`
+	const defaultInitialization = `set $cdn_site_id "";`
+	if count := strings.Count(base, defaultInitialization); count != 2 {
+		t.Fatalf("default server site ID initializations = %d, want 2:\n%s", count, base)
+	}
+	if initialization, rejectionIndex := strings.Index(base, defaultInitialization), strings.Index(base, rejection); initialization < 0 || rejectionIndex < 0 || initialization > rejectionIndex {
+		t.Fatalf("default server initializes the site ID after security rejection:\n%s", base)
+	}
+
+	const siteInitialization = `set $cdn_site_id "site-a";`
+	fragment := fragments[0].Content
+	if count := strings.Count(fragment, siteInitialization); count != 2 {
+		t.Fatalf("site server site ID initializations = %d, want 2:\n%s", count, fragment)
+	}
+	remaining := fragment
+	for server := 1; server <= 2; server++ {
+		initialization := strings.Index(remaining, siteInitialization)
+		rejectionIndex := strings.Index(remaining, rejection)
+		if initialization < 0 || rejectionIndex < 0 || initialization > rejectionIndex {
+			t.Fatalf("site server %d initializes the site ID after security rejection:\n%s", server, fragment)
+		}
+		remaining = remaining[rejectionIndex+len(rejection):]
+	}
+}
+
 func TestDisabledSecurityPoliciesRetainRevisionMarker(t *testing.T) {
 	policies := []domain.SecurityPolicy{{ID: domain.DefaultSecurityPolicyID, Enabled: false}}
 	configuration, err := RenderWithSecurity(nil, policies)
