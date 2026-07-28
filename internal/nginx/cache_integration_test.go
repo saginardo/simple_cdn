@@ -49,7 +49,11 @@ func TestRenderedCacheIsolatesCredentialedStaticRequests(t *testing.T) {
 
 	configuration, err := Render([]domain.Site{{
 		ID: "cache-test", Name: "cache-test", Domains: []string{"cache.test"},
-		PrimaryOrigin: domain.Origin{URL: origin.URL, Enabled: true}, CacheGeneration: 1, Enabled: true,
+		PrimaryOrigin:           domain.Origin{URL: origin.URL, Enabled: true},
+		CacheGeneration:         1,
+		RequestBodyBuffering:    true,
+		OriginResponseBuffering: true,
+		Enabled:                 true,
 	}})
 	if err != nil {
 		t.Fatal(err)
