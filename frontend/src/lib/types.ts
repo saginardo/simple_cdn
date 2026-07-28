@@ -346,6 +346,8 @@ export interface Site {
   backup_origin?: Origin;
   stream_paths: string[];
   passthrough: boolean;
+  request_body_buffering: boolean;
+  origin_response_buffering: boolean;
   http3_enabled: boolean;
   client_max_body_size_mb: number;
   client_keepalive_timeout_seconds: number;

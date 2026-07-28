@@ -585,8 +585,11 @@ func TestSitePassthroughRoundTripAndCacheGeneration(t *testing.T) {
 	}
 	created, err := store.CreateSite(domain.Site{
 		Name: "passthrough", Domains: []string{"stream.example.test"}, Nodes: []string{node.ID},
-		PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true},
-		Passthrough:   true, Enabled: true,
+		PrimaryOrigin:           domain.Origin{URL: "https://origin.example.test", Enabled: true},
+		Passthrough:             true,
+		RequestBodyBuffering:    true,
+		OriginResponseBuffering: true,
+		Enabled:                 true,
 	}, "zone")
 	if err != nil {
 		t.Fatal(err)
@@ -615,6 +618,17 @@ func TestSitePassthroughRoundTripAndCacheGeneration(t *testing.T) {
 	}
 	if invalidated.Published {
 		t.Fatalf("cache invalidation was not marked pending publication: %#v", invalidated)
+	}
+	invalidated.OriginResponseBuffering = false
+	responseUnbuffered, err := store.UpdateSite(invalidated, zoneID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if responseUnbuffered.CacheGeneration != invalidated.CacheGeneration+1 {
+		t.Fatalf("disabling response buffering did not advance cache generation: %#v", responseUnbuffered)
+	}
+	if _, err := store.InvalidateSiteCache(responseUnbuffered.ID); !errors.Is(err, ErrCacheDisabled) {
+		t.Fatalf("expected cache-disabled error for unbuffered response, got %v", err)
 	}
 }
 
@@ -939,19 +953,19 @@ func TestOpenMigratesSiteColumnsForExistingDatabase(t *testing.T) {
 		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
 			t.Fatal(err)
 		}
-		if name == "stream_paths_json" || name == "passthrough" || name == "client_max_body_size_mb" || name == "client_keepalive_timeout_seconds" || name == "read_write_timeout_seconds" {
+		if name == "stream_paths_json" || name == "passthrough" || name == "request_body_buffering" || name == "origin_response_buffering" || name == "client_max_body_size_mb" || name == "client_keepalive_timeout_seconds" || name == "read_write_timeout_seconds" {
 			found[name] = true
 		}
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if !found["stream_paths_json"] || !found["passthrough"] || !found["client_max_body_size_mb"] || !found["client_keepalive_timeout_seconds"] || !found["read_write_timeout_seconds"] {
+	if !found["stream_paths_json"] || !found["passthrough"] || !found["request_body_buffering"] || !found["origin_response_buffering"] || !found["client_max_body_size_mb"] || !found["client_keepalive_timeout_seconds"] || !found["read_write_timeout_seconds"] {
 		t.Fatalf("site columns were not added to legacy table: %#v", found)
 	}
 	site, _, err := migrated.GetSite("legacy-site")
-	if err != nil || site.Passthrough || site.ClientMaxBodySizeMB != domain.DefaultClientMaxBodySizeMB || site.ClientKeepaliveTimeoutSeconds != domain.DefaultClientKeepaliveTimeoutSeconds || site.ReadWriteTimeoutSeconds != domain.DefaultReadWriteTimeoutSeconds || site.PrimaryOrigin.TLSServerName != "" {
-		t.Fatalf("legacy site defaults: passthrough=%t client_max_body_size_mb=%d client_keepalive_timeout_seconds=%d read_write_timeout_seconds=%d tls_server_name=%q err=%v", site.Passthrough, site.ClientMaxBodySizeMB, site.ClientKeepaliveTimeoutSeconds, site.ReadWriteTimeoutSeconds, site.PrimaryOrigin.TLSServerName, err)
+	if err != nil || site.Passthrough || !site.RequestBodyBuffering || !site.OriginResponseBuffering || site.ClientMaxBodySizeMB != domain.DefaultClientMaxBodySizeMB || site.ClientKeepaliveTimeoutSeconds != domain.DefaultClientKeepaliveTimeoutSeconds || site.ReadWriteTimeoutSeconds != domain.DefaultReadWriteTimeoutSeconds || site.PrimaryOrigin.TLSServerName != "" {
+		t.Fatalf("legacy site defaults: passthrough=%t request_buffering=%t response_buffering=%t client_max_body_size_mb=%d client_keepalive_timeout_seconds=%d read_write_timeout_seconds=%d tls_server_name=%q err=%v", site.Passthrough, site.RequestBodyBuffering, site.OriginResponseBuffering, site.ClientMaxBodySizeMB, site.ClientKeepaliveTimeoutSeconds, site.ReadWriteTimeoutSeconds, site.PrimaryOrigin.TLSServerName, err)
 	}
 	node, err := migrated.GetNode("legacy-node")
 	if err != nil || node.NginxCapacity != domain.DefaultNginxCapacity() {

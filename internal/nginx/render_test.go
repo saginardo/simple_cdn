@@ -10,7 +10,7 @@ import (
 
 func TestRenderIncludesCacheAndFailoverPolicy(t *testing.T) {
 	backup := domain.Origin{URL: "https://backup.example.test", Enabled: true}
-	configuration, err := Render([]domain.Site{{ID: "site-1", Name: "site", Domains: []string{"cdn.example.test"}, PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, BackupOrigin: &backup, CacheGeneration: 7, Enabled: true}})
+	configuration, err := Render([]domain.Site{{ID: "site-1", Name: "site", Domains: []string{"cdn.example.test"}, PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, BackupOrigin: &backup, CacheGeneration: 7, RequestBodyBuffering: true, OriginResponseBuffering: true, Enabled: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,8 +196,8 @@ func TestRenderManagedOriginPoolsIsolatesVirtualHostsAndWeightsCapacity(t *testi
 func TestRenderUsesOneNodeCacheLimitAcrossSites(t *testing.T) {
 	override := 7
 	sites := []domain.Site{
-		{ID: "site-a", Name: "a", Domains: []string{"a.example.test"}, PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, Enabled: true},
-		{ID: "site-b", Name: "b", Domains: []string{"b.example.test"}, PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, CacheMaxSizeGB: &override, Enabled: true},
+		{ID: "site-a", Name: "a", Domains: []string{"a.example.test"}, PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, OriginResponseBuffering: true, Enabled: true},
+		{ID: "site-b", Name: "b", Domains: []string{"b.example.test"}, PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, CacheMaxSizeGB: &override, OriginResponseBuffering: true, Enabled: true},
 	}
 	configuration, err := RenderWithOptions(sites, nil, nil, 3)
 	if err != nil {
@@ -219,8 +219,8 @@ func TestRenderUsesOneNodeCacheLimitAcrossSites(t *testing.T) {
 func TestRenderWithLegacyCacheUsesTheSameNodeLimit(t *testing.T) {
 	override := 7
 	sites := []domain.Site{
-		{ID: "site-a", Name: "a", Domains: []string{"a.example.test"}, PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, Enabled: true},
-		{ID: "site-b", Name: "b", Domains: []string{"b.example.test"}, PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, CacheMaxSizeGB: &override, Enabled: true},
+		{ID: "site-a", Name: "a", Domains: []string{"a.example.test"}, PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, OriginResponseBuffering: true, Enabled: true},
+		{ID: "site-b", Name: "b", Domains: []string{"b.example.test"}, PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, CacheMaxSizeGB: &override, OriginResponseBuffering: true, Enabled: true},
 	}
 	configuration, err := RenderWithLegacyCache(sites, nil, nil, 3)
 	if err != nil {
@@ -579,6 +579,8 @@ func TestRenderAutomaticallyRoutesWebSocketAndSSEWithoutPaths(t *testing.T) {
 		ID: "site-1", Name: "streaming", Domains: []string{"stream.example.test"},
 		PrimaryOrigin:           domain.Origin{URL: "https://origin.example.test", Enabled: true},
 		StreamPaths:             []string{"/events", "/ws"},
+		RequestBodyBuffering:    true,
+		OriginResponseBuffering: true,
 		ReadWriteTimeoutSeconds: 900,
 		Enabled:                 true,
 	}})
@@ -618,6 +620,44 @@ func TestRenderAutomaticallyRoutesWebSocketAndSSEWithoutPaths(t *testing.T) {
 		if strings.Contains(configuration, retired) {
 			t.Fatalf("automatic streaming config contains retired directive %q:\n%s", retired, configuration)
 		}
+	}
+}
+
+func TestRenderSiteProxyBufferingControlsAreIndependent(t *testing.T) {
+	requestStreaming, err := Render([]domain.Site{{
+		ID: "request-stream", Name: "request-stream", Domains: []string{"request-stream.example.test"},
+		PrimaryOrigin:        domain.Origin{URL: "https://origin.example.test", Enabled: true},
+		RequestBodyBuffering: false, OriginResponseBuffering: true, Enabled: true,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(requestStreaming, "proxy_request_buffering off;"); got != 2 {
+		t.Fatalf("request streaming directive count = %d, want normal and stream routes:\n%s", got, requestStreaming)
+	}
+	if got := strings.Count(requestStreaming, "proxy_buffering off;"); got != 1 {
+		t.Fatalf("enabled response buffering emitted %d off directives, want only the stream route:\n%s", got, requestStreaming)
+	}
+	if !strings.Contains(requestStreaming, "proxy_cache $cdn_static_cache_zone;") {
+		t.Fatalf("request buffering unexpectedly disabled response cache:\n%s", requestStreaming)
+	}
+
+	responseStreaming, err := Render([]domain.Site{{
+		ID: "response-stream", Name: "response-stream", Domains: []string{"response-stream.example.test"},
+		PrimaryOrigin:        domain.Origin{URL: "https://origin.example.test", Enabled: true},
+		RequestBodyBuffering: true, OriginResponseBuffering: false, Enabled: true,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(responseStreaming, "proxy_request_buffering off;") {
+		t.Fatalf("response-only streaming disabled request buffering:\n%s", responseStreaming)
+	}
+	if got := strings.Count(responseStreaming, "proxy_buffering off;"); got != 2 {
+		t.Fatalf("response streaming directive count = %d, want normal and stream routes:\n%s", got, responseStreaming)
+	}
+	if strings.Contains(responseStreaming, "$cdn_static_cache_zone") {
+		t.Fatalf("unbuffered response retained an unusable proxy cache:\n%s", responseStreaming)
 	}
 }
 

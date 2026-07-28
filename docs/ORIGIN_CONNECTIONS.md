@@ -18,13 +18,17 @@ Nginx 的 `keepalive` 数量是每个 worker、每个 upstream 的空闲连接�
 
 现有站点和新站点默认使用 HTTP/1.1。HTTPS 源站可显式选择 TLS HTTP/2，HTTP 源站可显式选择 H2C；该配置只会发布到声明 `origin_http2_v1` 的 Nginx 1.29.4+ 节点，不兼容节点会在发布前返回明确的升级要求。HTTP/2 源站另建协议隔离连接池；WebSocket Upgrade 始终进入同地址的独立 HTTP/1.1 upstream，避免从 HTTP/2 keepalive 池取出错误协议的连接。托管 upstream 使用 45 秒空闲超时、每连接最多 1000 个请求、最长 1 小时连接寿命，以及 HTTPS 会话复用。发布相同配置不会增加 desired-state 版本。
 
+## 请求与响应缓冲
+
+站点的“请求体缓冲区”和“源响应缓冲区”默认开启，以保持普通站点的既有行为。关闭请求体缓冲后，Nginx 使用 `proxy_request_buffering off` 边接收客户端请求边回源，适合流式 POST 或大文件直传；慢客户端会因此更直接地占用回源连接。关闭源响应缓冲后，普通响应使用 `proxy_buffering off` 直接透传，同时停用依赖响应缓冲的静态资源代理缓存。自动识别的 SSE、流式 POST 和 WebSocket 响应始终直传，不受源响应缓冲开关影响。回源直通模式强制关闭两项缓冲。
+
 ## 主动探测与熔断
 
 边缘代理使用两层主动探测，单次截止时间为 3 秒，最多并发探测 8 个池。每个节点和连接池使用稳定的 +/-20% 时间抖动，避免多节点同时请求同一源站：
 
 - 服务探测：健康时以 5 秒为基准（实际 4-6 秒），复用 Agent 为该连接池维护的专用 HTTP Keep-Alive 或 gRPC `ClientConn`，用于持续确认应用路径可用；
 - 冷连接探测：健康时以 40 秒为基准（实际 32-48 秒），每次新建并关闭 TCP/TLS 连接，用于发现 DNS、TCP、TLS、证书和 ALPN 等只在新建连接时暴露的问题；
-- 任一层首次失败后，该池进入加速探测：服务探测以 2 秒为基准（实际 1.6-2.4 秒），冷连接探测以 5 秒为基准（实际 4-6 秒）。其他健康池仍保持各自的正常频率。
+- 任一层首次失败后，该池进入加速探测：服务探测以 5 秒为基准（实际 4-6 秒），冷连接探测以 8 秒为基准（实际 6.4-9.6 秒）。其他健康池仍保持各自的正常频率。
 
 服务探测连接由 Agent 单独维护，不会占用、替换或关闭 Nginx 正在承载业务的 upstream 连接。Nginx 的实际连接复用和错误仍由访问日志指标反映。
 
@@ -38,13 +42,13 @@ Nginx 的 `keepalive` 数量是每个 worker、每个 upstream 的空闲连接�
 两层分别累计成功和失败，任一层成功都不会清除另一层的失败。状态转换使用双阈值：
 
 ```text
-closed --任一层连续 2 次失败--> open
+closed --任一层连续 5 次失败--> open
 open --两层各成功 1 次--> recovering
 recovering --两层各累计 2 次成功--> closed
 open/recovering --任一层失败--> open，并重新累计两层恢复成功
 ```
 
-进入 `open` 时，代理把该池的 include 文件原子切换为 `server ADDRESS down;`，先执行 `nginx -t`，再 reload。主源会立即返回无可用 upstream，现有主备错误页逻辑可快速转到备用源。恢复必须同时确认已有连接路径和新建连接路径，防止某一条路径的短暂成功造成抖动。
+进入 `open` 时，代理把该池的 include 文件原子切换为 `server ADDRESS down;`，先执行 `nginx -t`，再 reload。主源会立即返回无可用 upstream，现有主备错误页逻辑可快速转到备用源。控制面收到主源 `open` 或 `recovering` 状态后，会按站点和节点精确删除对应的托管 DNS A 记录；只有状态完全回到 `closed` 才重新加入。恢复必须同时确认已有连接路径和新建连接路径，防止某一条路径的短暂成功造成抖动。
 
 include 切换、站点配置发布和 Nginx reload 使用同一串行锁。状态先写入 `/opt/cdn-edge/data/origin-connections.json`；Nginx 校验或 reload 失败时，代理恢复旧 include、旧持久化状态和旧 worker 配置。当前池文件位于：
 

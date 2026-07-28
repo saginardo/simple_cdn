@@ -264,6 +264,89 @@ func TestHealthPreservesDNSAndSuppressesAlertsDuringStateConvergence(t *testing.
 	}
 }
 
+func TestOriginCircuitWithdrawsSiteNodeDNSUntilFullyClosed(t *testing.T) {
+	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	node, err := database.CreateNode("edge-origin-circuit", "203.0.113.123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetNodeStatus(node.ID, domain.NodeActive); err != nil {
+		t.Fatal(err)
+	}
+	site, err := database.CreateSite(domain.Site{
+		Name: "origin-circuit-site", Domains: []string{"origin-circuit.example.test"}, Nodes: []string{node.ID},
+		PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, Enabled: true,
+	}, "zone-origin-circuit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	site, err = database.MarkSitePublished(site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SaveNodeState(node.ID, domain.DesiredState{Version: 1, NginxConfig: "# legacy config without site health"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Heartbeat(node.ID, 1, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	for range 5 {
+		if _, err := database.RecordNodeHealth(node.ID, true, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	nodes, err := database.ListNodes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := integrations.DNSRecord{
+		Name: site.Domains[0], Content: node.PublicIPv4,
+		Comment: integrations.ManagedRecordPrefix + "site=" + site.ID + ";node=" + node.ID,
+	}
+	dns := &MemoryDNS{Zones: map[string][]integrations.DNSRecord{site.ZoneID: {record}}}
+	server := &Server{Store: database, DNS: dns}
+	manager := HealthManager{Server: server}
+	collectedAt := time.Now().UTC()
+	report := domain.MachineStatus{CollectedAt: collectedAt, OriginProbes: []domain.OriginProbeStatus{{
+		CircuitState: domain.OriginCircuitOpen,
+		References:   []domain.OriginPoolReference{{SiteID: site.ID, Role: "primary"}},
+	}}}
+	if !server.recordNodeMachineStatus(node.ID, report) {
+		t.Fatal("open circuit report was not accepted")
+	}
+	if err := manager.reconcileSiteDNS(context.Background(), site, nodes); err != nil {
+		t.Fatal(err)
+	}
+	if records := dns.Zones[site.ZoneID]; len(records) != 0 {
+		t.Fatalf("open circuit DNS records = %#v", records)
+	}
+
+	dns.Zones[site.ZoneID] = []integrations.DNSRecord{record}
+	report.CollectedAt = collectedAt.Add(time.Second)
+	report.OriginProbes[0].CircuitState = domain.OriginCircuitRecovering
+	server.recordNodeMachineStatus(node.ID, report)
+	if err := manager.reconcileSiteDNS(context.Background(), site, nodes); err != nil {
+		t.Fatal(err)
+	}
+	if records := dns.Zones[site.ZoneID]; len(records) != 0 {
+		t.Fatalf("recovering circuit DNS records = %#v", records)
+	}
+
+	report.CollectedAt = collectedAt.Add(2 * time.Second)
+	report.OriginProbes[0].CircuitState = domain.OriginCircuitClosed
+	server.recordNodeMachineStatus(node.ID, report)
+	if err := manager.reconcileSiteDNS(context.Background(), site, nodes); err != nil {
+		t.Fatal(err)
+	}
+	if records := dns.Zones[site.ZoneID]; len(records) != 1 || records[0].Content != node.PublicIPv4 {
+		t.Fatalf("closed circuit DNS records = %#v", records)
+	}
+}
+
 func TestHealthSkipsNodeProbeDuringOnlineUpgrade(t *testing.T) {
 	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
 	if err != nil {
@@ -649,6 +732,14 @@ func (d *failingHealthDNS) Reconcile(_ context.Context, _ string, owner string, 
 }
 
 func (*failingHealthDNS) RemoveNode(context.Context, string, string) error { return nil }
+
+func (*failingHealthDNS) RemoveSiteNode(context.Context, string, string, string) error {
+	return nil
+}
+
+func (*failingHealthDNS) RemoveSiteNodes(context.Context, string, string, []string) error {
+	return nil
+}
 
 func TestHealthReconciliationAggregatesIndependentDNSErrors(t *testing.T) {
 	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))

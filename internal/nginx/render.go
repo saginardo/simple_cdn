@@ -313,7 +313,11 @@ server {
 		proxy_send_timeout {{.ReadWriteTimeout}};
 		{{if .AlwaysUnbuffered}}
 		proxy_cache off;
+		{{end}}
+		{{if not .OriginResponseBuffering}}
 		proxy_buffering off;
+		{{end}}
+		{{if not .RequestBodyBuffering}}
 		proxy_request_buffering off;
 		{{end}}
 		{{if .Passthrough}}
@@ -353,7 +357,7 @@ server {
 		proxy_set_header X-Forwarded-Proto https;
 		proxy_cache off;
 		proxy_buffering off;
-		{{if .AlwaysUnbuffered}}
+		{{if not .RequestBodyBuffering}}
 		proxy_request_buffering off;
 		{{end}}
 		proxy_read_timeout {{.ReadWriteTimeout}};
@@ -393,6 +397,9 @@ server {
 		proxy_set_header X-Forwarded-Proto https;
 		proxy_cache off;
 		proxy_buffering off;
+		{{if not .RequestBodyBuffering}}
+		proxy_request_buffering off;
+		{{end}}
 		proxy_read_timeout {{.ReadWriteTimeout}};
 		proxy_send_timeout {{.ReadWriteTimeout}};
 		{{if .UseTLS}}
@@ -428,7 +435,11 @@ server {
 		proxy_send_timeout {{.ReadWriteTimeout}};
 		{{if .AlwaysUnbuffered}}
 		proxy_cache off;
+		{{end}}
+		{{if not .OriginResponseBuffering}}
 		proxy_buffering off;
+		{{end}}
+		{{if not .RequestBodyBuffering}}
 		proxy_request_buffering off;
 		{{end}}
 		{{if .Passthrough}}
@@ -463,7 +474,7 @@ server {
 		proxy_set_header X-Forwarded-Proto https;
 		proxy_cache off;
 		proxy_buffering off;
-		{{if .AlwaysUnbuffered}}
+		{{if not .RequestBodyBuffering}}
 		proxy_request_buffering off;
 		{{end}}
 		proxy_read_timeout {{.ReadWriteTimeout}};
@@ -498,6 +509,9 @@ server {
 		proxy_set_header X-Forwarded-Proto https;
 		proxy_cache off;
 		proxy_buffering off;
+		{{if not .RequestBodyBuffering}}
+		proxy_request_buffering off;
+		{{end}}
 		proxy_read_timeout {{.ReadWriteTimeout}};
 		proxy_send_timeout {{.ReadWriteTimeout}};
 		{{if .UseTLS}}
@@ -548,6 +562,8 @@ type renderedSite struct {
 	ReadWriteTimeout             string
 	CacheEnabled                 bool
 	AlwaysUnbuffered             bool
+	RequestBodyBuffering         bool
+	OriginResponseBuffering      bool
 }
 
 type renderedOriginPool struct {
@@ -698,6 +714,7 @@ func RenderWithRuntimeOptions(sites []domain.Site, securityPolicies []domain.Sec
 		if isHTTP2OriginVersion(primaryHTTPVersion) && !options.OriginHTTP2Capable {
 			return "", fmt.Errorf("site %s requires an edge with HTTP/2 origin support", site.Name)
 		}
+		alwaysUnbuffered := site.Passthrough || domain.IsWebSocketScheme(primary.Scheme)
 		item := renderedSite{
 			ID: site.ID, DomainList: strings.Join(site.Domains, " "), HealthBody: SiteHealthBody(site.ID), PrimaryHostPort: primary.Host, PrimaryTLSName: site.PrimaryOrigin.TLSServerName,
 			PrimaryScheme: domain.ProxyScheme(primary.Scheme), UseTLS: domain.OriginUsesTLS(primary.Scheme), HostHeader: site.PrimaryOrigin.HostHeader, CacheGeneration: site.CacheGeneration,
@@ -705,14 +722,16 @@ func RenderWithRuntimeOptions(sites []domain.Site, securityPolicies []domain.Sec
 			ClientKeepaliveTimeout:  fmt.Sprintf("%ds", clientKeepaliveTimeoutSeconds),
 			ReadWriteTimeout:        fmt.Sprintf("%ds", readWriteTimeoutSeconds),
 			CacheEnabled:            primary.Scheme == "http" || primary.Scheme == "https",
-			AlwaysUnbuffered:        site.Passthrough || domain.IsWebSocketScheme(primary.Scheme),
+			AlwaysUnbuffered:        alwaysUnbuffered,
+			RequestBodyBuffering:    site.RequestBodyBuffering && !alwaysUnbuffered,
+			OriginResponseBuffering: site.OriginResponseBuffering && !alwaysUnbuffered,
 			PrimaryProxyHTTPVersion: nginxProxyHTTPVersion(primaryHTTPVersion),
 			PrimaryUsesHTTP2:        isHTTP2OriginVersion(primaryHTTPVersion),
 		}
 		http3Enabled = http3Enabled || item.HTTP3Enabled
 		item.PrimaryUpstreamName = "origin_" + item.ID
 		item.PrimaryWebSocketUpstreamName = item.PrimaryUpstreamName
-		item.CacheEnabled = item.CacheEnabled && !site.Passthrough
+		item.CacheEnabled = item.CacheEnabled && !site.Passthrough && item.OriginResponseBuffering
 		if item.CacheEnabled {
 			cacheEnabled = true
 		}

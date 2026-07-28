@@ -603,6 +603,12 @@ const english = {
   "回源 TLS SNI": "Origin TLS SNI",
   "回源 HTTP 协议": "Origin HTTP protocol",
   回源直通: "Origin pass-through",
+  请求体缓冲区: "Request body buffering",
+  关闭后边接收请求体边回源:
+    "Stream the request body to the origin as it arrives when disabled",
+  源响应缓冲区: "Origin response buffering",
+  "关闭后普通响应直接透传；流式响应始终直传":
+    "Stream regular responses directly when disabled; streaming responses always pass through",
   基本配置: "Basic configuration",
   "继承全局 DNS TTL": "Inherit global DNS TTL",
   监听端口: "Listen port",

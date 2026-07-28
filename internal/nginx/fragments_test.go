@@ -9,8 +9,8 @@ import (
 
 func TestSplitHTTPConfigSeparatesBaseAndSiteServers(t *testing.T) {
 	configuration, err := Render([]domain.Site{
-		{ID: "site-a", Name: "A", Domains: []string{"a.example.test"}, PrimaryOrigin: domain.Origin{URL: "https://a-origin.example.test", Enabled: true}, Enabled: true},
-		{ID: "site-b", Name: "B", Domains: []string{"b.example.test"}, PrimaryOrigin: domain.Origin{URL: "https://b-origin.example.test", Enabled: true}, Enabled: true},
+		{ID: "site-a", Name: "A", Domains: []string{"a.example.test"}, PrimaryOrigin: domain.Origin{URL: "https://a-origin.example.test", Enabled: true}, RequestBodyBuffering: true, OriginResponseBuffering: true, Enabled: true},
+		{ID: "site-b", Name: "B", Domains: []string{"b.example.test"}, PrimaryOrigin: domain.Origin{URL: "https://b-origin.example.test", Enabled: true}, RequestBodyBuffering: true, OriginResponseBuffering: true, Enabled: true},
 	})
 	if err != nil {
 		t.Fatal(err)

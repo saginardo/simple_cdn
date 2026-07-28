@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -38,6 +39,76 @@ var schemaMigrations = []schemaMigration{
 	{Version: 20, Name: "origin-connection-pools", Apply: migrateOriginConnectionPools},
 	{Version: 21, Name: "site-http3-opt-in", Apply: migrateSiteHTTP3OptIn},
 	{Version: 22, Name: "managed-nginx-artifacts", Apply: migrateManagedNginxArtifacts},
+	{Version: 23, Name: "site-proxy-buffering-controls", Apply: migrateSiteProxyBufferingControls},
+}
+
+func migrateSiteProxyBufferingControls(tx *sql.Tx) error {
+	for _, column := range []struct {
+		name       string
+		definition string
+	}{
+		{"request_body_buffering", "request_body_buffering INTEGER NOT NULL DEFAULT 1"},
+		{"origin_response_buffering", "origin_response_buffering INTEGER NOT NULL DEFAULT 1"},
+	} {
+		if err := addColumnIfMissing(tx, "sites", column.name, column.definition); err != nil {
+			return err
+		}
+	}
+	return backfillSitePublicationBufferingTx(tx)
+}
+
+func backfillSitePublicationBufferingTx(tx *sql.Tx) error {
+	rows, err := tx.Query(`SELECT site_id, site_json FROM site_publications`)
+	if err != nil {
+		return err
+	}
+	type publicationUpdate struct {
+		siteID   string
+		siteJSON string
+	}
+	updates := make([]publicationUpdate, 0)
+	for rows.Next() {
+		var siteID, siteJSON string
+		if err := rows.Scan(&siteID, &siteJSON); err != nil {
+			rows.Close()
+			return err
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(siteJSON), &fields); err != nil {
+			rows.Close()
+			return fmt.Errorf("decode published site %s: %w", siteID, err)
+		}
+		changed := false
+		for _, field := range []string{"request_body_buffering", "origin_response_buffering"} {
+			if _, found := fields[field]; found {
+				continue
+			}
+			fields[field] = json.RawMessage("true")
+			changed = true
+		}
+		if !changed {
+			continue
+		}
+		encoded, err := json.Marshal(fields)
+		if err != nil {
+			rows.Close()
+			return fmt.Errorf("encode published site %s: %w", siteID, err)
+		}
+		updates = append(updates, publicationUpdate{siteID: siteID, siteJSON: string(encoded)})
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, update := range updates {
+		if _, err := tx.Exec(`UPDATE site_publications SET site_json = ? WHERE site_id = ?`, update.siteJSON, update.siteID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func migrateManagedNginxArtifacts(tx *sql.Tx) error {
@@ -447,6 +518,8 @@ func migrateCoreSchema(tx *sql.Tx) error {
 		{"sites", "published", "published INTEGER NOT NULL DEFAULT 0"},
 		{"sites", "stream_paths_json", "stream_paths_json TEXT NOT NULL DEFAULT '[]'"},
 		{"sites", "passthrough", "passthrough INTEGER NOT NULL DEFAULT 0"},
+		{"sites", "request_body_buffering", "request_body_buffering INTEGER NOT NULL DEFAULT 1"},
+		{"sites", "origin_response_buffering", "origin_response_buffering INTEGER NOT NULL DEFAULT 1"},
 		{"sites", "client_max_body_size_mb", "client_max_body_size_mb INTEGER NOT NULL DEFAULT 128"},
 		{"sites", "client_keepalive_timeout_seconds", "client_keepalive_timeout_seconds INTEGER NOT NULL DEFAULT 120"},
 		{"sites", "read_write_timeout_seconds", "read_write_timeout_seconds INTEGER NOT NULL DEFAULT 120"},
@@ -523,6 +596,12 @@ func migratePublishedState(tx *sql.Tx) error {
 		return err
 	}
 	if err := addColumnIfMissing(tx, "sites", "http3_enabled", "http3_enabled INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := addColumnIfMissing(tx, "sites", "request_body_buffering", "request_body_buffering INTEGER NOT NULL DEFAULT 1"); err != nil {
+		return err
+	}
+	if err := addColumnIfMissing(tx, "sites", "origin_response_buffering", "origin_response_buffering INTEGER NOT NULL DEFAULT 1"); err != nil {
 		return err
 	}
 	if err := seedBuiltinSecurityPoliciesTx(tx); err != nil {

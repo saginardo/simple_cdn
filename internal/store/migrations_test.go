@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -582,6 +583,59 @@ func TestNodeCacheLimitMigrationAddsNodeOverrideAndClearsSiteOverrides(t *testin
 	}
 	if legacyOverride.Valid {
 		t.Fatalf("legacy site cache override remains set to %d", legacyOverride.Int64)
+	}
+}
+
+func TestSiteProxyBufferingMigrationBackfillsPublishedSnapshots(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	node, err := database.CreateNode("buffering-migration-edge", "203.0.113.141")
+	if err != nil {
+		t.Fatal(err)
+	}
+	site, err := database.CreateSite(domain.Site{
+		Name: "buffering-migration", Domains: []string{"buffering-migration.example.test"}, Nodes: []string{node.ID},
+		PrimaryOrigin:        domain.Origin{URL: "https://origin.example.test", Enabled: true},
+		RequestBodyBuffering: true, OriginResponseBuffering: true, Enabled: true,
+	}, "zone-buffering")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.MarkSitePublished(site.ID); err != nil {
+		t.Fatal(err)
+	}
+	var encoded string
+	if err := database.db.QueryRow(`SELECT site_json FROM site_publications WHERE site_id = ?`, site.ID).Scan(&encoded); err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(encoded), &fields); err != nil {
+		t.Fatal(err)
+	}
+	delete(fields, "request_body_buffering")
+	delete(fields, "origin_response_buffering")
+	legacy, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`UPDATE site_publications SET site_json = ? WHERE site_id = ?`, string(legacy), site.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`DELETE FROM schema_migrations WHERE version = 23`); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	publication, err := database.SitePublication(site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !publication.Site.RequestBodyBuffering || !publication.Site.OriginResponseBuffering {
+		t.Fatalf("migrated publication buffering = request:%t response:%t", publication.Site.RequestBodyBuffering, publication.Site.OriginResponseBuffering)
 	}
 }
 

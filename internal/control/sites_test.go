@@ -215,6 +215,45 @@ func TestSiteHTTP3APIIsOptInAndPreservesOmission(t *testing.T) {
 	}
 }
 
+func TestSiteProxyBufferingAPIDefaultsAndPreservesOmission(t *testing.T) {
+	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.CreateInitialAdmin("hash", "secret"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CreateSession("admin", "session-token", "csrf-token", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	node, err := database.CreateNode("buffering-edge", "203.0.113.31")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{Store: database}
+	base := map[string]any{
+		"name": "buffering", "zone_id": "zone", "domains": []string{"buffering.example.test"}, "node_ids": []string{node.ID},
+		"primary_origin": map[string]any{"url": "https://origin.example.test", "enabled": true}, "enabled": true,
+	}
+	created := requestSite(t, server, http.MethodPost, "/api/sites", base)
+	if !created.RequestBodyBuffering || !created.OriginResponseBuffering {
+		t.Fatalf("new site buffering defaults = request:%t response:%t", created.RequestBodyBuffering, created.OriginResponseBuffering)
+	}
+	base["request_body_buffering"] = false
+	base["origin_response_buffering"] = false
+	updated := requestSite(t, server, http.MethodPut, "/api/sites/"+created.ID, base)
+	if updated.RequestBodyBuffering || updated.OriginResponseBuffering {
+		t.Fatalf("disabled site buffering = request:%t response:%t", updated.RequestBodyBuffering, updated.OriginResponseBuffering)
+	}
+	delete(base, "request_body_buffering")
+	delete(base, "origin_response_buffering")
+	preserved := requestSite(t, server, http.MethodPut, "/api/sites/"+created.ID, base)
+	if preserved.RequestBodyBuffering || preserved.OriginResponseBuffering {
+		t.Fatalf("omitted update changed buffering = request:%t response:%t", preserved.RequestBodyBuffering, preserved.OriginResponseBuffering)
+	}
+}
+
 func TestSiteClientKeepaliveTimeoutAPI(t *testing.T) {
 	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
 	if err != nil {

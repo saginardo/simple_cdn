@@ -194,16 +194,16 @@ func New(config Config) (*Agent, error) {
 		config.OriginColdProbeInterval = 40 * time.Second
 	}
 	if config.OriginDegradedProbeInterval <= 0 {
-		config.OriginDegradedProbeInterval = 2 * time.Second
+		config.OriginDegradedProbeInterval = 5 * time.Second
 	}
 	if config.OriginDegradedColdInterval <= 0 {
-		config.OriginDegradedColdInterval = 5 * time.Second
+		config.OriginDegradedColdInterval = 8 * time.Second
 	}
 	if config.OriginProbeTimeout <= 0 {
 		config.OriginProbeTimeout = 3 * time.Second
 	}
 	if config.OriginProbeFailureThreshold <= 0 {
-		config.OriginProbeFailureThreshold = 2
+		config.OriginProbeFailureThreshold = 5
 	}
 	if config.OriginProbeRecoveryThreshold <= 0 {
 		config.OriginProbeRecoveryThreshold = 2

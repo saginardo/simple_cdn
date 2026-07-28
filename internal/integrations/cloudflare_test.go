@@ -209,6 +209,38 @@ func TestCloudflareDNSRemoveNodeDeletesOnlyExactManagedRecords(t *testing.T) {
 	}
 }
 
+func TestCloudflareDNSRemoveSiteNodeDeletesOnlyExactSiteAndNode(t *testing.T) {
+	deleted := make([]string, 0)
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.Method {
+		case http.MethodGet:
+			_ = json.NewEncoder(response).Encode(map[string]any{
+				"success": true,
+				"result": []DNSRecord{
+					{ID: "target", Type: "A", Name: "a.example.test", Comment: "cdn-platform:site=site-1;node=node-1"},
+					{ID: "other-site", Type: "A", Name: "b.example.test", Comment: "cdn-platform:site=site-2;node=node-1"},
+					{ID: "other-node", Type: "A", Name: "c.example.test", Comment: "cdn-platform:site=site-1;node=node-2"},
+				},
+				"result_info": map[string]any{"total_pages": 1},
+			})
+		case http.MethodDelete:
+			deleted = append(deleted, request.URL.Path)
+			_ = json.NewEncoder(response).Encode(map[string]any{"success": true, "result": map[string]any{}})
+		default:
+			t.Fatalf("unexpected method %s", request.Method)
+		}
+	}))
+	defer server.Close()
+
+	dns := CloudflareDNS{BaseURL: server.URL, Token: func() (string, error) { return "token", nil }}
+	if err := dns.RemoveSiteNode(context.Background(), "zone", "site-1", "node-1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(deleted) != 1 || !strings.HasSuffix(deleted[0], "/target") {
+		t.Fatalf("deleted records = %#v", deleted)
+	}
+}
+
 func TestCloudflareDNSUpdatesTTLWithoutReplacingRecord(t *testing.T) {
 	patches := 0
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {

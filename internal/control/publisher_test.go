@@ -101,7 +101,8 @@ func TestPublishUsesEachNodesEffectiveCacheLimit(t *testing.T) {
 	}
 	site, err := database.CreateSite(domain.Site{
 		Name: "site", Domains: []string{"cdn.example.test"}, Nodes: []string{defaultNode.ID, overriddenNode.ID},
-		PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, Enabled: true,
+		PrimaryOrigin:        domain.Origin{URL: "https://origin.example.test", Enabled: true},
+		RequestBodyBuffering: true, OriginResponseBuffering: true, Enabled: true,
 	}, "zone")
 	if err != nil {
 		t.Fatal(err)

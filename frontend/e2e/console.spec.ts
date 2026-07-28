@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-const now = new Date("2026-07-18T10:00:00Z");
+const now = new Date();
 const series = Array.from({ length: 24 }, (_, index) => ({
   time: new Date(now.getTime() - (23 - index) * 60 * 60 * 1000).toISOString(),
   requests: 900 + index * 57 + (index % 4) * 160,

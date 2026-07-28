@@ -29,6 +29,8 @@ type DNSRecord struct {
 type DNSProvider interface {
 	Reconcile(ctx context.Context, zoneID, owner string, desired []DNSRecord) error
 	RemoveNode(ctx context.Context, zoneID, nodeID string) error
+	RemoveSiteNode(ctx context.Context, zoneID, siteID, nodeID string) error
+	RemoveSiteNodes(ctx context.Context, zoneID, siteID string, nodeIDs []string) error
 }
 
 type ZoneResolver interface {
@@ -204,11 +206,46 @@ func (c CloudflareDNS) ValidateToken(ctx context.Context, token string, zoneIDs 
 }
 
 func (c CloudflareDNS) RemoveNode(ctx context.Context, zoneID, nodeID string) error {
-	if strings.TrimSpace(zoneID) == "" {
-		return fmt.Errorf("Cloudflare zone ID is required")
-	}
 	if strings.TrimSpace(nodeID) == "" {
 		return fmt.Errorf("node ID is required")
+	}
+	return c.removeManagedRecords(ctx, zoneID, func(comment string) bool {
+		return ManagedRecordMatchesNode(comment, nodeID)
+	})
+}
+
+func (c CloudflareDNS) RemoveSiteNode(ctx context.Context, zoneID, siteID, nodeID string) error {
+	return c.RemoveSiteNodes(ctx, zoneID, siteID, []string{nodeID})
+}
+
+func (c CloudflareDNS) RemoveSiteNodes(ctx context.Context, zoneID, siteID string, nodeIDs []string) error {
+	if strings.TrimSpace(siteID) == "" {
+		return fmt.Errorf("site ID is required")
+	}
+	nodes := make(map[string]struct{}, len(nodeIDs))
+	for _, nodeID := range nodeIDs {
+		nodeID = strings.TrimSpace(nodeID)
+		if nodeID == "" {
+			continue
+		}
+		nodes[nodeID] = struct{}{}
+	}
+	if len(nodes) == 0 {
+		return fmt.Errorf("node IDs are required")
+	}
+	return c.removeManagedRecords(ctx, zoneID, func(comment string) bool {
+		for nodeID := range nodes {
+			if ManagedRecordMatchesSiteNode(comment, siteID, nodeID) {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+func (c CloudflareDNS) removeManagedRecords(ctx context.Context, zoneID string, matches func(string) bool) error {
+	if strings.TrimSpace(zoneID) == "" {
+		return fmt.Errorf("Cloudflare zone ID is required")
 	}
 	token, err := c.Token()
 	if err != nil {
@@ -222,7 +259,7 @@ func (c CloudflareDNS) RemoveNode(ctx context.Context, zoneID, nodeID string) er
 		return err
 	}
 	for _, record := range records {
-		if !recordIsA(record) || !managedRecordMatchesNode(record.Comment, nodeID) {
+		if !recordIsA(record) || !matches(record.Comment) {
 			continue
 		}
 		if err := c.deleteRecord(ctx, zoneID, token, record.ID); err != nil {
@@ -232,17 +269,33 @@ func (c CloudflareDNS) RemoveNode(ctx context.Context, zoneID, nodeID string) er
 	return nil
 }
 
-func managedRecordMatchesNode(comment, nodeID string) bool {
+func ManagedRecordMatchesNode(comment, nodeID string) bool {
+	return managedRecordMatchesFields(comment, map[string]string{"node": nodeID})
+}
+
+func ManagedRecordMatchesSiteNode(comment, siteID, nodeID string) bool {
+	return managedRecordMatchesFields(comment, map[string]string{"site": siteID, "node": nodeID})
+}
+
+func managedRecordMatchesFields(comment string, required map[string]string) bool {
 	if !strings.HasPrefix(comment, ManagedRecordPrefix) {
 		return false
 	}
+	foundFields := make(map[string]string, len(required))
 	for _, field := range strings.Split(strings.TrimPrefix(comment, ManagedRecordPrefix), ";") {
 		key, value, found := strings.Cut(field, "=")
-		if found && key == "node" && value == nodeID {
-			return true
+		if found {
+			if _, requiredField := required[key]; requiredField {
+				foundFields[key] = value
+			}
 		}
 	}
-	return false
+	for key, value := range required {
+		if foundFields[key] != value {
+			return false
+		}
+	}
+	return true
 }
 
 func recordKey(record DNSRecord) string {

@@ -40,10 +40,15 @@ func TestOriginCircuitSeparatesLayersAndRequiresBothToRecover(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertOriginCircuit(t, agent, pool.ID, domain.OriginCircuitClosed, 1, 0, 0, 1)
-	if err := agent.applyOriginProbeResult(pool, domain.OriginProbeService, OriginProbeMeasurement{}, failure); err != nil {
-		t.Fatal(err)
+	for failureCount := 2; failureCount <= agent.Config.OriginProbeFailureThreshold; failureCount++ {
+		if err := agent.applyOriginProbeResult(pool, domain.OriginProbeService, OriginProbeMeasurement{}, failure); err != nil {
+			t.Fatal(err)
+		}
+		if failureCount < agent.Config.OriginProbeFailureThreshold {
+			assertOriginCircuit(t, agent, pool.ID, domain.OriginCircuitClosed, failureCount, 0, 0, 1)
+		}
 	}
-	assertOriginCircuit(t, agent, pool.ID, domain.OriginCircuitOpen, 2, 0, 0, 0)
+	assertOriginCircuit(t, agent, pool.ID, domain.OriginCircuitOpen, 5, 0, 0, 0)
 	assertFileContains(t, pool.ConfigPath, "server "+pool.Address+" down;")
 	if runner.applies != 2 {
 		t.Fatalf("opening circuit apply count = %d, want 2", runner.applies)
@@ -91,21 +96,23 @@ func TestOriginCircuitTransitionRollsBackWhenNginxReloadFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	failure := errors.New("origin unavailable")
-	if err := agent.applyOriginProbeResult(pool, domain.OriginProbeService, OriginProbeMeasurement{}, failure); err != nil {
-		t.Fatal(err)
+	for range agent.Config.OriginProbeFailureThreshold - 1 {
+		if err := agent.applyOriginProbeResult(pool, domain.OriginProbeService, OriginProbeMeasurement{}, failure); err != nil {
+			t.Fatal(err)
+		}
 	}
 	runner.applyErr = errors.New("reload failed")
 	if err := agent.applyOriginProbeResult(pool, domain.OriginProbeService, OriginProbeMeasurement{}, failure); err == nil {
 		t.Fatal("expected circuit reload failure")
 	}
-	assertOriginCircuit(t, agent, pool.ID, domain.OriginCircuitClosed, 1, 0, 0, 0)
+	assertOriginCircuit(t, agent, pool.ID, domain.OriginCircuitClosed, 4, 0, 0, 0)
 	assertFileContains(t, pool.ConfigPath, "max_fails=1 fail_timeout=5s;")
 
 	restarted, err := New(originTestConfig(agent.Config.StateDir, agent.Config.NginxConfigPath, &fakeRunner{}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertOriginCircuit(t, restarted, pool.ID, domain.OriginCircuitClosed, 1, 0, 0, 0)
+	assertOriginCircuit(t, restarted, pool.ID, domain.OriginCircuitClosed, 4, 0, 0, 0)
 }
 
 func TestOriginRuntimeRestoresOpenCircuitWithoutPublishingStaleTelemetry(t *testing.T) {
@@ -114,18 +121,17 @@ func TestOriginRuntimeRestoresOpenCircuitWithoutPublishingStaleTelemetry(t *test
 		t.Fatal(err)
 	}
 	failure := errors.New("timeout")
-	if err := agent.applyOriginProbeResult(pool, domain.OriginProbeCold, OriginProbeMeasurement{}, failure); err != nil {
-		t.Fatal(err)
-	}
-	if err := agent.applyOriginProbeResult(pool, domain.OriginProbeCold, OriginProbeMeasurement{}, failure); err != nil {
-		t.Fatal(err)
+	for range agent.Config.OriginProbeFailureThreshold {
+		if err := agent.applyOriginProbeResult(pool, domain.OriginProbeCold, OriginProbeMeasurement{}, failure); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	restarted, err := New(originTestConfig(agent.Config.StateDir, agent.Config.NginxConfigPath, &fakeRunner{}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertOriginCircuit(t, restarted, pool.ID, domain.OriginCircuitOpen, 0, 0, 2, 0)
+	assertOriginCircuit(t, restarted, pool.ID, domain.OriginCircuitOpen, 0, 0, 5, 0)
 	if statuses := restarted.originProbeStatuses(); len(statuses) != 0 {
 		t.Fatalf("restart exposed stale probe data: %#v", statuses)
 	}
@@ -349,8 +355,8 @@ func TestNetworkOriginProberAcceptsGRPCWithoutHealthService(t *testing.T) {
 func TestOriginProbeDefaultsAndJitterBounds(t *testing.T) {
 	agent, _, pool := newOriginTestAgent(t)
 	if agent.Config.OriginProbeInterval != 5*time.Second || agent.Config.OriginColdProbeInterval != 40*time.Second ||
-		agent.Config.OriginDegradedProbeInterval != 2*time.Second || agent.Config.OriginDegradedColdInterval != 5*time.Second ||
-		agent.Config.OriginProbeTimeout != 3*time.Second {
+		agent.Config.OriginDegradedProbeInterval != 5*time.Second || agent.Config.OriginDegradedColdInterval != 8*time.Second ||
+		agent.Config.OriginProbeTimeout != 3*time.Second || agent.Config.OriginProbeFailureThreshold != 5 {
 		t.Fatalf("origin probe defaults = %#v", agent.Config)
 	}
 	for _, test := range []struct {
@@ -360,8 +366,8 @@ func TestOriginProbeDefaultsAndJitterBounds(t *testing.T) {
 	}{
 		{domain.OriginProbeService, false, 5 * time.Second},
 		{domain.OriginProbeCold, false, 40 * time.Second},
-		{domain.OriginProbeService, true, 2 * time.Second},
-		{domain.OriginProbeCold, true, 5 * time.Second},
+		{domain.OriginProbeService, true, 5 * time.Second},
+		{domain.OriginProbeCold, true, 8 * time.Second},
 	} {
 		delay := agent.originProbeDelay(pool.ID, test.kind, test.degraded)
 		if delay < test.base*4/5 || delay > test.base*6/5 {
@@ -468,7 +474,7 @@ func originTestConfig(stateDirectory, configPath string, runner Runner) Config {
 	return Config{
 		ControlURL: "https://control.example.test", StateDir: stateDirectory, NginxConfigPath: configPath,
 		CertificateDir: filepath.Join(stateDirectory, "certs"), Runner: runner,
-		AgentSHA256: strings.Repeat("f", 64), OriginProbeFailureThreshold: 2, OriginProbeRecoveryThreshold: 2,
+		AgentSHA256: strings.Repeat("f", 64), OriginProbeFailureThreshold: 5, OriginProbeRecoveryThreshold: 2,
 	}
 }
 

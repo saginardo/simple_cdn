@@ -567,6 +567,7 @@ func (m *HealthManager) reconcileSiteDNSOutcome(ctx context.Context, site domain
 		nodesByID[node.ID] = node
 	}
 	var healthy []domain.Node
+	var circuitExcluded []string
 	activeAssigned := 0
 	convergingAssigned := 0
 	for _, nodeID := range site.Nodes {
@@ -585,6 +586,10 @@ func (m *HealthManager) reconcileSiteDNSOutcome(ctx context.Context, site domain
 			continue
 		}
 		activeAssigned++
+		if m.Server.siteOriginCircuitUnavailable(node.ID, site.ID) {
+			circuitExcluded = append(circuitExcluded, node.ID)
+			continue
+		}
 		if upgrading {
 			convergingAssigned++
 			continue
@@ -627,6 +632,11 @@ func (m *HealthManager) reconcileSiteDNSOutcome(ctx context.Context, site domain
 			}
 		}
 		healthy = append(healthy, node)
+	}
+	if len(circuitExcluded) > 0 {
+		if err := m.Server.DNS.RemoveSiteNodes(ctx, site.ZoneID, site.ID, circuitExcluded); err != nil {
+			return outcome, fmt.Errorf("remove circuit-open nodes from DNS for %s: %w", site.Name, err)
+		}
 	}
 	if convergingAssigned > 0 {
 		m.clearNoHealthyAlert(site.ID)
@@ -971,7 +981,7 @@ func (m *MemoryDNS) RemoveNode(_ context.Context, zoneID, nodeID string) error {
 	records := m.Zones[zoneID]
 	kept := records[:0]
 	for _, record := range records {
-		if memoryDNSRecordMatchesNode(record.Comment, nodeID) {
+		if integrations.ManagedRecordMatchesNode(record.Comment, nodeID) {
 			continue
 		}
 		kept = append(kept, record)
@@ -980,15 +990,32 @@ func (m *MemoryDNS) RemoveNode(_ context.Context, zoneID, nodeID string) error {
 	return nil
 }
 
-func memoryDNSRecordMatchesNode(comment, nodeID string) bool {
-	if !strings.HasPrefix(comment, integrations.ManagedRecordPrefix) {
-		return false
+func (m *MemoryDNS) RemoveSiteNode(ctx context.Context, zoneID, siteID, nodeID string) error {
+	return m.RemoveSiteNodes(ctx, zoneID, siteID, []string{nodeID})
+}
+
+func (m *MemoryDNS) RemoveSiteNodes(_ context.Context, zoneID, siteID string, nodeIDs []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	nodes := make(map[string]struct{}, len(nodeIDs))
+	for _, nodeID := range nodeIDs {
+		nodes[nodeID] = struct{}{}
 	}
-	for _, field := range strings.Split(strings.TrimPrefix(comment, integrations.ManagedRecordPrefix), ";") {
-		key, value, found := strings.Cut(field, "=")
-		if found && key == "node" && value == nodeID {
-			return true
+	records := m.Zones[zoneID]
+	kept := records[:0]
+	for _, record := range records {
+		remove := false
+		for nodeID := range nodes {
+			if integrations.ManagedRecordMatchesSiteNode(record.Comment, siteID, nodeID) {
+				remove = true
+				break
+			}
 		}
+		if remove {
+			continue
+		}
+		kept = append(kept, record)
 	}
-	return false
+	m.Zones[zoneID] = append([]integrations.DNSRecord(nil), kept...)
+	return nil
 }

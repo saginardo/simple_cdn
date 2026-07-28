@@ -87,6 +87,8 @@ interface SiteDraft {
   backup_sni: string;
   backup_http_version: OriginHTTPVersion;
   passthrough: boolean;
+  request_body_buffering: boolean;
+  origin_response_buffering: boolean;
   http3_enabled: boolean;
   client_max_body_size_mb: number;
   client_keepalive_timeout_seconds: number;
@@ -839,6 +841,55 @@ function TrafficSettings({
                 />
               </Field>
             </div>
+            <Separator />
+            <div className="grid gap-5 sm:grid-cols-2">
+              <div className="flex items-start justify-between gap-4">
+                <div className="space-y-1">
+                  <Label htmlFor="request-body-buffering">
+                    {t("请求体缓冲区")}
+                  </Label>
+                  <p className="text-xs leading-5 text-muted-foreground">
+                    {t("关闭后边接收请求体边回源")}
+                  </p>
+                </div>
+                <Switch
+                  id="request-body-buffering"
+                  className="mt-0.5 shrink-0"
+                  checked={draft.request_body_buffering && !draft.passthrough}
+                  disabled={draft.passthrough}
+                  onCheckedChange={(request_body_buffering) =>
+                    setDraft({
+                      ...draft,
+                      request_body_buffering,
+                    })
+                  }
+                />
+              </div>
+              <div className="flex items-start justify-between gap-4">
+                <div className="space-y-1">
+                  <Label htmlFor="origin-response-buffering">
+                    {t("源响应缓冲区")}
+                  </Label>
+                  <p className="text-xs leading-5 text-muted-foreground">
+                    {t("关闭后普通响应直接透传；流式响应始终直传")}
+                  </p>
+                </div>
+                <Switch
+                  id="origin-response-buffering"
+                  className="mt-0.5 shrink-0"
+                  checked={
+                    draft.origin_response_buffering && !draft.passthrough
+                  }
+                  disabled={draft.passthrough}
+                  onCheckedChange={(origin_response_buffering) =>
+                    setDraft({
+                      ...draft,
+                      origin_response_buffering,
+                    })
+                  }
+                />
+              </div>
+            </div>
             <div className="flex items-center justify-between">
               <div>
                 <Label htmlFor="passthrough">{t("回源直通")}</Label>
@@ -1340,6 +1391,7 @@ function SiteOperations({
   const cacheable =
     !site.tcp_only &&
     !site.passthrough &&
+    site.origin_response_buffering !== false &&
     /^https?:/i.test(site.primary_origin.url);
   const needsTLS = siteNeedsCertificate(site);
   return (
@@ -1818,6 +1870,8 @@ function emptyDraft(ttl: number): SiteDraft {
     backup_sni: "",
     backup_http_version: "http1",
     passthrough: false,
+    request_body_buffering: true,
+    origin_response_buffering: true,
     http3_enabled: false,
     client_max_body_size_mb: 128,
     client_keepalive_timeout_seconds: 120,
@@ -1857,6 +1911,8 @@ function draftFromSite(site: Site, ttl: number): SiteDraft {
     backup_sni: site.backup_origin?.tls_server_name || "",
     backup_http_version: site.backup_origin?.http_version || "http1",
     passthrough: site.passthrough,
+    request_body_buffering: site.request_body_buffering ?? true,
+    origin_response_buffering: site.origin_response_buffering ?? true,
     http3_enabled: site.http3_enabled ?? false,
     client_max_body_size_mb: site.client_max_body_size_mb ?? 128,
     client_keepalive_timeout_seconds:
@@ -1894,6 +1950,8 @@ function sitePayload(draft: SiteDraft) {
       enabled: true,
     },
     passthrough: draft.passthrough,
+    request_body_buffering: draft.request_body_buffering,
+    origin_response_buffering: draft.origin_response_buffering,
     http3_enabled: draft.tcp_only ? false : draft.http3_enabled,
     client_max_body_size_mb: draft.client_max_body_size_mb,
     client_keepalive_timeout_seconds: draft.client_keepalive_timeout_seconds,

@@ -690,6 +690,8 @@ type siteRequest struct {
 	BackupOrigin                  *originRequest       `json:"backup_origin"`
 	StreamPaths                   *[]string            `json:"stream_paths"`
 	Passthrough                   *bool                `json:"passthrough"`
+	RequestBodyBuffering          *bool                `json:"request_body_buffering"`
+	OriginResponseBuffering       *bool                `json:"origin_response_buffering"`
 	HTTP3Enabled                  *bool                `json:"http3_enabled"`
 	ClientMaxBodySizeMB           *int                 `json:"client_max_body_size_mb"`
 	ClientKeepaliveTimeoutSeconds *int                 `json:"client_keepalive_timeout_seconds"`
@@ -712,6 +714,14 @@ func (input siteRequest) site(id string, current *domain.Site) domain.Site {
 	passthrough := false
 	if input.Passthrough != nil {
 		passthrough = *input.Passthrough
+	}
+	requestBodyBuffering := true
+	if input.RequestBodyBuffering != nil {
+		requestBodyBuffering = *input.RequestBodyBuffering
+	}
+	originResponseBuffering := true
+	if input.OriginResponseBuffering != nil {
+		originResponseBuffering = *input.OriginResponseBuffering
 	}
 	http3Enabled := false
 	if input.HTTP3Enabled != nil {
@@ -759,7 +769,7 @@ func (input siteRequest) site(id string, current *domain.Site) domain.Site {
 	if input.TCPForwards != nil {
 		tcpForwards = append([]domain.TCPForward(nil), (*input.TCPForwards)...)
 	}
-	return domain.Site{ID: id, Name: input.Name, Domains: input.Domains, Nodes: input.NodeIDs, PrimaryOrigin: input.PrimaryOrigin.origin(currentPrimary), BackupOrigin: backupOrigin, StreamPaths: streamPaths, Passthrough: passthrough, HTTP3Enabled: http3Enabled, ClientMaxBodySizeMB: clientMaxBodySizeMB, ClientKeepaliveTimeoutSeconds: clientKeepaliveTimeoutSeconds, ReadWriteTimeoutSeconds: readWriteTimeoutSeconds, DNSTTLSeconds: dnsTTLSeconds, TCPOnly: tcpOnly, TCPForwards: tcpForwards, Enabled: enabled}
+	return domain.Site{ID: id, Name: input.Name, Domains: input.Domains, Nodes: input.NodeIDs, PrimaryOrigin: input.PrimaryOrigin.origin(currentPrimary), BackupOrigin: backupOrigin, StreamPaths: streamPaths, Passthrough: passthrough, RequestBodyBuffering: requestBodyBuffering, OriginResponseBuffering: originResponseBuffering, HTTP3Enabled: http3Enabled, ClientMaxBodySizeMB: clientMaxBodySizeMB, ClientKeepaliveTimeoutSeconds: clientKeepaliveTimeoutSeconds, ReadWriteTimeoutSeconds: readWriteTimeoutSeconds, DNSTTLSeconds: dnsTTLSeconds, TCPOnly: tcpOnly, TCPForwards: tcpForwards, Enabled: enabled}
 }
 
 func (input siteRequest) validateClientMaxBodySize() error {
@@ -873,6 +883,12 @@ func (s *Server) updateSite(response http.ResponseWriter, request *http.Request)
 	}
 	if input.Passthrough == nil {
 		siteInput.Passthrough = current.Passthrough
+	}
+	if input.RequestBodyBuffering == nil {
+		siteInput.RequestBodyBuffering = current.RequestBodyBuffering
+	}
+	if input.OriginResponseBuffering == nil {
+		siteInput.OriginResponseBuffering = current.OriginResponseBuffering
 	}
 	if input.HTTP3Enabled == nil {
 		siteInput.HTTP3Enabled = current.HTTP3Enabled
