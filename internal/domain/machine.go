@@ -81,8 +81,11 @@ func ValidNginxRuntimeStatus(status NginxRuntimeStatus) bool {
 			return false
 		}
 	}
+	// Active connections are process-wide and can include stream clients or
+	// connections still negotiating TLS. The state counters cover HTTP only.
+	httpConnections := status.Reading + status.Writing + status.Waiting
 	return status.HandledConnections <= status.AcceptedConnections &&
-		status.Reading+status.Writing+status.Waiting == status.ActiveConnections
+		httpConnections <= status.ActiveConnections
 }
 
 func validOriginProbeStatuses(statuses []OriginProbeStatus) bool {

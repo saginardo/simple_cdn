@@ -22,6 +22,13 @@ func TestValidMachineStatus(t *testing.T) {
 	if !ValidMachineStatus(valid) {
 		t.Fatalf("valid machine status was rejected: %#v", valid)
 	}
+	withStreamConnections := valid
+	streamNginx := *valid.Nginx
+	streamNginx.ActiveConnections = 6
+	withStreamConnections.Nginx = &streamNginx
+	if !ValidMachineStatus(withStreamConnections) {
+		t.Fatalf("machine status with stream connections was rejected: %#v", withStreamConnections)
+	}
 	invalid := []MachineStatus{
 		func() MachineStatus { value := valid; value.Distribution = ""; return value }(),
 		func() MachineStatus { value := valid; value.Version = "13\n5"; return value }(),

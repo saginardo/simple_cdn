@@ -46,7 +46,7 @@ func TestMachineStatusCollectorReportsLinuxHostAndIntervalRates(t *testing.T) {
 		logicalCPUs:    func() int { return 8 },
 		nginxStatus: func() (*domain.NginxRuntimeStatus, error) {
 			return &domain.NginxRuntimeStatus{
-				ActiveConnections: 4, AcceptedConnections: 20, HandledConnections: 20,
+				ActiveConnections: 7, AcceptedConnections: 20, HandledConnections: 20,
 				Requests: 35, Reading: 1, Writing: 1, Waiting: 2,
 			}, nil
 		},
@@ -65,7 +65,7 @@ func TestMachineStatusCollectorReportsLinuxHostAndIntervalRates(t *testing.T) {
 	if first.SampleSeconds != 0 || first.CPUUsagePercent != 0 || first.NetworkRXBytesPerSec != 0 || first.NetworkTXBytesPerSec != 0 {
 		t.Fatalf("first sample unexpectedly included interval rates: %#v", first)
 	}
-	if first.Nginx == nil || first.Nginx.Requests != 35 || first.Nginx.ActiveConnections != 4 {
+	if first.Nginx == nil || first.Nginx.Requests != 35 || first.Nginx.ActiveConnections != 7 {
 		t.Fatalf("unexpected Nginx status: %#v", first.Nginx)
 	}
 
@@ -93,10 +93,17 @@ func TestParseNginxStubStatus(t *testing.T) {
 	if status.ActiveConnections != 3 || status.AcceptedConnections != 10 || status.Requests != 14 || status.Waiting != 1 {
 		t.Fatalf("parsed status = %#v", status)
 	}
+	status, err = parseNginxStubStatus([]byte("Active connections: 6\nserver accepts handled requests\n 20 20 30\nReading: 0 Writing: 1 Waiting: 2\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.ActiveConnections != 6 || status.Reading+status.Writing+status.Waiting != 3 {
+		t.Fatalf("parsed mixed HTTP and stream status = %#v", status)
+	}
 	for _, invalid := range []string{
 		"Active connections: 3 trailing\nserver accepts handled requests\n10 10 14\nReading: 1 Writing: 1 Waiting: 1\n",
 		"Active connections: 3\nserver accepts handled requests\n10 11 14\nReading: 1 Writing: 1 Waiting: 1\n",
-		"Active connections: 4\nserver accepts handled requests\n10 10 14\nReading: 1 Writing: 1 Waiting: 1\n",
+		"Active connections: 2\nserver accepts handled requests\n10 10 14\nReading: 1 Writing: 1 Waiting: 1\n",
 	} {
 		if _, err := parseNginxStubStatus([]byte(invalid)); err == nil {
 			t.Fatalf("invalid stub_status response was accepted: %q", invalid)
