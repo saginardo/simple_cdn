@@ -1,6 +1,9 @@
 package domain
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestWireGuardTunnelValidationAndAddressAllocation(t *testing.T) {
 	for _, cidr := range []string{"10.10.0.0/16", "172.20.4.0/24", "192.168.90.0/28"} {
@@ -26,5 +29,26 @@ func TestWireGuardTunnelValidationAndAddressAllocation(t *testing.T) {
 	interfaceName := WireGuardInterfaceName("12345678-1234-4234-8234-123456789abc")
 	if interfaceName != "scwg1234567812" || len(interfaceName) > 15 {
 		t.Fatalf("interface name = %q", interfaceName)
+	}
+}
+
+func TestWireGuardEgressLimitAndHandshakeFreshness(t *testing.T) {
+	if err := ValidateWireGuardEgressLimit(0); err != nil {
+		t.Fatalf("unlimited egress: %v", err)
+	}
+	if err := ValidateWireGuardEgressLimit(MaxWireGuardEgressLimitMbps); err != nil {
+		t.Fatalf("maximum egress: %v", err)
+	}
+	for _, invalid := range []int{-1, MaxWireGuardEgressLimitMbps + 1} {
+		if err := ValidateWireGuardEgressLimit(invalid); err == nil {
+			t.Fatalf("egress limit %d was accepted", invalid)
+		}
+	}
+	current := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	fresh := current.Add(-WireGuardHandshakeFreshness)
+	stale := fresh.Add(-time.Second)
+	future := current.Add(time.Minute)
+	if !WireGuardHandshakeFresh(&fresh, current) || WireGuardHandshakeFresh(&stale, current) || WireGuardHandshakeFresh(&future, current) {
+		t.Fatal("WireGuard handshake freshness boundaries are incorrect")
 	}
 }

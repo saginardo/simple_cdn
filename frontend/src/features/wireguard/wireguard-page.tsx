@@ -93,7 +93,9 @@ interface TunnelDraft {
   mtu: number;
   persistent_keepalive_seconds: number;
   performance_port: number;
+  origin_egress_limit_mbps: number;
   node_ids: string[];
+  edge_egress_limits_mbps: Record<string, number>;
 }
 
 interface CommandState {
@@ -198,7 +200,7 @@ export function WireGuardPage() {
 
   const data = tunnels.data ?? [];
   const peers = data.flatMap((tunnel) => tunnel.peers);
-  const readyTunnels = data.filter(tunnelReady);
+  const readyTunnels = data.filter(tunnelPerformanceReady);
   const freshHandshakes = peers.filter((peer) =>
     handshakeFresh(peer.latest_handshake_at),
   );
@@ -385,7 +387,7 @@ export function WireGuardPage() {
                                 <IconAction
                                   label={t("测试隧道")}
                                   onClick={() => setPerformanceTunnel(tunnel)}
-                                  disabled={!tunnelReady(tunnel)}
+                                  disabled={!tunnelPerformanceReady(tunnel)}
                                 >
                                   <Gauge />
                                 </IconAction>
@@ -669,40 +671,110 @@ function TunnelDialog({
                 }
               />
             </Field>
+            <Field
+              label={t("源站出口上限（Mbps）")}
+              id="wireguard-origin-egress-limit"
+            >
+              <Input
+                id="wireguard-origin-egress-limit"
+                required
+                type="number"
+                min={0}
+                max={10000}
+                value={draft.origin_egress_limit_mbps}
+                onChange={(event) =>
+                  setDraft({
+                    ...draft,
+                    origin_egress_limit_mbps: Number(event.target.value),
+                  })
+                }
+              />
+            </Field>
           </div>
           <div className="grid gap-2">
             <Label>{t("边缘节点")}</Label>
             {availableNodes.length ? (
-              <div className="grid gap-2 rounded-lg border p-3 sm:grid-cols-2">
+              <div className="grid gap-2 sm:grid-cols-2">
                 {availableNodes.map((node) => {
                   const checked = draft.node_ids.includes(node.id);
+                  const sameHost =
+                    draft.endpoint_host.trim().toLowerCase() ===
+                    node.public_ipv4;
+                  const limitID = `wireguard-edge-limit-${node.id}`;
                   return (
-                    <label
+                    <div
                       key={node.id}
-                      className="flex min-w-0 items-center gap-3 rounded-md border px-3 py-2"
+                      className="grid min-w-0 gap-3 rounded-md border px-3 py-3"
                     >
-                      <Checkbox
-                        checked={checked}
-                        onCheckedChange={(value) =>
-                          setDraft({
-                            ...draft,
-                            node_ids: value
-                              ? draft.node_ids.includes(node.id)
-                                ? draft.node_ids
-                                : [...draft.node_ids, node.id]
-                              : draft.node_ids.filter((id) => id !== node.id),
-                          })
-                        }
-                      />
-                      <span className="min-w-0">
-                        <span className="block truncate text-sm font-medium">
-                          {node.name}
-                        </span>
-                        <span className="block font-mono text-xs text-muted-foreground">
-                          {node.public_ipv4}
-                        </span>
-                      </span>
-                    </label>
+                      <div className="flex min-w-0 items-center gap-3">
+                        <Checkbox
+                          id={`wireguard-node-${node.id}`}
+                          checked={checked}
+                          disabled={sameHost && !checked}
+                          onCheckedChange={(value) =>
+                            setDraft((current) => {
+                              const limits = {
+                                ...current.edge_egress_limits_mbps,
+                              };
+                              if (value) {
+                                limits[node.id] ??= 0;
+                              } else {
+                                delete limits[node.id];
+                              }
+                              return {
+                                ...current,
+                                node_ids: value
+                                  ? current.node_ids.includes(node.id)
+                                    ? current.node_ids
+                                    : [...current.node_ids, node.id]
+                                  : current.node_ids.filter(
+                                      (id) => id !== node.id,
+                                    ),
+                                edge_egress_limits_mbps: limits,
+                              };
+                            })
+                          }
+                        />
+                        <Label
+                          htmlFor={`wireguard-node-${node.id}`}
+                          className="min-w-0 flex-1 cursor-pointer"
+                        >
+                          <span className="block truncate text-sm font-medium">
+                            {node.name}
+                          </span>
+                          <span className="block font-mono text-xs font-normal text-muted-foreground">
+                            {node.public_ipv4}
+                          </span>
+                        </Label>
+                      </div>
+                      <div className="grid gap-1.5">
+                        <Label htmlFor={limitID} className="text-xs">
+                          {t("边缘出口上限（Mbps）")}
+                        </Label>
+                        <Input
+                          id={limitID}
+                          type="number"
+                          min={0}
+                          max={10000}
+                          disabled={!checked}
+                          value={draft.edge_egress_limits_mbps[node.id] ?? 0}
+                          onChange={(event) =>
+                            setDraft((current) => ({
+                              ...current,
+                              edge_egress_limits_mbps: {
+                                ...current.edge_egress_limits_mbps,
+                                [node.id]: Number(event.target.value),
+                              },
+                            }))
+                          }
+                        />
+                      </div>
+                      {sameHost ? (
+                        <p className="text-xs text-destructive">
+                          {t("与源站公网地址相同，不能选择")}
+                        </p>
+                      ) : null}
+                    </div>
                   );
                 })}
               </div>
@@ -749,22 +821,28 @@ function PerformanceDialog({
   onOpenChange: (open: boolean) => void;
   onStarted: () => void;
 }) {
-  const ready = useMemo(() => tunnels.filter(tunnelReady), [tunnels]);
+  const ready = useMemo(
+    () => tunnels.filter(tunnelPerformanceReady),
+    [tunnels],
+  );
   const [tunnelID, setTunnelID] = useState("");
   const [nodeID, setNodeID] = useState("");
   const [targetMbps, setTargetMbps] = useState(100);
   const [durationSeconds, setDurationSeconds] = useState(10);
   const selected = ready.find((tunnel) => tunnel.id === tunnelID);
   const availablePeers =
-    selected?.peers.filter((peer) => peerApplied(peer, selected)) ?? [];
+    selected?.peers.filter((peer) => peerPerformanceReady(peer, selected)) ??
+    [];
 
   useEffect(() => {
     if (!open) return;
     const nextTunnel =
-      initialTunnel && tunnelReady(initialTunnel) ? initialTunnel : ready[0];
+      initialTunnel && tunnelPerformanceReady(initialTunnel)
+        ? initialTunnel
+        : ready[0];
     setTunnelID(nextTunnel?.id ?? "");
     setNodeID(
-      nextTunnel?.peers.find((peer) => peerApplied(peer, nextTunnel))
+      nextTunnel?.peers.find((peer) => peerPerformanceReady(peer, nextTunnel))
         ?.node_id ?? "",
     );
     setTargetMbps(100);
@@ -812,8 +890,9 @@ function PerformanceDialog({
                 setTunnelID(value);
                 const tunnel = ready.find((item) => item.id === value);
                 setNodeID(
-                  tunnel?.peers.find((peer) => peerApplied(peer, tunnel))
-                    ?.node_id ?? "",
+                  tunnel?.peers.find((peer) =>
+                    peerPerformanceReady(peer, tunnel),
+                  )?.node_id ?? "",
                 );
               }}
             >
@@ -922,6 +1001,10 @@ function TunnelDetailDialog({
             value={shortHash(tunnel.origin_public_key)}
           />
           <Fact label={t("性能端口")} value={String(tunnel.performance_port)} />
+          <Fact
+            label={t("源站出口上限")}
+            value={formatEgressLimit(tunnel.origin_egress_limit_mbps)}
+          />
           <Fact label="MTU" value={String(tunnel.mtu)} />
           <Fact
             label={t("保活间隔")}
@@ -933,13 +1016,14 @@ function TunnelDetailDialog({
           />
         </div>
         <Panel>
-          <Table className="min-w-[850px]">
+          <Table className="min-w-[950px]">
             <TableHeader>
               <TableRow>
                 <TableHead className="pl-5">{t("节点")}</TableHead>
                 <TableHead>{t("隧道 IP")}</TableHead>
                 <TableHead>{t("修订")}</TableHead>
                 <TableHead>{t("公钥")}</TableHead>
+                <TableHead>{t("边缘出口上限")}</TableHead>
                 <TableHead>{t("接收 / 发送")}</TableHead>
                 <TableHead className="pr-5">{t("最近握手")}</TableHead>
               </TableRow>
@@ -973,6 +1057,9 @@ function TunnelDetailDialog({
                   </TableCell>
                   <TableCell className="font-mono text-xs">
                     {shortHash(peer.public_key)}
+                  </TableCell>
+                  <TableCell className="text-xs">
+                    {formatEgressLimit(peer.edge_egress_limit_mbps)}
                   </TableCell>
                   <TableCell className="text-xs">
                     {formatBytes(peer.rx_bytes)} / {formatBytes(peer.tx_bytes)}
@@ -1195,7 +1282,14 @@ function tunnelDraft(tunnel: WireGuardTunnel | null): TunnelDraft {
         mtu: tunnel.mtu,
         persistent_keepalive_seconds: tunnel.persistent_keepalive_seconds,
         performance_port: tunnel.performance_port,
+        origin_egress_limit_mbps: tunnel.origin_egress_limit_mbps,
         node_ids: tunnel.peers.map((peer) => peer.node_id),
+        edge_egress_limits_mbps: Object.fromEntries(
+          tunnel.peers.map((peer) => [
+            peer.node_id,
+            peer.edge_egress_limit_mbps,
+          ]),
+        ),
       }
     : {
         name: "",
@@ -1205,7 +1299,9 @@ function tunnelDraft(tunnel: WireGuardTunnel | null): TunnelDraft {
         mtu: 1420,
         persistent_keepalive_seconds: 25,
         performance_port: 5201,
+        origin_egress_limit_mbps: 0,
         node_ids: [],
+        edge_egress_limits_mbps: {},
       };
 }
 
@@ -1232,6 +1328,17 @@ function tunnelReady(tunnel: WireGuardTunnel) {
   );
 }
 
+function peerPerformanceReady(peer: WireGuardPeer, tunnel: WireGuardTunnel) {
+  return peerApplied(peer, tunnel) && handshakeFresh(peer.latest_handshake_at);
+}
+
+function tunnelPerformanceReady(tunnel: WireGuardTunnel) {
+  return (
+    tunnelReady(tunnel) &&
+    tunnel.peers.some((peer) => peerPerformanceReady(peer, tunnel))
+  );
+}
+
 function latestHandshake(tunnel: WireGuardTunnel) {
   const values = tunnel.peers
     .map((peer) => peer.latest_handshake_at)
@@ -1243,7 +1350,12 @@ function latestHandshake(tunnel: WireGuardTunnel) {
 function handshakeFresh(value?: string) {
   if (!value) return false;
   const timestamp = new Date(value).getTime();
-  return Number.isFinite(timestamp) && Date.now() - timestamp <= 180_000;
+  const age = Date.now() - timestamp;
+  return Number.isFinite(timestamp) && age >= -30_000 && age <= 180_000;
+}
+
+function formatEgressLimit(limitMbps: number) {
+  return limitMbps > 0 ? `${formatNumber(limitMbps)} Mbps` : t("不限速");
 }
 
 function metricNumber(value: number) {

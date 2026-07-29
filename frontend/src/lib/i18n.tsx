@@ -1054,6 +1054,13 @@ const english = {
   "隧道 CIDR": "Tunnel CIDR",
   "保活间隔（秒）": "Keepalive interval (seconds)",
   性能测试端口: "Performance test port",
+  "源站出口上限（Mbps）": "Origin egress limit (Mbps)",
+  "边缘出口上限（Mbps）": "Edge egress limit (Mbps)",
+  源站出口上限: "Origin egress limit",
+  边缘出口上限: "Edge egress limit",
+  不限速: "Unlimited",
+  "与源站公网地址相同，不能选择":
+    "Matches the origin public address and cannot be selected",
   "暂无支持 WireGuard 的边缘节点": "No WireGuard-capable edge nodes",
   "至少选择一个支持 WireGuard 的边缘节点":
     "Select at least one WireGuard-capable edge node",

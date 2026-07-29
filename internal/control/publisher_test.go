@@ -260,7 +260,7 @@ func TestPublishWireGuardOriginPreservesHostPortAndTLSIdentity(t *testing.T) {
 	}
 	tunnel, err := database.CreateWireGuardTunnel(domain.WireGuardTunnel{
 		Name: "publisher-origin", EndpointHost: "origin-gateway.example.test", AddressCIDR: "10.253.20.0/24",
-	}, []string{node.ID})
+	}, []string{node.ID}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

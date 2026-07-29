@@ -88,11 +88,11 @@ valid_private_cidr() {
 export DEBIAN_FRONTEND=noninteractive
 if command -v apt-get >/dev/null 2>&1; then
   apt-get update
-  apt-get install -y --no-install-recommends ca-certificates curl jq wireguard-tools iperf3 nftables
+  apt-get install -y --no-install-recommends ca-certificates curl jq wireguard-tools iperf3 nftables iproute2
 elif command -v dnf >/dev/null 2>&1; then
-  dnf install -y ca-certificates curl jq wireguard-tools iperf3 nftables
+  dnf install -y ca-certificates curl jq wireguard-tools iperf3 nftables iproute
 elif command -v yum >/dev/null 2>&1; then
-  yum install -y ca-certificates curl jq wireguard-tools iperf3 nftables
+  yum install -y ca-certificates curl jq wireguard-tools iperf3 nftables iproute
 else
   echo "supported package manager not found (apt-get, dnf, or yum required)" >&2
   exit 1
@@ -134,6 +134,7 @@ response_interface=$(jq -r '.interface_name // empty' "$response_file")
 origin_cidr=$(jq -r '.origin_address_cidr // empty' "$response_file")
 listen_port=$(jq -r '.listen_port // 0' "$response_file")
 performance_port=$(jq -r '.performance_port // 0' "$response_file")
+origin_egress_limit_mbps=$(jq -r '.origin_egress_limit_mbps // 0' "$response_file")
 mtu=$(jq -r '.mtu // 0' "$response_file")
 revision=$(jq -r '.revision // 0' "$response_file")
 origin_cidr_valid=0
@@ -143,6 +144,7 @@ if [[ "$response_tunnel_id" != "$TUNNEL_ID" || "$response_interface" != "$interf
       "$origin_cidr_valid" != "1" ||
       ! "$listen_port" =~ ^[0-9]+$ || "$listen_port" -lt 1 || "$listen_port" -gt 65535 ||
       ! "$performance_port" =~ ^[0-9]+$ || "$performance_port" -lt 1 || "$performance_port" -gt 65535 ||
+      ! "$origin_egress_limit_mbps" =~ ^[0-9]+$ || "$origin_egress_limit_mbps" -gt 10000 ||
       ! "$mtu" =~ ^[0-9]+$ || "$mtu" -lt 1280 || "$mtu" -gt 1500 ||
       ! "$revision" =~ ^[0-9]+$ || "$revision" -lt 1 ]]; then
   echo "control plane returned an invalid WireGuard configuration" >&2
@@ -158,6 +160,11 @@ fi
 temporary_config=$(mktemp "$CONFIG_ROOT/.${interface}.conf.XXXXXX")
 temporary_nft=$(mktemp "$CONFIG_ROOT/.${interface}.nft.XXXXXX")
 trap 'rm -f "$request_file" "$response_file" "$temporary_config" "$temporary_nft"' EXIT
+tc_binary=$(command -v tc)
+if [[ "$tc_binary" != /* || "$tc_binary" == *[[:space:]]* ]]; then
+  echo "tc executable path is invalid" >&2
+  exit 1
+fi
 
 {
   echo "# Managed by simple_cdn. Re-run the generated command to update peers."
@@ -167,6 +174,12 @@ trap 'rm -f "$request_file" "$response_file" "$temporary_config" "$temporary_nft
   echo "PrivateKey = $private_key"
   echo "MTU = $mtu"
   echo "PostUp = nft -f $nft_file"
+  if [[ "$origin_egress_limit_mbps" -gt 0 ]]; then
+    echo "PostUp = $tc_binary qdisc replace dev %i root handle 1: htb default 10"
+    echo "PostUp = $tc_binary class replace dev %i parent 1: classid 1:10 htb rate ${origin_egress_limit_mbps}mbit ceil ${origin_egress_limit_mbps}mbit"
+    echo "PostUp = $tc_binary qdisc replace dev %i parent 1:10 handle 10: fq_codel"
+  fi
+  echo "PreDown = $tc_binary qdisc delete dev %i root 2>/dev/null || true"
   echo "PreDown = nft delete table inet $table_name 2>/dev/null || true"
   while IFS= read -r peer; do
     peer_key=$(jq -r '.public_key' <<<"$peer")
@@ -245,4 +258,4 @@ systemctl enable "simple-cdn-origin-iperf-$interface.service"
 systemctl restart "simple-cdn-origin-iperf-$interface.service"
 
 echo "WireGuard origin tunnel $TUNNEL_ID applied at revision $revision"
-echo "Interface: $interface ($origin_cidr), performance port: $performance_port"
+echo "Interface: $interface ($origin_cidr), performance port: $performance_port, egress limit: ${origin_egress_limit_mbps} Mbps (0 = unlimited)"

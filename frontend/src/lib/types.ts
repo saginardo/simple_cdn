@@ -330,6 +330,7 @@ export interface WireGuardPeer {
   node_name: string;
   node_public_ipv4: string;
   address: string;
+  edge_egress_limit_mbps: number;
   public_key?: string;
   applied_revision: number;
   latest_handshake_at?: string;
@@ -349,6 +350,7 @@ export interface WireGuardTunnel {
   mtu: number;
   persistent_keepalive_seconds: number;
   performance_port: number;
+  origin_egress_limit_mbps: number;
   origin_public_key?: string;
   revision: number;
   origin_configured_revision: number;

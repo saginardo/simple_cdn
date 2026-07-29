@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -168,6 +169,78 @@ esac
 	udp, err := manager.runIperfUDP(context.Background(), "10.253.40.1", 5201, 100, 3)
 	if err != nil || udp.Mbps != 80 || udp.LostPackets != 2 || udp.TotalPackets != 1000 || udp.LossPercent != 0.2 || udp.JitterMS != 1.25 {
 		t.Fatalf("UDP iperf result = %#v, %v", udp, err)
+	}
+}
+
+func TestWireGuardSameHostGuardPreservesExistingConfig(t *testing.T) {
+	const tunnelID = "12345678-1234-4234-8234-123456789abc"
+	stateDirectory := filepath.Join(t.TempDir(), "state")
+	configDirectory := filepath.Join(t.TempDir(), "configs")
+	if err := os.MkdirAll(stateDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(configDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manager := &linuxWireGuardManager{
+		stateDirectory: stateDirectory, configDirectory: configDirectory,
+		resolveHostIPs: func(context.Context, string) ([]net.IP, error) {
+			return []net.IP{net.ParseIP("203.0.113.80")}, nil
+		},
+		localIPs: func() ([]net.IP, error) {
+			return []net.IP{net.ParseIP("203.0.113.80")}, nil
+		},
+	}
+	config := domain.WireGuardEdgeConfig{
+		TunnelID: tunnelID, Name: "same-host", Revision: 2, InterfaceName: domain.WireGuardInterfaceName(tunnelID),
+		Address: "10.253.80.2/32", OriginAddress: "10.253.80.1", OriginPublicKey: wireGuardEdgeTestKey(1),
+		Endpoint: "origin.example.test:51820", MTU: 1420, PersistentKeepaliveSecs: 25,
+		PerformancePort: 5201, DirectPerformanceHost: "origin.example.test",
+	}
+	path := manager.configPath(config)
+	if err := os.WriteFile(path, []byte("origin configuration must survive\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report, err := manager.reconcileTunnel(context.Background(), config)
+	if err == nil || !strings.Contains(err.Error(), "same-host WireGuard is unsupported") || !strings.Contains(report.Error, "same-host") {
+		t.Fatalf("same-host reconcile = %#v, %v", report, err)
+	}
+	contents, readErr := os.ReadFile(path)
+	if readErr != nil || string(contents) != "origin configuration must survive\n" {
+		t.Fatalf("existing config after guard = %q, %v", contents, readErr)
+	}
+}
+
+func TestWireGuardEdgeEgressShapingIsIdempotentAndRemovable(t *testing.T) {
+	directory := t.TempDir()
+	commandPath := filepath.Join(directory, "tc")
+	logPath := filepath.Join(directory, "commands.log")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"" + logPath + "\"\n" +
+		"if [ \"$*\" = \"qdisc show dev scwg1234567812\" ]; then printf '%s\\n' 'qdisc htb 1: root'; fi\n"
+	if err := os.WriteFile(commandPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manager := &linuxWireGuardManager{tcPath: commandPath, appliedEgressLimitsMbps: make(map[string]int)}
+	config := domain.WireGuardEdgeConfig{
+		TunnelID: "12345678-1234-4234-8234-123456789abc", InterfaceName: "scwg1234567812", EdgeEgressLimitMbps: 25,
+	}
+	if err := manager.applyEgressLimit(context.Background(), config, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.applyEgressLimit(context.Background(), config, false); err != nil {
+		t.Fatal(err)
+	}
+	config.EdgeEgressLimitMbps = 0
+	if err := manager.applyEgressLimit(context.Background(), config, false); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(contents)), "\n")
+	if len(lines) != 5 || !strings.Contains(lines[1], "rate 25mbit ceil 25mbit") || lines[3] != "qdisc show dev scwg1234567812" || lines[4] != "qdisc delete dev scwg1234567812 root" {
+		t.Fatalf("tc commands = %#v", lines)
 	}
 }
 

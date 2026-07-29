@@ -119,6 +119,7 @@ const wireGuardTunnel = {
   mtu: 1420,
   persistent_keepalive_seconds: 25,
   performance_port: 5201,
+  origin_egress_limit_mbps: 120,
   origin_public_key: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
   revision: 3,
   origin_configured_revision: 3,
@@ -128,6 +129,7 @@ const wireGuardTunnel = {
     node_name: node.name,
     node_public_ipv4: node.public_ipv4,
     address: `10.253.0.${index + 2}`,
+    edge_egress_limit_mbps: 50 - index * 10,
     public_key:
       index === 0
         ? "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI="
@@ -1694,6 +1696,8 @@ test("language switch localizes workspaces and survives reload", async ({
   await mockAPI(page);
   await page.goto("/#/overview");
 
+  await expect(page.getByRole("link", { name: "隧道" })).toBeVisible();
+
   await page.getByRole("button", { name: "切换语言" }).click();
   await page.getByRole("menuitemradio", { name: "English" }).click();
   await expect(page.locator("html")).toHaveAttribute("lang", "en");
@@ -1701,6 +1705,7 @@ test("language switch localizes workspaces and survives reload", async ({
     page.getByRole("heading", { name: "Overview", level: 1 }),
   ).toBeVisible();
   await expect(page.getByRole("link", { name: "Scheduling" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "WireGuard" })).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Theme: System" }),
   ).toBeVisible();
@@ -2253,10 +2258,19 @@ test("WireGuard workspace shows tunnel health and performance on desktop and mob
   page,
 }, testInfo) => {
   const errors = trackPageErrors(page);
+  const freshTunnel = {
+    ...wireGuardTunnel,
+    peers: wireGuardTunnel.peers.map((peer, index) => ({
+      ...peer,
+      latest_handshake_at: new Date(
+        Date.now() - (index + 1) * 30_000,
+      ).toISOString(),
+    })),
+  };
   await page.setViewportSize({ width: 1440, height: 900 });
   await mockAPI(page, {
     "/api/nodes": wireGuardNodes,
-    "/api/wireguard/tunnels": [wireGuardTunnel],
+    "/api/wireguard/tunnels": [freshTunnel],
     "/api/wireguard/performance-tests": wireGuardPerformanceTests,
   });
   await page.goto("/#/wireguard");
@@ -2277,7 +2291,17 @@ test("WireGuard workspace shows tunnel health and performance on desktop and mob
   await expect(detail).toBeVisible();
   await expect(detail.getByText("10.253.0.2", { exact: true })).toBeVisible();
   await expect(detail.getByText("10.253.0.3", { exact: true })).toBeVisible();
+  await expect(detail.getByText("120 Mbps", { exact: true })).toBeVisible();
+  await expect(detail.getByText("50 Mbps", { exact: true })).toBeVisible();
   await detail.getByRole("button", { name: "关闭" }).last().click();
+
+  await page.getByRole("button", { name: "编辑隧道" }).click();
+  await expect(page.getByLabel("源站出口上限（Mbps）")).toHaveValue("120");
+  const edgeLimits = page.getByLabel("边缘出口上限（Mbps）");
+  await expect(edgeLimits).toHaveCount(2);
+  await expect(edgeLimits.nth(0)).toHaveValue("50");
+  await expect(edgeLimits.nth(1)).toHaveValue("40");
+  await page.getByRole("button", { name: "取消" }).click();
 
   await page.getByRole("tab", { name: "性能测试" }).click();
   await expect(page.getByText("942.8 Mbps / 1 retx")).toBeVisible();

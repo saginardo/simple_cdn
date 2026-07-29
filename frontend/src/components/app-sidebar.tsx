@@ -29,7 +29,7 @@ import {
   SidebarSeparator,
   useSidebar,
 } from "@/components/ui/sidebar";
-import { t } from "@/lib/i18n";
+import { t, useI18n } from "@/lib/i18n";
 
 const groups = [
   {
@@ -46,7 +46,12 @@ const groups = [
       { label: "站点", to: "/sites", icon: Waypoints },
       { label: "监测", to: "/monitoring", icon: Activity },
       { label: "调度", to: "/scheduling", icon: Route },
-      { label: "WireGuard", to: "/wireguard", icon: Network },
+      {
+        label: "隧道",
+        englishLabel: "WireGuard",
+        to: "/wireguard",
+        icon: Network,
+      },
       { label: "安全", to: "/security", icon: ShieldCheck },
       { label: "证书", to: "/certificates", icon: BadgeCheck },
     ],
@@ -74,6 +79,7 @@ export function AppSidebar({
   productVersion: string;
   onLogout: () => void;
 }) {
+  const { locale } = useI18n();
   const location = useLocation();
   const { isMobile, setOpenMobile } = useSidebar();
   const versionLabel = productVersion.startsWith("v")
@@ -125,11 +131,15 @@ export function AppSidebar({
                   const active =
                     location.pathname === item.to ||
                     location.pathname.startsWith(`${item.to}/`);
+                  const itemLabel =
+                    "englishLabel" in item && locale === "en"
+                      ? item.englishLabel
+                      : t(item.label);
                   return (
                     <SidebarMenuItem key={item.to}>
                       <SidebarMenuButton
                         asChild
-                        tooltip={t(item.label)}
+                        tooltip={itemLabel}
                         isActive={active}
                         className="relative h-9 justify-start rounded-md px-2.5 text-[0.8125rem] data-[active=true]:before:absolute data-[active=true]:before:inset-y-2 data-[active=true]:before:left-0 data-[active=true]:before:w-0.5 data-[active=true]:before:rounded-r data-[active=true]:before:bg-sidebar-primary group-data-[collapsible=icon]:data-[active=true]:before:left-0.5"
                       >
@@ -140,7 +150,7 @@ export function AppSidebar({
                           }}
                         >
                           <item.icon />
-                          <span>{t(item.label)}</span>
+                          <span>{itemLabel}</span>
                         </Link>
                       </SidebarMenuButton>
                     </SidebarMenuItem>

@@ -19,6 +19,9 @@ const (
 	DefaultWireGuardPerformanceMbps     = 100
 	DefaultWireGuardPerformanceDuration = 10
 	MaxWireGuardPeersPerTunnel          = 253
+	MaxWireGuardEgressLimitMbps         = 10_000
+	WireGuardHandshakeFreshness         = 3 * time.Minute
+	wireGuardHandshakeFutureTolerance   = 30 * time.Second
 )
 
 type WireGuardTunnel struct {
@@ -31,6 +34,7 @@ type WireGuardTunnel struct {
 	MTU                      int             `json:"mtu"`
 	PersistentKeepaliveSecs  int             `json:"persistent_keepalive_seconds"`
 	PerformancePort          int             `json:"performance_port"`
+	OriginEgressLimitMbps    int             `json:"origin_egress_limit_mbps"`
 	OriginPublicKey          string          `json:"origin_public_key,omitempty"`
 	Revision                 int64           `json:"revision"`
 	OriginConfiguredRevision int64           `json:"origin_configured_revision"`
@@ -41,17 +45,18 @@ type WireGuardTunnel struct {
 }
 
 type WireGuardPeer struct {
-	NodeID            string     `json:"node_id"`
-	NodeName          string     `json:"node_name"`
-	NodePublicIPv4    string     `json:"node_public_ipv4"`
-	Address           string     `json:"address"`
-	PublicKey         string     `json:"public_key,omitempty"`
-	AppliedRevision   int64      `json:"applied_revision"`
-	LatestHandshakeAt *time.Time `json:"latest_handshake_at,omitempty"`
-	RXBytes           int64      `json:"rx_bytes"`
-	TXBytes           int64      `json:"tx_bytes"`
-	LastReportedAt    *time.Time `json:"last_reported_at,omitempty"`
-	LastError         string     `json:"last_error,omitempty"`
+	NodeID              string     `json:"node_id"`
+	NodeName            string     `json:"node_name"`
+	NodePublicIPv4      string     `json:"node_public_ipv4"`
+	Address             string     `json:"address"`
+	EdgeEgressLimitMbps int        `json:"edge_egress_limit_mbps"`
+	PublicKey           string     `json:"public_key,omitempty"`
+	AppliedRevision     int64      `json:"applied_revision"`
+	LatestHandshakeAt   *time.Time `json:"latest_handshake_at,omitempty"`
+	RXBytes             int64      `json:"rx_bytes"`
+	TXBytes             int64      `json:"tx_bytes"`
+	LastReportedAt      *time.Time `json:"last_reported_at,omitempty"`
+	LastError           string     `json:"last_error,omitempty"`
 }
 
 type WireGuardEdgeConfig struct {
@@ -67,6 +72,7 @@ type WireGuardEdgeConfig struct {
 	PersistentKeepaliveSecs int    `json:"persistent_keepalive_seconds"`
 	PerformancePort         int    `json:"performance_port"`
 	DirectPerformanceHost   string `json:"direct_performance_host"`
+	EdgeEgressLimitMbps     int    `json:"edge_egress_limit_mbps"`
 }
 
 type WireGuardPeerReport struct {
@@ -149,6 +155,9 @@ func NormalizeAndValidateWireGuardTunnel(tunnel *WireGuardTunnel) error {
 	if tunnel.PerformancePort < 1 || tunnel.PerformancePort > 65535 || tunnel.PerformancePort == tunnel.ListenPort {
 		return fmt.Errorf("performance port must be between 1 and 65535 and differ from the WireGuard port")
 	}
+	if err := ValidateWireGuardEgressLimit(tunnel.OriginEgressLimitMbps); err != nil {
+		return fmt.Errorf("origin egress limit: %w", err)
+	}
 	if tunnel.MTU == 0 {
 		tunnel.MTU = DefaultWireGuardMTU
 	}
@@ -179,6 +188,21 @@ func NormalizeAndValidateWireGuardTunnel(tunnel *WireGuardTunnel) error {
 		return fmt.Errorf("invalid WireGuard origin public key")
 	}
 	return nil
+}
+
+func ValidateWireGuardEgressLimit(limitMbps int) error {
+	if limitMbps < 0 || limitMbps > MaxWireGuardEgressLimitMbps {
+		return fmt.Errorf("must be between 0 and %d Mbps", MaxWireGuardEgressLimitMbps)
+	}
+	return nil
+}
+
+func WireGuardHandshakeFresh(handshake *time.Time, current time.Time) bool {
+	if handshake == nil || handshake.IsZero() {
+		return false
+	}
+	age := current.Sub(*handshake)
+	return age >= -wireGuardHandshakeFutureTolerance && age <= WireGuardHandshakeFreshness
 }
 
 func ValidateWireGuardPerformanceRequest(targetMbps, durationSeconds int) error {

@@ -41,6 +41,16 @@ var schemaMigrations = []schemaMigration{
 	{Version: 22, Name: "managed-nginx-artifacts", Apply: migrateManagedNginxArtifacts},
 	{Version: 23, Name: "site-proxy-buffering-controls", Apply: migrateSiteProxyBufferingControls},
 	{Version: 24, Name: "wireguard-tunnels-and-performance", Apply: migrateWireGuard},
+	{Version: 25, Name: "wireguard-egress-limits", Apply: migrateWireGuardEgressLimits},
+}
+
+func migrateWireGuardEgressLimits(tx *sql.Tx) error {
+	if err := addColumnIfMissing(tx, "wireguard_tunnels", "origin_egress_limit_mbps",
+		"origin_egress_limit_mbps INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	return addColumnIfMissing(tx, "wireguard_tunnel_nodes", "edge_egress_limit_mbps",
+		"edge_egress_limit_mbps INTEGER NOT NULL DEFAULT 0")
 }
 
 func migrateWireGuard(tx *sql.Tx) error {

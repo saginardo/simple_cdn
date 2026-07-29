@@ -31,6 +31,20 @@ func TestInstallOriginWireGuardScriptRestartsExistingServices(t *testing.T) {
 	}
 }
 
+func TestInstallOriginWireGuardScriptPersistsEgressShaping(t *testing.T) {
+	for _, wanted := range []string{
+		`origin_egress_limit_mbps=$(jq -r '.origin_egress_limit_mbps // 0'`,
+		`PostUp = $tc_binary qdisc replace dev %i root handle 1: htb default 10`,
+		`PostUp = $tc_binary class replace dev %i parent 1: classid 1:10 htb rate ${origin_egress_limit_mbps}mbit ceil ${origin_egress_limit_mbps}mbit`,
+		`PostUp = $tc_binary qdisc replace dev %i parent 1:10 handle 10: fq_codel`,
+		`PreDown = $tc_binary qdisc delete dev %i root 2>/dev/null || true`,
+	} {
+		if !strings.Contains(installOriginWireGuardScript, wanted) {
+			t.Fatalf("source installer is missing egress shaping command %q", wanted)
+		}
+	}
+}
+
 func requireScriptOrder(t *testing.T, script string, commands ...string) {
 	t.Helper()
 	offset := 0

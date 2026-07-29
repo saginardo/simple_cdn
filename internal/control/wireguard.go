@@ -1,6 +1,7 @@
 package control
 
 import (
+	"context"
 	"crypto/sha256"
 	_ "embed"
 	"encoding/hex"
@@ -22,14 +23,16 @@ import (
 var installOriginWireGuardScript string
 
 type wireGuardTunnelRequest struct {
-	Name                       string   `json:"name"`
-	EndpointHost               string   `json:"endpoint_host"`
-	ListenPort                 int      `json:"listen_port"`
-	AddressCIDR                string   `json:"address_cidr"`
-	MTU                        int      `json:"mtu"`
-	PersistentKeepaliveSeconds int      `json:"persistent_keepalive_seconds"`
-	PerformancePort            int      `json:"performance_port"`
-	NodeIDs                    []string `json:"node_ids"`
+	Name                       string         `json:"name"`
+	EndpointHost               string         `json:"endpoint_host"`
+	ListenPort                 int            `json:"listen_port"`
+	AddressCIDR                string         `json:"address_cidr"`
+	MTU                        int            `json:"mtu"`
+	PersistentKeepaliveSeconds int            `json:"persistent_keepalive_seconds"`
+	PerformancePort            int            `json:"performance_port"`
+	OriginEgressLimitMbps      int            `json:"origin_egress_limit_mbps"`
+	NodeIDs                    []string       `json:"node_ids"`
+	EdgeEgressLimitsMbps       map[string]int `json:"edge_egress_limits_mbps"`
 }
 
 func (input wireGuardTunnelRequest) tunnel(id string) domain.WireGuardTunnel {
@@ -37,6 +40,7 @@ func (input wireGuardTunnelRequest) tunnel(id string) domain.WireGuardTunnel {
 		ID: id, Name: input.Name, EndpointHost: input.EndpointHost, ListenPort: input.ListenPort,
 		AddressCIDR: input.AddressCIDR, MTU: input.MTU,
 		PersistentKeepaliveSecs: input.PersistentKeepaliveSeconds, PerformancePort: input.PerformancePort,
+		OriginEgressLimitMbps: input.OriginEgressLimitMbps,
 	}
 }
 
@@ -63,11 +67,20 @@ func (s *Server) createWireGuardTunnel(response http.ResponseWriter, request *ht
 	if !readJSON(response, request, &input) {
 		return
 	}
+	tunnelInput := input.tunnel("")
+	if err := domain.NormalizeAndValidateWireGuardTunnel(&tunnelInput); err != nil {
+		writeError(response, http.StatusBadRequest, err)
+		return
+	}
 	if err := s.validateWireGuardNodes(input.NodeIDs, false); err != nil {
 		writeError(response, http.StatusConflict, err)
 		return
 	}
-	tunnel, err := s.Store.CreateWireGuardTunnel(input.tunnel(""), input.NodeIDs)
+	if err := s.validateWireGuardEndpointNodes(request.Context(), tunnelInput.EndpointHost, input.NodeIDs); err != nil {
+		writeError(response, http.StatusConflict, err)
+		return
+	}
+	tunnel, err := s.Store.CreateWireGuardTunnel(tunnelInput, input.NodeIDs, input.EdgeEgressLimitsMbps)
 	if err != nil {
 		writeStoreError(response, err)
 		return
@@ -81,11 +94,20 @@ func (s *Server) updateWireGuardTunnel(response http.ResponseWriter, request *ht
 	if !readJSON(response, request, &input) {
 		return
 	}
+	tunnelInput := input.tunnel(request.PathValue("id"))
+	if err := domain.NormalizeAndValidateWireGuardTunnel(&tunnelInput); err != nil {
+		writeError(response, http.StatusBadRequest, err)
+		return
+	}
 	if err := s.validateWireGuardNodes(input.NodeIDs, false); err != nil {
 		writeError(response, http.StatusConflict, err)
 		return
 	}
-	tunnel, err := s.Store.UpdateWireGuardTunnel(input.tunnel(request.PathValue("id")), input.NodeIDs)
+	if err := s.validateWireGuardEndpointNodes(request.Context(), tunnelInput.EndpointHost, input.NodeIDs); err != nil {
+		writeError(response, http.StatusConflict, err)
+		return
+	}
+	tunnel, err := s.Store.UpdateWireGuardTunnel(tunnelInput, input.NodeIDs, input.EdgeEgressLimitsMbps)
 	if err != nil {
 		writeStoreError(response, err)
 		return
@@ -113,6 +135,41 @@ func (s *Server) validateWireGuardNodes(nodeIDs []string, performance bool) erro
 		}
 		if performance && !slices.Contains(node.Capabilities, domain.EdgeCapabilityWireGuardPerformance) {
 			return fmt.Errorf("edge node %s does not have iperf3 performance-test support", node.Name)
+		}
+	}
+	return nil
+}
+
+func (s *Server) validateWireGuardEndpointNodes(ctx context.Context, endpointHost string, nodeIDs []string) error {
+	var endpointIPs []net.IP
+	if literal := net.ParseIP(endpointHost); literal != nil {
+		endpointIPs = []net.IP{literal}
+	} else {
+		resolver := s.WireGuardEndpointResolver
+		if resolver == nil {
+			resolver = func(ctx context.Context, host string) ([]net.IP, error) {
+				return net.DefaultResolver.LookupIP(ctx, "ip4", host)
+			}
+		}
+		resolved, err := resolver(ctx, endpointHost)
+		if err != nil {
+			return fmt.Errorf("resolve WireGuard origin endpoint %s: %w", endpointHost, err)
+		}
+		endpointIPs = resolved
+	}
+	if len(endpointIPs) == 0 {
+		return fmt.Errorf("WireGuard origin endpoint %s did not resolve to an IPv4 address", endpointHost)
+	}
+	for _, nodeID := range nodeIDs {
+		node, err := s.Store.GetNode(nodeID)
+		if err != nil {
+			return err
+		}
+		nodeIP := net.ParseIP(node.PublicIPv4)
+		for _, endpointIP := range endpointIPs {
+			if nodeIP != nil && endpointIP.To4() != nil && endpointIP.Equal(nodeIP) {
+				return fmt.Errorf("%w: %s", store.ErrWireGuardSameHost, node.Name)
+			}
 		}
 	}
 	return nil
@@ -236,7 +293,8 @@ func (s *Server) configureWireGuardOrigin(response http.ResponseWriter, request 
 		"tunnel_id": tunnel.ID, "interface_name": domain.WireGuardInterfaceName(tunnel.ID),
 		"origin_address_cidr": fmt.Sprintf("%s/%d", tunnel.OriginAddress, prefix),
 		"listen_port":         tunnel.ListenPort, "performance_port": tunnel.PerformancePort,
-		"mtu": tunnel.MTU, "revision": tunnel.Revision, "peers": peers,
+		"origin_egress_limit_mbps": tunnel.OriginEgressLimitMbps,
+		"mtu":                      tunnel.MTU, "revision": tunnel.Revision, "peers": peers,
 	})
 }
 
@@ -308,13 +366,19 @@ func (s *Server) createWireGuardPerformanceTest(response http.ResponseWriter, re
 		return
 	}
 	peerReady := false
+	peerHandshakeFresh := false
 	for _, peer := range tunnel.Peers {
 		if peer.NodeID == input.NodeID && peer.PublicKey != "" && peer.AppliedRevision == tunnel.Revision && peer.LastError == "" {
 			peerReady = true
+			peerHandshakeFresh = domain.WireGuardHandshakeFresh(peer.LatestHandshakeAt, time.Now().UTC())
 		}
 	}
 	if !peerReady {
 		writeError(response, http.StatusConflict, errors.New("the selected edge has not applied the WireGuard tunnel"))
+		return
+	}
+	if !peerHandshakeFresh {
+		writeError(response, http.StatusConflict, errors.New("the selected edge has no WireGuard handshake within the last 3 minutes"))
 		return
 	}
 	test, err := s.Store.CreateWireGuardPerformanceTest(input.TunnelID, input.NodeID, input.TargetMbps, input.DurationSeconds)

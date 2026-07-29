@@ -75,6 +75,7 @@ type Server struct {
 	TrustedProxyCIDRs         []*net.IPNet
 	Logger                    *slog.Logger
 	RestartControl            func()
+	WireGuardEndpointResolver func(context.Context, string) ([]net.IP, error)
 	machineStatusMu           sync.RWMutex
 	machineStatuses           map[string]domain.MachineStatus
 	machineStatusSubscribers  map[string]map[uint64]chan domain.MachineStatus

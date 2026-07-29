@@ -30,13 +30,17 @@ type WireGuardManager interface {
 }
 
 type linuxWireGuardManager struct {
-	stateDirectory  string
-	configDirectory string
-	wgPath          string
-	wgQuickPath     string
-	ipPath          string
-	iperf3Path      string
-	mu              sync.Mutex
+	stateDirectory          string
+	configDirectory         string
+	wgPath                  string
+	wgQuickPath             string
+	ipPath                  string
+	tcPath                  string
+	iperf3Path              string
+	resolveHostIPs          func(context.Context, string) ([]net.IP, error)
+	localIPs                func() ([]net.IP, error)
+	appliedEgressLimitsMbps map[string]int
+	mu                      sync.Mutex
 }
 
 type wireGuardManagedState struct {
@@ -51,12 +55,18 @@ func newLinuxWireGuardManager(stateDirectory, configDirectory string) WireGuardM
 	manager.wgPath, _ = exec.LookPath("wg")
 	manager.wgQuickPath, _ = exec.LookPath("wg-quick")
 	manager.ipPath, _ = exec.LookPath("ip")
+	manager.tcPath, _ = exec.LookPath("tc")
 	manager.iperf3Path, _ = exec.LookPath("iperf3")
+	manager.resolveHostIPs = func(ctx context.Context, host string) ([]net.IP, error) {
+		return net.DefaultResolver.LookupIP(ctx, "ip4", host)
+	}
+	manager.localIPs = wireGuardLocalInterfaceIPs
+	manager.appliedEgressLimitsMbps = make(map[string]int)
 	return manager
 }
 
 func (m *linuxWireGuardManager) Available() (bool, bool) {
-	wireGuard := m.wgPath != "" && m.wgQuickPath != "" && m.ipPath != ""
+	wireGuard := m.wgPath != "" && m.wgQuickPath != "" && m.ipPath != "" && m.tcPath != ""
 	return wireGuard, wireGuard && m.iperf3Path != ""
 }
 
@@ -163,6 +173,9 @@ func validateWireGuardEdgeConfig(config domain.WireGuardEdgeConfig) error {
 	if config.PerformancePort < 1 || config.PerformancePort > 65535 || config.PerformancePort == port {
 		return errors.New("performance port is invalid")
 	}
+	if err := domain.ValidateWireGuardEgressLimit(config.EdgeEgressLimitMbps); err != nil {
+		return fmt.Errorf("edge egress limit is invalid: %w", err)
+	}
 	return nil
 }
 
@@ -175,18 +188,34 @@ func (m *linuxWireGuardManager) reconcileTunnel(ctx context.Context, config doma
 	if err != nil {
 		return report, err
 	}
+	localEndpoint, err := m.endpointResolvesToLocal(ctx, config.Endpoint)
+	if err != nil {
+		report.Error = wireGuardErrorDetail(err)
+		return report, err
+	}
+	if localEndpoint {
+		err := errors.New("origin WireGuard endpoint resolves to this edge node; same-host WireGuard is unsupported")
+		report.Error = err.Error()
+		return report, err
+	}
 	if config.OriginPublicKey == "" {
 		if m.interfaceExists(ctx, config.InterfaceName) {
 			if downErr := m.run(ctx, m.wgQuickPath, "down", m.configPath(config)); downErr != nil {
 				report.Error = wireGuardErrorDetail(downErr)
 				return report, downErr
 			}
+			delete(m.appliedEgressLimitsMbps, config.TunnelID)
 		}
 		report.Error = "waiting for the origin WireGuard public key"
 		return report, nil
 	}
 	contents := renderWireGuardEdgeConfig(config, privateKey)
-	if err := m.applyConfig(ctx, config, contents); err != nil {
+	interfaceChanged, err := m.applyConfig(ctx, config, contents)
+	if err != nil {
+		report.Error = wireGuardErrorDetail(err)
+		return report, err
+	}
+	if err := m.applyEgressLimit(ctx, config, interfaceChanged); err != nil {
 		report.Error = wireGuardErrorDetail(err)
 		return report, err
 	}
@@ -199,6 +228,62 @@ func (m *linuxWireGuardManager) reconcileTunnel(ctx context.Context, config doma
 	report.RXBytes = rxBytes
 	report.TXBytes = txBytes
 	return report, nil
+}
+
+func (m *linuxWireGuardManager) endpointResolvesToLocal(ctx context.Context, endpoint string) (bool, error) {
+	host, _, err := net.SplitHostPort(endpoint)
+	if err != nil {
+		return false, fmt.Errorf("parse origin endpoint: %w", err)
+	}
+	var endpointIPs []net.IP
+	if literal := net.ParseIP(host); literal != nil {
+		endpointIPs = []net.IP{literal}
+	} else {
+		resolver := m.resolveHostIPs
+		if resolver == nil {
+			resolver = func(ctx context.Context, host string) ([]net.IP, error) {
+				return net.DefaultResolver.LookupIP(ctx, "ip4", host)
+			}
+		}
+		endpointIPs, err = resolver(ctx, host)
+		if err != nil {
+			return false, fmt.Errorf("resolve origin endpoint %s: %w", host, err)
+		}
+	}
+	localIPLookup := m.localIPs
+	if localIPLookup == nil {
+		localIPLookup = wireGuardLocalInterfaceIPs
+	}
+	localIPs, err := localIPLookup()
+	if err != nil {
+		return false, fmt.Errorf("list local interface addresses: %w", err)
+	}
+	for _, endpointIP := range endpointIPs {
+		for _, localIP := range localIPs {
+			if endpointIP.To4() != nil && endpointIP.Equal(localIP) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+func wireGuardLocalInterfaceIPs() ([]net.IP, error) {
+	addresses, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil, err
+	}
+	result := make([]net.IP, 0, len(addresses))
+	for _, address := range addresses {
+		value := address.String()
+		if slash := strings.IndexByte(value, '/'); slash >= 0 {
+			value = value[:slash]
+		}
+		if ip := net.ParseIP(value); ip != nil {
+			result = append(result, ip)
+		}
+	}
+	return result, nil
 }
 
 func (m *linuxWireGuardManager) loadOrCreateKey(tunnelID string) (string, string, error) {
@@ -266,36 +351,84 @@ func renderWireGuardEdgeConfig(config domain.WireGuardEdgeConfig, privateKey str
 	return []byte(contents.String())
 }
 
-func (m *linuxWireGuardManager) applyConfig(ctx context.Context, config domain.WireGuardEdgeConfig, contents []byte) error {
+func (m *linuxWireGuardManager) applyConfig(ctx context.Context, config domain.WireGuardEdgeConfig, contents []byte) (bool, error) {
 	path := m.configPath(config)
 	previous, readErr := os.ReadFile(path)
 	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
-		return fmt.Errorf("read current configuration: %w", readErr)
+		return false, fmt.Errorf("read current configuration: %w", readErr)
 	}
 	exists := m.interfaceExists(ctx, config.InterfaceName)
 	if readErr == nil && bytes.Equal(previous, contents) && exists {
-		return nil
+		return false, nil
 	}
 	if exists {
+		delete(m.appliedEgressLimitsMbps, config.TunnelID)
 		if err := m.run(ctx, m.wgQuickPath, "down", path); err != nil {
-			return fmt.Errorf("stop interface before update: %w", err)
+			return false, fmt.Errorf("stop interface before update: %w", err)
 		}
 	}
 	if err := atomicWriteFile(path, contents, 0o600); err != nil {
 		if readErr == nil {
 			_ = m.restoreConfig(ctx, path, previous)
 		}
-		return fmt.Errorf("write WireGuard configuration: %w", err)
+		return false, fmt.Errorf("write WireGuard configuration: %w", err)
 	}
 	if err := m.run(ctx, m.wgQuickPath, "up", path); err != nil {
 		_ = m.run(ctx, m.wgQuickPath, "down", path)
 		if readErr == nil {
 			if rollbackErr := m.restoreConfig(ctx, path, previous); rollbackErr != nil {
-				return fmt.Errorf("start WireGuard interface: %v; rollback failed: %w", err, rollbackErr)
+				return false, fmt.Errorf("start WireGuard interface: %v; rollback failed: %w", err, rollbackErr)
 			}
 		}
-		return fmt.Errorf("start WireGuard interface: %w", err)
+		return false, fmt.Errorf("start WireGuard interface: %w", err)
 	}
+	return true, nil
+}
+
+func (m *linuxWireGuardManager) applyEgressLimit(ctx context.Context, config domain.WireGuardEdgeConfig, force bool) error {
+	if m.appliedEgressLimitsMbps == nil {
+		m.appliedEgressLimitsMbps = make(map[string]int)
+	}
+	if applied, exists := m.appliedEgressLimitsMbps[config.TunnelID]; !force && exists && applied == config.EdgeEgressLimitMbps {
+		return nil
+	}
+	deleteRoot := func(onlyIfManaged bool) error {
+		if onlyIfManaged {
+			output, err := m.runOutput(ctx, m.tcPath, "qdisc", "show", "dev", config.InterfaceName)
+			if err != nil {
+				return err
+			}
+			if !strings.Contains(string(output), "qdisc htb 1: root") {
+				return nil
+			}
+		}
+		err := m.run(ctx, m.tcPath, "qdisc", "delete", "dev", config.InterfaceName, "root")
+		if err == nil || strings.Contains(strings.ToLower(err.Error()), "no such file or directory") {
+			return nil
+		}
+		return err
+	}
+	if config.EdgeEgressLimitMbps == 0 {
+		if err := deleteRoot(true); err != nil {
+			return fmt.Errorf("remove edge egress limit: %w", err)
+		}
+		m.appliedEgressLimitsMbps[config.TunnelID] = 0
+		return nil
+	}
+	rate := strconv.Itoa(config.EdgeEgressLimitMbps) + "mbit"
+	commands := [][]string{
+		{"qdisc", "replace", "dev", config.InterfaceName, "root", "handle", "1:", "htb", "default", "10"},
+		{"class", "replace", "dev", config.InterfaceName, "parent", "1:", "classid", "1:10", "htb", "rate", rate, "ceil", rate},
+		{"qdisc", "replace", "dev", config.InterfaceName, "parent", "1:10", "handle", "10:", "fq_codel"},
+	}
+	for _, arguments := range commands {
+		if err := m.run(ctx, m.tcPath, arguments...); err != nil {
+			_ = deleteRoot(false)
+			delete(m.appliedEgressLimitsMbps, config.TunnelID)
+			return fmt.Errorf("apply %d Mbps edge egress limit: %w", config.EdgeEgressLimitMbps, err)
+		}
+	}
+	m.appliedEgressLimitsMbps[config.TunnelID] = config.EdgeEgressLimitMbps
 	return nil
 }
 
@@ -361,6 +494,7 @@ func (m *linuxWireGuardManager) removeTunnel(ctx context.Context, tunnelID strin
 			return fmt.Errorf("remove WireGuard tunnel %s: %w", tunnelID, err)
 		}
 	}
+	delete(m.appliedEgressLimitsMbps, tunnelID)
 	for _, pathname := range []string{path, m.keyPath(tunnelID)} {
 		if err := os.Remove(pathname); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("remove WireGuard tunnel file: %w", err)

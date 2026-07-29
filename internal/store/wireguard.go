@@ -20,6 +20,7 @@ var (
 	ErrWireGuardInstallToken      = errors.New("WireGuard install token is invalid or expired")
 	ErrWireGuardPeersPending      = errors.New("WireGuard edge peer keys are not ready")
 	ErrWireGuardPerformanceActive = errors.New("the edge already has an active WireGuard performance test")
+	ErrWireGuardSameHost          = errors.New("the WireGuard origin endpoint and edge node cannot use the same public IPv4 address")
 )
 
 func (s *Store) SuggestedWireGuardCIDR() (string, error) {
@@ -92,11 +93,15 @@ func (s *Store) validateWireGuardCIDRAvailable(cidr, excludedID string) error {
 	return rows.Err()
 }
 
-func (s *Store) CreateWireGuardTunnel(tunnel domain.WireGuardTunnel, nodeIDs []string) (domain.WireGuardTunnel, error) {
+func (s *Store) CreateWireGuardTunnel(tunnel domain.WireGuardTunnel, nodeIDs []string, edgeEgressLimitsMbps map[string]int) (domain.WireGuardTunnel, error) {
 	if err := domain.NormalizeAndValidateWireGuardTunnel(&tunnel); err != nil {
 		return domain.WireGuardTunnel{}, err
 	}
 	nodeIDs, err := normalizeWireGuardNodeIDs(nodeIDs)
+	if err != nil {
+		return domain.WireGuardTunnel{}, err
+	}
+	edgeEgressLimitsMbps, err = normalizeWireGuardEgressLimits(nodeIDs, edgeEgressLimitsMbps)
 	if err != nil {
 		return domain.WireGuardTunnel{}, err
 	}
@@ -119,18 +124,22 @@ func (s *Store) CreateWireGuardTunnel(tunnel domain.WireGuardTunnel, nodeIDs []s
 	if err := validateSiteNodes(tx, nodeIDs); err != nil {
 		return domain.WireGuardTunnel{}, err
 	}
+	if err := validateWireGuardEndpointNodes(tx, tunnel.EndpointHost, nodeIDs); err != nil {
+		return domain.WireGuardTunnel{}, err
+	}
 	if _, err := tx.Exec(`INSERT INTO wireguard_tunnels(
 		id, name, endpoint_host, listen_port, address_cidr, origin_address, mtu,
-		persistent_keepalive_seconds, performance_port, origin_public_key, revision,
+		persistent_keepalive_seconds, performance_port, origin_egress_limit_mbps, origin_public_key, revision,
 		origin_configured_revision, origin_configured_at, created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', 1, 0, NULL, ?, ?)`,
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 1, 0, NULL, ?, ?)`,
 		tunnel.ID, tunnel.Name, tunnel.EndpointHost, tunnel.ListenPort, tunnel.AddressCIDR,
-		tunnel.OriginAddress, tunnel.MTU, tunnel.PersistentKeepaliveSecs, tunnel.PerformancePort,
+		tunnel.OriginAddress, tunnel.MTU, tunnel.PersistentKeepaliveSecs, tunnel.PerformancePort, tunnel.OriginEgressLimitMbps,
 		stamp(tunnel.CreatedAt), stamp(tunnel.UpdatedAt)); err != nil {
 		return domain.WireGuardTunnel{}, err
 	}
 	for _, nodeID := range nodeIDs {
-		if _, err := tx.Exec(`INSERT INTO wireguard_tunnel_nodes(tunnel_id, node_id, address) VALUES (?, ?, ?)`, tunnel.ID, nodeID, addresses[nodeID]); err != nil {
+		if _, err := tx.Exec(`INSERT INTO wireguard_tunnel_nodes(tunnel_id, node_id, address, edge_egress_limit_mbps) VALUES (?, ?, ?, ?)`,
+			tunnel.ID, nodeID, addresses[nodeID], edgeEgressLimitsMbps[nodeID]); err != nil {
 			return domain.WireGuardTunnel{}, err
 		}
 	}
@@ -140,7 +149,7 @@ func (s *Store) CreateWireGuardTunnel(tunnel domain.WireGuardTunnel, nodeIDs []s
 	return s.GetWireGuardTunnel(tunnel.ID)
 }
 
-func (s *Store) UpdateWireGuardTunnel(tunnel domain.WireGuardTunnel, nodeIDs []string) (domain.WireGuardTunnel, error) {
+func (s *Store) UpdateWireGuardTunnel(tunnel domain.WireGuardTunnel, nodeIDs []string, edgeEgressLimitsMbps map[string]int) (domain.WireGuardTunnel, error) {
 	current, err := s.GetWireGuardTunnel(tunnel.ID)
 	if err != nil {
 		return domain.WireGuardTunnel{}, err
@@ -150,6 +159,10 @@ func (s *Store) UpdateWireGuardTunnel(tunnel domain.WireGuardTunnel, nodeIDs []s
 		return domain.WireGuardTunnel{}, err
 	}
 	nodeIDs, err = normalizeWireGuardNodeIDs(nodeIDs)
+	if err != nil {
+		return domain.WireGuardTunnel{}, err
+	}
+	edgeEgressLimitsMbps, err = normalizeWireGuardEgressLimits(nodeIDs, edgeEgressLimitsMbps)
 	if err != nil {
 		return domain.WireGuardTunnel{}, err
 	}
@@ -188,10 +201,14 @@ func (s *Store) UpdateWireGuardTunnel(tunnel domain.WireGuardTunnel, nodeIDs []s
 	if err := validateSiteNodes(tx, nodeIDs); err != nil {
 		return domain.WireGuardTunnel{}, err
 	}
+	if err := validateWireGuardEndpointNodes(tx, tunnel.EndpointHost, nodeIDs); err != nil {
+		return domain.WireGuardTunnel{}, err
+	}
 	result, err := tx.Exec(`UPDATE wireguard_tunnels SET name=?, endpoint_host=?, listen_port=?, address_cidr=?,
-		origin_address=?, mtu=?, persistent_keepalive_seconds=?, performance_port=?, revision=revision+1,
+		origin_address=?, mtu=?, persistent_keepalive_seconds=?, performance_port=?, origin_egress_limit_mbps=?, revision=revision+1,
 		updated_at=? WHERE id=?`, tunnel.Name, tunnel.EndpointHost, tunnel.ListenPort, tunnel.AddressCIDR,
-		tunnel.OriginAddress, tunnel.MTU, tunnel.PersistentKeepaliveSecs, tunnel.PerformancePort, stamp(updatedAt), tunnel.ID)
+		tunnel.OriginAddress, tunnel.MTU, tunnel.PersistentKeepaliveSecs, tunnel.PerformancePort,
+		tunnel.OriginEgressLimitMbps, stamp(updatedAt), tunnel.ID)
 	if err != nil {
 		return domain.WireGuardTunnel{}, err
 	}
@@ -204,8 +221,9 @@ func (s *Store) UpdateWireGuardTunnel(tunnel domain.WireGuardTunnel, nodeIDs []s
 		return domain.WireGuardTunnel{}, err
 	}
 	for _, nodeID := range nodeIDs {
-		if _, err := tx.Exec(`INSERT INTO wireguard_tunnel_nodes(tunnel_id, node_id, address) VALUES (?, ?, ?)
-			ON CONFLICT(tunnel_id, node_id) DO UPDATE SET address=excluded.address`, tunnel.ID, nodeID, addresses[nodeID]); err != nil {
+		if _, err := tx.Exec(`INSERT INTO wireguard_tunnel_nodes(tunnel_id, node_id, address, edge_egress_limit_mbps) VALUES (?, ?, ?, ?)
+			ON CONFLICT(tunnel_id, node_id) DO UPDATE SET address=excluded.address,
+				edge_egress_limit_mbps=excluded.edge_egress_limit_mbps`, tunnel.ID, nodeID, addresses[nodeID], edgeEgressLimitsMbps[nodeID]); err != nil {
 			return domain.WireGuardTunnel{}, err
 		}
 	}
@@ -248,9 +266,44 @@ func normalizeWireGuardNodeIDs(values []string) ([]string, error) {
 	return result, nil
 }
 
+func normalizeWireGuardEgressLimits(nodeIDs []string, values map[string]int) (map[string]int, error) {
+	selected := make(map[string]bool, len(nodeIDs))
+	result := make(map[string]int, len(nodeIDs))
+	for _, nodeID := range nodeIDs {
+		selected[nodeID] = true
+	}
+	for nodeID, limitMbps := range values {
+		if !selected[nodeID] {
+			return nil, fmt.Errorf("edge egress limit references unselected node %s", nodeID)
+		}
+		if err := domain.ValidateWireGuardEgressLimit(limitMbps); err != nil {
+			return nil, fmt.Errorf("edge egress limit for node %s: %w", nodeID, err)
+		}
+		result[nodeID] = limitMbps
+	}
+	return result, nil
+}
+
+func validateWireGuardEndpointNodes(tx *sql.Tx, endpointHost string, nodeIDs []string) error {
+	endpointIP := net.ParseIP(endpointHost)
+	if endpointIP == nil {
+		return nil
+	}
+	for _, nodeID := range nodeIDs {
+		var nodeName, publicIPv4 string
+		if err := tx.QueryRow(`SELECT name, public_ipv4 FROM nodes WHERE id=?`, nodeID).Scan(&nodeName, &publicIPv4); err != nil {
+			return err
+		}
+		if nodeIP := net.ParseIP(publicIPv4); nodeIP != nil && endpointIP.Equal(nodeIP) {
+			return fmt.Errorf("%w: %s", ErrWireGuardSameHost, nodeName)
+		}
+	}
+	return nil
+}
+
 func (s *Store) GetWireGuardTunnel(id string) (domain.WireGuardTunnel, error) {
 	tunnel, err := scanWireGuardTunnel(s.db.QueryRow(`SELECT id, name, endpoint_host, listen_port, address_cidr,
-		origin_address, mtu, persistent_keepalive_seconds, performance_port, origin_public_key, revision,
+		origin_address, mtu, persistent_keepalive_seconds, performance_port, origin_egress_limit_mbps, origin_public_key, revision,
 		origin_configured_revision, origin_configured_at, created_at, updated_at FROM wireguard_tunnels WHERE id=?`, id))
 	if err != nil {
 		return domain.WireGuardTunnel{}, err
@@ -261,7 +314,7 @@ func (s *Store) GetWireGuardTunnel(id string) (domain.WireGuardTunnel, error) {
 
 func (s *Store) ListWireGuardTunnels() ([]domain.WireGuardTunnel, error) {
 	rows, err := s.db.Query(`SELECT id, name, endpoint_host, listen_port, address_cidr,
-		origin_address, mtu, persistent_keepalive_seconds, performance_port, origin_public_key, revision,
+		origin_address, mtu, persistent_keepalive_seconds, performance_port, origin_egress_limit_mbps, origin_public_key, revision,
 		origin_configured_revision, origin_configured_at, created_at, updated_at FROM wireguard_tunnels ORDER BY name`)
 	if err != nil {
 		return nil, err
@@ -297,7 +350,8 @@ func scanWireGuardTunnel(row scanner) (domain.WireGuardTunnel, error) {
 	var createdAt, updatedAt string
 	err := row.Scan(&tunnel.ID, &tunnel.Name, &tunnel.EndpointHost, &tunnel.ListenPort, &tunnel.AddressCIDR,
 		&tunnel.OriginAddress, &tunnel.MTU, &tunnel.PersistentKeepaliveSecs, &tunnel.PerformancePort,
-		&tunnel.OriginPublicKey, &tunnel.Revision, &tunnel.OriginConfiguredRevision, &configuredAt, &createdAt, &updatedAt)
+		&tunnel.OriginEgressLimitMbps, &tunnel.OriginPublicKey, &tunnel.Revision, &tunnel.OriginConfiguredRevision,
+		&configuredAt, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.WireGuardTunnel{}, ErrNotFound
 	}
@@ -323,7 +377,8 @@ func scanWireGuardTunnel(row scanner) (domain.WireGuardTunnel, error) {
 }
 
 func (s *Store) listWireGuardPeers(tunnelID string) ([]domain.WireGuardPeer, error) {
-	rows, err := s.db.Query(`SELECT peers.node_id, nodes.name, nodes.public_ipv4, peers.address, peers.public_key, peers.applied_revision,
+	rows, err := s.db.Query(`SELECT peers.node_id, nodes.name, nodes.public_ipv4, peers.address, peers.edge_egress_limit_mbps,
+		peers.public_key, peers.applied_revision,
 		peers.latest_handshake_at, peers.rx_bytes, peers.tx_bytes, peers.last_reported_at, peers.last_error
 		FROM wireguard_tunnel_nodes peers JOIN nodes ON nodes.id=peers.node_id
 		WHERE peers.tunnel_id=? ORDER BY nodes.name`, tunnelID)
@@ -335,7 +390,8 @@ func (s *Store) listWireGuardPeers(tunnelID string) ([]domain.WireGuardPeer, err
 	for rows.Next() {
 		var peer domain.WireGuardPeer
 		var handshake, reported sql.NullString
-		if err := rows.Scan(&peer.NodeID, &peer.NodeName, &peer.NodePublicIPv4, &peer.Address, &peer.PublicKey, &peer.AppliedRevision,
+		if err := rows.Scan(&peer.NodeID, &peer.NodeName, &peer.NodePublicIPv4, &peer.Address, &peer.EdgeEgressLimitMbps,
+			&peer.PublicKey, &peer.AppliedRevision,
 			&handshake, &peer.RXBytes, &peer.TXBytes, &reported, &peer.LastError); err != nil {
 			return nil, err
 		}
@@ -395,7 +451,7 @@ func (s *Store) DeleteWireGuardTunnel(id string) error {
 func (s *Store) WireGuardEdgeConfigs(nodeID string) ([]domain.WireGuardEdgeConfig, error) {
 	rows, err := s.db.Query(`SELECT tunnels.id, tunnels.name, tunnels.revision, peers.address,
 		tunnels.origin_address, tunnels.origin_public_key, tunnels.endpoint_host, tunnels.listen_port,
-		tunnels.mtu, tunnels.persistent_keepalive_seconds, tunnels.performance_port
+		tunnels.mtu, tunnels.persistent_keepalive_seconds, tunnels.performance_port, peers.edge_egress_limit_mbps
 		FROM wireguard_tunnel_nodes peers JOIN wireguard_tunnels tunnels ON tunnels.id=peers.tunnel_id
 		WHERE peers.node_id=? ORDER BY tunnels.id`, nodeID)
 	if err != nil {
@@ -409,7 +465,7 @@ func (s *Store) WireGuardEdgeConfigs(nodeID string) ([]domain.WireGuardEdgeConfi
 		var listenPort int
 		if err := rows.Scan(&config.TunnelID, &config.Name, &config.Revision, &address, &config.OriginAddress,
 			&config.OriginPublicKey, &endpointHost, &listenPort, &config.MTU, &config.PersistentKeepaliveSecs,
-			&config.PerformancePort); err != nil {
+			&config.PerformancePort, &config.EdgeEgressLimitMbps); err != nil {
 			return nil, err
 		}
 		config.InterfaceName = domain.WireGuardInterfaceName(config.TunnelID)
