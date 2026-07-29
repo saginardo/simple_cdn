@@ -264,7 +264,7 @@ func TestHealthPreservesDNSAndSuppressesAlertsDuringStateConvergence(t *testing.
 	}
 }
 
-func TestOriginCircuitWithdrawsSiteNodeDNSUntilFullyClosed(t *testing.T) {
+func TestOriginCircuitDoesNotWithdrawSiteNodeDNS(t *testing.T) {
 	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -321,19 +321,18 @@ func TestOriginCircuitWithdrawsSiteNodeDNSUntilFullyClosed(t *testing.T) {
 	if err := manager.reconcileSiteDNS(context.Background(), site, nodes); err != nil {
 		t.Fatal(err)
 	}
-	if records := dns.Zones[site.ZoneID]; len(records) != 0 {
-		t.Fatalf("open circuit DNS records = %#v", records)
+	if records := dns.Zones[site.ZoneID]; len(records) != 1 || records[0].Content != node.PublicIPv4 {
+		t.Fatalf("open circuit changed DNS records = %#v", records)
 	}
 
-	dns.Zones[site.ZoneID] = []integrations.DNSRecord{record}
 	report.CollectedAt = collectedAt.Add(time.Second)
 	report.OriginProbes[0].CircuitState = domain.OriginCircuitRecovering
 	server.recordNodeMachineStatus(node.ID, report)
 	if err := manager.reconcileSiteDNS(context.Background(), site, nodes); err != nil {
 		t.Fatal(err)
 	}
-	if records := dns.Zones[site.ZoneID]; len(records) != 0 {
-		t.Fatalf("recovering circuit DNS records = %#v", records)
+	if records := dns.Zones[site.ZoneID]; len(records) != 1 || records[0].Content != node.PublicIPv4 {
+		t.Fatalf("recovering circuit changed DNS records = %#v", records)
 	}
 
 	report.CollectedAt = collectedAt.Add(2 * time.Second)
@@ -343,7 +342,7 @@ func TestOriginCircuitWithdrawsSiteNodeDNSUntilFullyClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	if records := dns.Zones[site.ZoneID]; len(records) != 1 || records[0].Content != node.PublicIPv4 {
-		t.Fatalf("closed circuit DNS records = %#v", records)
+		t.Fatalf("closed circuit changed DNS records = %#v", records)
 	}
 }
 

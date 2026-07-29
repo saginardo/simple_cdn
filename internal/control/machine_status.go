@@ -63,26 +63,6 @@ func (s *Server) recordNodeMachineStatus(nodeID string, report domain.MachineSta
 	return true
 }
 
-func (s *Server) siteOriginCircuitUnavailable(nodeID, siteID string) bool {
-	s.machineStatusMu.RLock()
-	defer s.machineStatusMu.RUnlock()
-	report, found := s.machineStatuses[nodeID]
-	if !found {
-		return false
-	}
-	for _, probe := range report.OriginProbes {
-		if probe.CircuitState == domain.OriginCircuitClosed {
-			continue
-		}
-		for _, reference := range probe.References {
-			if reference.SiteID == siteID && reference.Role == "primary" {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func (s *Server) subscribeMachineStatus(nodeID string) (<-chan domain.MachineStatus, func()) {
 	s.machineStatusMu.Lock()
 	defer s.machineStatusMu.Unlock()

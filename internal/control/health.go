@@ -567,7 +567,6 @@ func (m *HealthManager) reconcileSiteDNSOutcome(ctx context.Context, site domain
 		nodesByID[node.ID] = node
 	}
 	var healthy []domain.Node
-	var circuitExcluded []string
 	activeAssigned := 0
 	convergingAssigned := 0
 	for _, nodeID := range site.Nodes {
@@ -586,10 +585,6 @@ func (m *HealthManager) reconcileSiteDNSOutcome(ctx context.Context, site domain
 			continue
 		}
 		activeAssigned++
-		if m.Server.siteOriginCircuitUnavailable(node.ID, site.ID) {
-			circuitExcluded = append(circuitExcluded, node.ID)
-			continue
-		}
 		if upgrading {
 			convergingAssigned++
 			continue
@@ -632,11 +627,6 @@ func (m *HealthManager) reconcileSiteDNSOutcome(ctx context.Context, site domain
 			}
 		}
 		healthy = append(healthy, node)
-	}
-	if len(circuitExcluded) > 0 {
-		if err := m.Server.DNS.RemoveSiteNodes(ctx, site.ZoneID, site.ID, circuitExcluded); err != nil {
-			return outcome, fmt.Errorf("remove circuit-open nodes from DNS for %s: %w", site.Name, err)
-		}
 	}
 	if convergingAssigned > 0 {
 		m.clearNoHealthyAlert(site.ID)

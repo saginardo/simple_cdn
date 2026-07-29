@@ -48,7 +48,7 @@ recovering --两层各累计 2 次成功--> closed
 open/recovering --任一层失败--> open，并重新累计两层恢复成功
 ```
 
-进入 `open` 时，代理把该池的 include 文件原子切换为 `server ADDRESS down;`，先执行 `nginx -t`，再 reload。主源会立即返回无可用 upstream，现有主备错误页逻辑可快速转到备用源。控制面收到主源 `open` 或 `recovering` 状态后，会按站点和节点精确删除对应的托管 DNS A 记录；只有状态完全回到 `closed` 才重新加入。恢复必须同时确认已有连接路径和新建连接路径，防止某一条路径的短暂成功造成抖动。
+进入 `open` 时，代理把该池的 include 文件原子切换为 `server ADDRESS down;`，先执行 `nginx -t`，再 reload。主源会立即返回无可用 upstream，现有主备错误页逻辑可快速转到备用源。源站熔断状态仅用于边缘本地切换、状态展示和诊断，不直接改变托管 DNS；DNS 仍由边缘节点及站点端点健康状态决定，避免源站配置调整或共享源站故障清空全部解析。恢复必须同时确认已有连接路径和新建连接路径，防止某一条路径的短暂成功造成抖动。
 
 include 切换、站点配置发布和 Nginx reload 使用同一串行锁。状态先写入 `/opt/cdn-edge/data/origin-connections.json`；Nginx 校验或 reload 失败时，代理恢复旧 include、旧持久化状态和旧 worker 配置。当前池文件位于：
 
