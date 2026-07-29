@@ -212,6 +212,8 @@ table inet $table_name {
 EOF
 chmod 0600 "$temporary_nft"
 
+systemctl stop "simple-cdn-origin-iperf-$interface.service" >/dev/null 2>&1 || true
+systemctl stop "wg-quick@$interface.service" >/dev/null 2>&1 || true
 wg-quick down "$interface" >/dev/null 2>&1 || true
 nft delete table inet "$table_name" >/dev/null 2>&1 || true
 mv "$temporary_config" "$config_file"
@@ -237,8 +239,10 @@ chmod 0644 "$service_file"
 jq 'del(.peers[].public_key)' "$response_file" >"$state_file"
 chmod 0600 "$state_file"
 systemctl daemon-reload
-systemctl enable --now "wg-quick@$interface.service"
-systemctl enable --now "simple-cdn-origin-iperf-$interface.service"
+systemctl enable "wg-quick@$interface.service"
+systemctl restart "wg-quick@$interface.service"
+systemctl enable "simple-cdn-origin-iperf-$interface.service"
+systemctl restart "simple-cdn-origin-iperf-$interface.service"
 
 echo "WireGuard origin tunnel $TUNNEL_ID applied at revision $revision"
 echo "Interface: $interface ($origin_cidr), performance port: $performance_port"
