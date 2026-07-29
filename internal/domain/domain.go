@@ -71,7 +71,11 @@ type Origin struct {
 	HostHeader    string            `json:"host_header"`
 	TLSServerName string            `json:"tls_server_name,omitempty"`
 	HTTPVersion   OriginHTTPVersion `json:"http_version,omitempty"`
-	Enabled       bool              `json:"enabled"`
+	// WireGuardTunnelID is empty for the existing direct-origin path. When set,
+	// the publisher replaces only the connection host with the tunnel's origin
+	// address and preserves the URL scheme, port, Host header, and TLS SNI.
+	WireGuardTunnelID string `json:"wireguard_tunnel_id,omitempty"`
+	Enabled           bool   `json:"enabled"`
 }
 
 type OriginHTTPVersion string
@@ -107,19 +111,21 @@ const (
 )
 
 const (
-	EdgeCapabilityTCPStream           = "tcp_stream_v1"
-	EdgeCapabilityOnlineUpgrade       = "online_upgrade_v1"
-	EdgeCapabilityCacheUsage          = "cache_usage_v1"
-	EdgeCapabilityMachineStatus       = "machine_status_v1"
-	EdgeCapabilityMachineStatusStream = "machine_status_stream_v1"
-	EdgeCapabilityNginxFragments      = "nginx_fragments_v1"
-	EdgeCapabilityNginxCapacity       = "nginx_capacity_v1"
-	EdgeCapabilityHTTP3               = "http3_v1"
-	EdgeCapabilityOriginConnection    = "origin_connection_v1"
-	EdgeCapabilityOriginHTTP2         = "origin_http2_v1"
-	EdgeCapabilityTCPMonitoring       = "tcp_monitoring_v1"
-	EdgeCapabilityControlManifest     = "control_manifest_v1"
-	EdgeCapabilityNginxBundle         = "nginx_bundle_v1"
+	EdgeCapabilityTCPStream            = "tcp_stream_v1"
+	EdgeCapabilityOnlineUpgrade        = "online_upgrade_v1"
+	EdgeCapabilityCacheUsage           = "cache_usage_v1"
+	EdgeCapabilityMachineStatus        = "machine_status_v1"
+	EdgeCapabilityMachineStatusStream  = "machine_status_stream_v1"
+	EdgeCapabilityNginxFragments       = "nginx_fragments_v1"
+	EdgeCapabilityNginxCapacity        = "nginx_capacity_v1"
+	EdgeCapabilityHTTP3                = "http3_v1"
+	EdgeCapabilityOriginConnection     = "origin_connection_v1"
+	EdgeCapabilityOriginHTTP2          = "origin_http2_v1"
+	EdgeCapabilityTCPMonitoring        = "tcp_monitoring_v1"
+	EdgeCapabilityControlManifest      = "control_manifest_v1"
+	EdgeCapabilityNginxBundle          = "nginx_bundle_v1"
+	EdgeCapabilityWireGuard            = "wireguard_v1"
+	EdgeCapabilityWireGuardPerformance = "wireguard_performance_v1"
 )
 
 // EdgeControlManifest is a compact change manifest returned with a heartbeat.

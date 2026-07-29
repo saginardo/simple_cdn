@@ -5,8 +5,11 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"maps"
+	"net"
+	"net/url"
 	"slices"
 	"sort"
 	"strings"
@@ -260,6 +263,10 @@ func (p Publisher) renderNodeStateUpdates(materials []publicationMaterial, affec
 	if err != nil {
 		return nil, nil, err
 	}
+	wireGuardTunnels, err := p.wireGuardTunnels(materials)
+	if err != nil {
+		return nil, nil, err
+	}
 	updates := make([]store.NodeStateUpdate, 0, len(affected))
 	targets := make([]store.PublishTaskNode, 0, len(affected))
 	for _, node := range nodes {
@@ -275,7 +282,11 @@ func (p Publisher) renderNodeStateUpdates(materials []publicationMaterial, affec
 			if !siteHasNode(publication.Site, node.ID) {
 				continue
 			}
-			nodeSites = append(nodeSites, publication.Site)
+			nodeSite, err := prepareWireGuardSiteForNode(publication.Site, node, wireGuardTunnels)
+			if err != nil {
+				return nil, nil, err
+			}
+			nodeSites = append(nodeSites, nodeSite)
 			if publication.HasCertificate {
 				certificates[publication.Site.ID] = publication.Bundle
 			}
@@ -359,6 +370,100 @@ func (p Publisher) renderNodeStateUpdates(materials []publicationMaterial, affec
 		}
 	}
 	return updates, targets, nil
+}
+
+func (p Publisher) wireGuardTunnels(materials []publicationMaterial) (map[string]domain.WireGuardTunnel, error) {
+	wanted := false
+	for _, material := range materials {
+		if material.Site.PrimaryOrigin.WireGuardTunnelID != "" ||
+			material.Site.BackupOrigin != nil && material.Site.BackupOrigin.WireGuardTunnelID != "" {
+			wanted = true
+			break
+		}
+	}
+	if !wanted {
+		return nil, nil
+	}
+	tunnels, err := p.Store.ListWireGuardTunnels()
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]domain.WireGuardTunnel, len(tunnels))
+	for _, tunnel := range tunnels {
+		result[tunnel.ID] = tunnel
+	}
+	return result, nil
+}
+
+func prepareWireGuardSiteForNode(site domain.Site, node domain.Node, tunnels map[string]domain.WireGuardTunnel) (domain.Site, error) {
+	if site.BackupOrigin != nil {
+		backup := *site.BackupOrigin
+		site.BackupOrigin = &backup
+	}
+	if !site.Enabled || site.TCPOnly {
+		return site, nil
+	}
+	origins := []struct {
+		role   string
+		origin *domain.Origin
+		active bool
+	}{
+		{role: "primary", origin: &site.PrimaryOrigin, active: true},
+		{role: "backup", origin: site.BackupOrigin, active: site.BackupOrigin != nil && site.BackupOrigin.Enabled},
+	}
+	for _, selected := range origins {
+		if !selected.active || selected.origin == nil || selected.origin.WireGuardTunnelID == "" {
+			continue
+		}
+		if !slices.Contains(node.Capabilities, domain.EdgeCapabilityWireGuard) {
+			return domain.Site{}, fmt.Errorf("node %s must be upgraded or reinstalled before publishing WireGuard origins", node.Name)
+		}
+		tunnel, found := tunnels[selected.origin.WireGuardTunnelID]
+		if !found {
+			return domain.Site{}, fmt.Errorf("site %s %s origin references a missing WireGuard tunnel", site.Name, selected.role)
+		}
+		if !domain.ValidWireGuardKey(tunnel.OriginPublicKey) || tunnel.OriginConfiguredRevision != tunnel.Revision {
+			return domain.Site{}, fmt.Errorf("WireGuard tunnel %s must be applied on the origin at revision %d before publishing site %s", tunnel.Name, tunnel.Revision, site.Name)
+		}
+		var peer *domain.WireGuardPeer
+		for index := range tunnel.Peers {
+			if tunnel.Peers[index].NodeID == node.ID {
+				peer = &tunnel.Peers[index]
+				break
+			}
+		}
+		if peer == nil {
+			return domain.Site{}, fmt.Errorf("WireGuard tunnel %s is not assigned to node %s", tunnel.Name, node.Name)
+		}
+		if !domain.ValidWireGuardKey(peer.PublicKey) || peer.AppliedRevision != tunnel.Revision || peer.LastError != "" {
+			return domain.Site{}, fmt.Errorf("node %s has not applied WireGuard tunnel %s revision %d", node.Name, tunnel.Name, tunnel.Revision)
+		}
+		if err := rewriteOriginForWireGuard(selected.origin, tunnel); err != nil {
+			return domain.Site{}, fmt.Errorf("site %s %s origin: %w", site.Name, selected.role, err)
+		}
+	}
+	return site, nil
+}
+
+func rewriteOriginForWireGuard(origin *domain.Origin, tunnel domain.WireGuardTunnel) error {
+	parsed, err := url.Parse(origin.URL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return errors.New("invalid origin URL")
+	}
+	originalHostname := parsed.Hostname()
+	if origin.HostHeader == "" {
+		origin.HostHeader = originalHostname
+	}
+	if domain.OriginUsesTLS(parsed.Scheme) && origin.TLSServerName == "" {
+		origin.TLSServerName = originalHostname
+	}
+	if port := parsed.Port(); port != "" {
+		parsed.Host = net.JoinHostPort(tunnel.OriginAddress, port)
+	} else {
+		parsed.Host = tunnel.OriginAddress
+	}
+	origin.URL = parsed.String()
+	return nil
 }
 
 func sitesRequireOriginHTTP2(sites []domain.Site) bool {

@@ -16,6 +16,7 @@
 - 可复现的 AMD64 Nginx 1.30.4 bundle：固定所有源码 SHA-256，启用加固参数、HTTP/2、HTTP/3、stream、NDK、lua-nginx-module，并私有携带 OpenResty LuaJIT/runtime。事务安装器记录并卸载 Debian Nginx 软件包，把二进制、配置、运行目录、日志、缓存和服务统一安装到 `/opt/cdn-edge`；失败时恢复准确的软件包版本和 `/etc/nginx`。
 - Nginx OSS 静态资源缓存策略：每个边缘节点共享一个缓存区，默认总磁盘上限为 1 GiB。全局节点默认值可被单个节点覆盖，站点共享该节点配额。只有常见 CSS、JavaScript、字体、图片、WebAssembly 和 Web Manifest 后缀会选择缓存，其他 URI 均使用 `proxy_cache off`。携带 Authorization 或 Cookie 的请求不会读取或写入共享缓存，但这些请求头仍会原样回源。策略包括规范化缓存代际、缓存锁、重新验证、后台刷新、`STALE` 回退，以及 HTTP(S) 主备源站故障切换。HTTP(S) 站点会自动对 WebSocket Upgrade、SSE Accept、`X-CDN-Stream: 1` 和 POST 响应关闭缓存与响应缓冲；整站透传模式会对整个主机名禁用缓存和缓冲，同时转发字节范围。`grpc://` 和 `grpcs://` 源站通过客户端 HTTP/2 监听器使用原生 gRPC 代理。
 - 按能力下发共享回源连接池：相同协议、地址、Host 和 SNI 的站点复用同一 upstream，池容量按节点 `worker_connections` 和引用权重自动分配。边缘以约 5 秒的复用服务探测持续确认应用路径，并以 32-48 秒的低频冷探测验证新建 TCP/TLS；任一层连续 2 次失败会熔断，恢复需两层分别确认。Nginx include 切换与站点发布串行、可回滚。访问日志和 30 天分钟聚合提供真实请求的回源建连、首字节、完整响应及连接复用率，节点详情只实时展示最新双层探测状态且不持久化历史。详见 [docs/ORIGIN_CONNECTIONS.md](docs/ORIGIN_CONNECTIONS.md)。
+- 按能力启用 WireGuard 专用回源隧道：主机私钥本地生成，控制面管理修订收敛、私网地址发布、源站一次性安装、nftables 规则，以及公网 TCP 与隧道 TCP/UDP 对照测试。站点可在加密隧道内使用 HTTP/H2C 或明文 gRPC 以取消源站 TLS 证书管理，也可保留原 Host/SNI 继续使用 HTTPS/GRPCS。详见 [docs/WIREGUARD_ORIGIN.md](docs/WIREGUARD_ORIGIN.md)。
 - 按站点、按能力启用基于 UDP 443 的 HTTP/3/QUIC，默认关闭。安装器仅在 Nginx 报告 `--with-http_v3_module` 时声明 `http3_v1`；主动开启的站点在兼容节点上会增加 QUIC 监听、`Alt-Svc`、地址验证重试、UDP 冲突检查、重载后监听确认和能力自动对账，同时保留 TCP 443 上的 HTTP/1.1 与 HTTP/2 回退。IP 封禁同时覆盖 UDP 443 和 TCP 80/443。
 - Nginx stream TCP 转发：客户端 TLS 终止和上游 TLS/SNI 校验可独立选择，支持动态上游 DNS 解析、按端口配置超时、原子多文件回滚，以及不监听 80/443 的纯 TCP 站点。
 - Cloudflare DNS-only A 记录对账：节点可达性和站点级 HTTPS/SNI/证书健康检查都带滞回。连续 3 次探测失败时移除节点，连续 5 次成功时恢复；若所有节点均异常，则有意保持 DNS 不变。
@@ -161,6 +162,8 @@ sudo docker compose ps
 HTTP 边缘节点提供 `http://EDGE_IPV4/__cdn_health`。已发布 HTTP 配置还提供站点专属的 `https://SITE_DOMAIN/__cdn_health`；控制器会直接连接每个已分配边缘 IP，同时保留真实 Host、SNI 和证书校验。纯 TCP 节点改为连接每个期望的已发布 TCP 端口，不要求开放 80/443。请在节点与云厂商防火墙中开放 TCP 80/443；当 `http3_v1` 节点上至少有一个已发布站点开启 HTTP/3 时，还需开放 UDP 443。控制器有意继续用 TCP 回退路径判定健康，因此应按边缘部署文档单独验证 QUIC。源站本身应只允许返回的边缘 CIDR 入站。
 
 如果通过 IP 访问 HTTPS/WSS/GRPCS 源站，而证书只覆盖 DNS 主机名，请分别配置源站 URL、Host 请求头和 TLS SNI。IP 连接示例、证书要求及边缘校验命令见 [docs/ORIGIN_TLS_SNI.md](docs/ORIGIN_TLS_SNI.md)。
+
+若不希望源站应用端口继续暴露在公网，可在 **WireGuard** 工作区创建受管隧道，在源站运行一次性命令，等待源站与所有所选边缘修订收敛，再在站点的“回源链路”中选择该隧道。希望取消源站 TLS 管理时，在隧道内使用 HTTP、H2C 或 `grpc://`；仍需应用层 TLS 时使用 HTTPS/GRPCS。安装脚本不会自动关闭应用的公网端口，需在源站防火墙中单独执行。防火墙、UDP 限流、性能测试、更新和卸载语义见 [docs/WIREGUARD_ORIGIN.md](docs/WIREGUARD_ORIGIN.md)。
 
 ### Range 流量与透传模式
 

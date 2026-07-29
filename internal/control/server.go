@@ -94,6 +94,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /install-edge.service", s.bootstrapEdgeService)
 	mux.HandleFunc("GET /install-edge-updater.service", s.bootstrapEdgeUpdaterService)
 	mux.HandleFunc("GET /install-edge-nginx.service", s.bootstrapEdgeNginxService)
+	mux.HandleFunc("GET /install-origin-wireguard.sh", s.installOriginWireGuard)
 	mux.HandleFunc("GET /uninstall-edge.sh", s.uninstallEdgeScript)
 	mux.HandleFunc("GET /downloads/cdn-edge-agent-linux-amd64", s.edgeBinary)
 	mux.HandleFunc("GET /downloads/cdn-nginx-linux-amd64.tar.gz", s.nginxBundle)
@@ -166,6 +167,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/nodes/{id}/uninstall", s.requireAdmin(s.cancelNodeUninstall))
 	mux.HandleFunc("POST /api/nodes/{id}/uninstall/force-complete", s.requireAdmin(s.forceCompleteNodeUninstall))
 	mux.HandleFunc("DELETE /api/nodes/{id}", s.requireAdmin(s.deleteNode))
+	mux.HandleFunc("GET /api/wireguard/tunnels", s.requireAdmin(s.listWireGuardTunnels))
+	mux.HandleFunc("GET /api/wireguard/suggested-cidr", s.requireAdmin(s.suggestedWireGuardCIDR))
+	mux.HandleFunc("POST /api/wireguard/tunnels", s.requireAdmin(s.createWireGuardTunnel))
+	mux.HandleFunc("PUT /api/wireguard/tunnels/{id}", s.requireAdmin(s.updateWireGuardTunnel))
+	mux.HandleFunc("DELETE /api/wireguard/tunnels/{id}", s.requireAdmin(s.deleteWireGuardTunnel))
+	mux.HandleFunc("POST /api/wireguard/tunnels/{id}/install-command", s.requireAdmin(s.createWireGuardInstallCommand))
+	mux.HandleFunc("GET /api/wireguard/tunnels/{id}/uninstall-command", s.requireAdmin(s.wireGuardUninstallCommand))
+	mux.HandleFunc("GET /api/wireguard/performance-tests", s.requireAdmin(s.listWireGuardPerformanceTests))
+	mux.HandleFunc("POST /api/wireguard/performance-tests", s.requireAdmin(s.createWireGuardPerformanceTest))
 	mux.HandleFunc("GET /api/sites", s.requireAdmin(s.listSites))
 	mux.HandleFunc("GET /api/certificates", s.requireAdmin(s.certificatesOverview))
 	mux.HandleFunc("POST /api/certificates/{id}/renew", s.requireAdmin(s.renewCertificate))
@@ -193,11 +203,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/edge/v1/upgrade", s.requireEdge(s.edgeUpgradeInstruction))
 	mux.HandleFunc("POST /api/edge/v1/upgrade-report", s.requireEdge(s.edgeUpgradeReport))
 	mux.HandleFunc("POST /api/edge/v1/security-events", s.requireEdge(s.edgeSecurityEvents))
+	mux.HandleFunc("GET /api/edge/v1/wireguard/config", s.requireEdge(s.edgeWireGuardConfig))
+	mux.HandleFunc("POST /api/edge/v1/wireguard/status", s.requireEdge(s.edgeWireGuardStatus))
+	mux.HandleFunc("GET /api/edge/v1/wireguard/performance-test", s.requireEdge(s.edgeWireGuardPerformanceTest))
+	mux.HandleFunc("POST /api/edge/v1/wireguard/performance-tests/{id}", s.requireEdge(s.edgeWireGuardPerformanceResult))
 	mux.HandleFunc("GET /api/edge/v1/security-bans", s.requireEdge(s.edgeSecurityBans))
 	mux.HandleFunc("POST /api/edge/v1/logs", s.requireEdge(s.writeLogs))
 	mux.HandleFunc("POST /api/edge/v1/uninstall/start", s.startNodeUninstall)
 	mux.HandleFunc("POST /api/edge/v1/uninstall/fail", s.failNodeUninstall)
 	mux.HandleFunc("POST /api/edge/v1/uninstall/complete", s.completeNodeUninstall)
+	mux.HandleFunc("POST /api/wireguard/v1/configure", s.configureWireGuardOrigin)
 	web, err := fs.Sub(embeddedWeb, "web/dist")
 	if err == nil {
 		mux.Handle("/", staticWebHandler(http.FileServer(http.FS(web))))
@@ -639,11 +654,12 @@ func (s *Server) listSites(response http.ResponseWriter, request *http.Request) 
 }
 
 type originRequest struct {
-	URL           string                    `json:"url"`
-	HostHeader    string                    `json:"host_header"`
-	TLSServerName *string                   `json:"tls_server_name"`
-	HTTPVersion   *domain.OriginHTTPVersion `json:"http_version"`
-	Enabled       bool                      `json:"enabled"`
+	URL               string                    `json:"url"`
+	HostHeader        string                    `json:"host_header"`
+	TLSServerName     *string                   `json:"tls_server_name"`
+	HTTPVersion       *domain.OriginHTTPVersion `json:"http_version"`
+	WireGuardTunnelID *string                   `json:"wireguard_tunnel_id"`
+	Enabled           bool                      `json:"enabled"`
 }
 
 type optionalNullableInt struct {
@@ -678,7 +694,16 @@ func (input originRequest) origin(current *domain.Origin) domain.Origin {
 	} else if current != nil && strings.TrimSpace(input.URL) == current.URL {
 		httpVersion = current.HTTPVersion
 	}
-	return domain.Origin{URL: input.URL, HostHeader: input.HostHeader, TLSServerName: tlsServerName, HTTPVersion: httpVersion, Enabled: input.Enabled}
+	wireGuardTunnelID := ""
+	if input.WireGuardTunnelID != nil {
+		wireGuardTunnelID = *input.WireGuardTunnelID
+	} else if current != nil {
+		wireGuardTunnelID = current.WireGuardTunnelID
+	}
+	return domain.Origin{
+		URL: input.URL, HostHeader: input.HostHeader, TLSServerName: tlsServerName,
+		HTTPVersion: httpVersion, WireGuardTunnelID: wireGuardTunnelID, Enabled: input.Enabled,
+	}
 }
 
 type siteRequest struct {
@@ -1958,7 +1983,7 @@ func writeStoreError(response http.ResponseWriter, err error) {
 		writeError(response, http.StatusNotFound, err)
 		return
 	}
-	if errors.Is(err, store.ErrUninstallActive) || errors.Is(err, store.ErrUninstallNotActive) || errors.Is(err, store.ErrNodeAssigned) || errors.Is(err, store.ErrSiteDeleting) || errors.Is(err, store.ErrSiteTaskActive) || errors.Is(err, store.ErrSiteChanged) || errors.Is(err, store.ErrNodeUpgradeActive) || errors.Is(err, store.ErrNodeOperationActive) || errors.Is(err, store.ErrUpgradeRetryNotReady) || errors.Is(err, store.ErrMonitoringTargetExists) || errors.Is(err, store.ErrMonitoringTargetNameExists) || errors.Is(err, store.ErrMonitoringTargetLimit) || errors.Is(err, store.ErrMonitoringTargetsChanged) {
+	if errors.Is(err, store.ErrUninstallActive) || errors.Is(err, store.ErrUninstallNotActive) || errors.Is(err, store.ErrNodeAssigned) || errors.Is(err, store.ErrSiteDeleting) || errors.Is(err, store.ErrSiteTaskActive) || errors.Is(err, store.ErrSiteChanged) || errors.Is(err, store.ErrNodeUpgradeActive) || errors.Is(err, store.ErrNodeOperationActive) || errors.Is(err, store.ErrUpgradeRetryNotReady) || errors.Is(err, store.ErrMonitoringTargetExists) || errors.Is(err, store.ErrMonitoringTargetNameExists) || errors.Is(err, store.ErrMonitoringTargetLimit) || errors.Is(err, store.ErrMonitoringTargetsChanged) || errors.Is(err, store.ErrWireGuardTunnelInUse) || errors.Is(err, store.ErrWireGuardPerformanceActive) {
 		writeError(response, http.StatusConflict, err)
 		return
 	}

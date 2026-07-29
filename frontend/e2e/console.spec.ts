@@ -84,6 +84,94 @@ const site = {
   updated_at: now.toISOString(),
 };
 
+const wireGuardNodes = [
+  {
+    id: "node-1",
+    name: "edge-hong-kong",
+    public_ipv4: "203.0.113.41",
+    status: "active",
+    capabilities: ["wireguard_v1", "wireguard_performance_v1"],
+    applied_version: 8,
+    last_heartbeat_at: now.toISOString(),
+    created_at: now.toISOString(),
+    updated_at: now.toISOString(),
+  },
+  {
+    id: "node-2",
+    name: "edge-singapore",
+    public_ipv4: "203.0.113.42",
+    status: "active",
+    capabilities: ["wireguard_v1", "wireguard_performance_v1"],
+    applied_version: 8,
+    last_heartbeat_at: now.toISOString(),
+    created_at: now.toISOString(),
+    updated_at: now.toISOString(),
+  },
+];
+
+const wireGuardTunnel = {
+  id: "33b33c86-8aa6-4552-8d47-ad3e57beebac",
+  name: "源站主隧道",
+  endpoint_host: "origin.example.com",
+  listen_port: 51820,
+  address_cidr: "10.253.0.0/24",
+  origin_address: "10.253.0.1",
+  mtu: 1420,
+  persistent_keepalive_seconds: 25,
+  performance_port: 5201,
+  origin_public_key: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+  revision: 3,
+  origin_configured_revision: 3,
+  origin_configured_at: now.toISOString(),
+  peers: wireGuardNodes.map((node, index) => ({
+    node_id: node.id,
+    node_name: node.name,
+    node_public_ipv4: node.public_ipv4,
+    address: `10.253.0.${index + 2}`,
+    public_key:
+      index === 0
+        ? "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI="
+        : "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
+    applied_revision: 3,
+    latest_handshake_at: new Date(
+      now.getTime() - (index + 1) * 30_000,
+    ).toISOString(),
+    rx_bytes: 328_491_827 + index * 88_321_112,
+    tx_bytes: 192_841_239 + index * 72_193_842,
+    last_reported_at: now.toISOString(),
+  })),
+  created_at: series[20].time,
+  updated_at: now.toISOString(),
+};
+
+const wireGuardPerformanceTests = [
+  {
+    id: "performance-1",
+    tunnel_id: wireGuardTunnel.id,
+    tunnel_name: wireGuardTunnel.name,
+    node_id: "node-1",
+    node_name: "edge-hong-kong",
+    target_mbps: 800,
+    duration_seconds: 10,
+    status: "succeeded",
+    result: {
+      direct_tcp: { mbps: 942.8, retransmits: 1 },
+      wireguard_tcp: { mbps: 918.4, retransmits: 0 },
+      wireguard_udp: {
+        target_mbps: 800,
+        mbps: 793.2,
+        lost_packets: 19,
+        total_packets: 68_442,
+        loss_percent: 0.03,
+        jitter_ms: 0.41,
+      },
+    },
+    created_at: series[22].time,
+    started_at: series[22].time,
+    finished_at: series[22].time,
+  },
+];
+
 const certificateOverview = {
   renewal_window_days: 30,
   reconcile_interval_seconds: 43_200,
@@ -717,6 +805,9 @@ async function mockAPI(page: Page, overrides: Record<string, unknown> = {}) {
         published_after_certificate: true,
       },
       "/api/nodes": [],
+      "/api/wireguard/tunnels": [],
+      "/api/wireguard/performance-tests": [],
+      "/api/wireguard/suggested-cidr": { address_cidr: "10.253.0.0/24" },
       "/api/logs": {
         logs: accessLogs,
         from: series[22].time,
@@ -2158,6 +2249,104 @@ test("canceled node uninstall returns the panel to its idle state", async ({
   ).toBeVisible();
 });
 
+test("WireGuard workspace shows tunnel health and performance on desktop and mobile", async ({
+  page,
+}, testInfo) => {
+  const errors = trackPageErrors(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await mockAPI(page, {
+    "/api/nodes": wireGuardNodes,
+    "/api/wireguard/tunnels": [wireGuardTunnel],
+    "/api/wireguard/performance-tests": wireGuardPerformanceTests,
+  });
+  await page.goto("/#/wireguard");
+
+  await expect(
+    page.getByRole("heading", { name: "WireGuard", level: 1 }),
+  ).toBeVisible();
+  await expect(page.getByText("源站主隧道", { exact: true })).toBeVisible();
+  await expect(page.getByText("1 / 1", { exact: true })).toBeVisible();
+  await expect(page.getByText("2/2 已应用", { exact: true })).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("wireguard-desktop.png"),
+    fullPage: true,
+  });
+
+  await page.getByRole("button", { name: "查看隧道" }).click();
+  const detail = page.getByRole("dialog", { name: "源站主隧道" });
+  await expect(detail).toBeVisible();
+  await expect(detail.getByText("10.253.0.2", { exact: true })).toBeVisible();
+  await expect(detail.getByText("10.253.0.3", { exact: true })).toBeVisible();
+  await detail.getByRole("button", { name: "关闭" }).last().click();
+
+  await page.getByRole("tab", { name: "性能测试" }).click();
+  await expect(page.getByText("942.8 Mbps / 1 retx")).toBeVisible();
+  await expect(page.getByText("793.2 Mbps / 800 Mbps")).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("wireguard-performance-desktop.png"),
+    fullPage: true,
+  });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.reload();
+  await expect(
+    page.getByRole("heading", { name: "WireGuard", level: 1 }),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth + 1,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: testInfo.outputPath("wireguard-mobile.png"),
+    fullPage: true,
+  });
+  expect(errors).toEqual([]);
+});
+
+test("site editor exposes the selected WireGuard origin path", async ({
+  page,
+}, testInfo) => {
+  const errors = trackPageErrors(page);
+  const tunneledSite = {
+    ...site,
+    node_ids: wireGuardNodes.map((node) => node.id),
+    primary_origin: {
+      ...site.primary_origin,
+      wireguard_tunnel_id: wireGuardTunnel.id,
+    },
+  };
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await mockAPI(page, {
+    "/api/sites": [tunneledSite],
+    "/api/nodes": wireGuardNodes,
+    "/api/wireguard/tunnels": [wireGuardTunnel],
+  });
+  await page.goto("/#/sites/site-1");
+
+  await expect(
+    page.getByRole("heading", { name: "静态资源主站", level: 1 }),
+  ).toBeVisible();
+  const originPath = page.getByLabel("回源链路");
+  await expect(originPath).toHaveText("WireGuard · 源站主隧道");
+  const summary = page
+    .locator('[data-slot="card"]')
+    .filter({ hasText: "配置摘要" });
+  await expect(
+    summary.getByText("WireGuard · 源站主隧道", { exact: true }),
+  ).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("site-wireguard-origin.png"),
+    fullPage: true,
+  });
+
+  await originPath.click();
+  await page.getByRole("option", { name: "公网直连" }).click();
+  await expect(originPath).toHaveText("公网直连");
+  await expect(summary.getByText("公网直连", { exact: true })).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
 test("all primary workspaces and the new-site editor mount without runtime errors", async ({
   page,
 }) => {
@@ -2168,6 +2357,7 @@ test("all primary workspaces and the new-site editor mount without runtime error
     ["security", "安全"],
     ["monitoring", "监测"],
     ["scheduling", "调度"],
+    ["wireguard", "WireGuard"],
     ["nodes", "节点"],
     ["sites", "站点"],
     ["certificates", "证书"],

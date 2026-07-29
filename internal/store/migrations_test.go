@@ -624,7 +624,7 @@ func TestSiteProxyBufferingMigrationBackfillsPublishedSnapshots(t *testing.T) {
 	if _, err := database.db.Exec(`UPDATE site_publications SET site_json = ? WHERE site_id = ?`, string(legacy), site.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.db.Exec(`DELETE FROM schema_migrations WHERE version = 23`); err != nil {
+	if _, err := database.db.Exec(`DELETE FROM schema_migrations WHERE version >= 23`); err != nil {
 		t.Fatal(err)
 	}
 	if err := database.Migrate(); err != nil {

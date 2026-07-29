@@ -76,6 +76,10 @@ func NormalizeAndValidateSite(site *Site) error {
 	}
 	if site.TCPOnly {
 		site.HTTP3Enabled = false
+		if strings.TrimSpace(site.PrimaryOrigin.WireGuardTunnelID) != "" ||
+			site.BackupOrigin != nil && strings.TrimSpace(site.BackupOrigin.WireGuardTunnelID) != "" {
+			return fmt.Errorf("WireGuard origins are not supported for TCP-only sites")
+		}
 	}
 	var primary *url.URL
 	if !site.TCPOnly {
@@ -293,6 +297,7 @@ func EffectiveNodeCacheMaxSizeGB(node Node, defaultSize int) (int, error) {
 
 func ValidateOrigin(origin *Origin) error {
 	origin.URL = strings.TrimSpace(origin.URL)
+	origin.WireGuardTunnelID = strings.TrimSpace(origin.WireGuardTunnelID)
 	parsed, err := url.Parse(origin.URL)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return fmt.Errorf("must be an absolute HTTP(S), WebSocket, or gRPC URL")

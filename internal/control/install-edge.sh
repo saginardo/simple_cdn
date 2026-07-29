@@ -240,7 +240,7 @@ if [[ -z "$ROOT_PREFIX" ]]; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
   apt-get install -y --no-install-recommends \
-    ca-certificates curl iproute2 nftables logrotate lz4 procps kmod \
+    ca-certificates curl iproute2 nftables logrotate lz4 procps kmod wireguard-tools iperf3 \
     libpcre2-8-0 zlib1g libcrypt1
 fi
 

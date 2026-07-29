@@ -70,6 +70,7 @@ import type {
   Site,
   SiteMinuteMetric,
   TCPForward,
+  WireGuardTunnel,
 } from "@/lib/types";
 import { t, useI18n } from "@/lib/i18n";
 import { activeTask, taskMatchesCurrentSite } from "./publish-status";
@@ -81,11 +82,13 @@ interface SiteDraft {
   primary_host: string;
   primary_sni: string;
   primary_http_version: OriginHTTPVersion;
+  primary_wireguard_tunnel_id: string;
   backup_enabled: boolean;
   backup_url: string;
   backup_host: string;
   backup_sni: string;
   backup_http_version: OriginHTTPVersion;
+  backup_wireguard_tunnel_id: string;
   passthrough: boolean;
   request_body_buffering: boolean;
   origin_response_buffering: boolean;
@@ -127,6 +130,10 @@ export function SiteDetailPage() {
   const nodes = useQuery({
     queryKey: ["nodes"],
     queryFn: () => api<Node[]>("/api/nodes"),
+  });
+  const wireGuardTunnels = useQuery({
+    queryKey: ["wireguard-tunnels"],
+    queryFn: () => api<WireGuardTunnel[]>("/api/wireguard/tunnels"),
   });
   const settings = useQuery({
     queryKey: ["settings"],
@@ -359,7 +366,11 @@ export function SiteDetailPage() {
     }
   }
   const loading =
-    sites.isLoading || nodes.isLoading || settings.isLoading || !loadedKey;
+    sites.isLoading ||
+    nodes.isLoading ||
+    settings.isLoading ||
+    wireGuardTunnels.isLoading ||
+    !loadedKey;
   return (
     <>
       <PageHeader
@@ -378,8 +389,18 @@ export function SiteDetailPage() {
       />
       <PageBody>
         {loading ? <PageLoading /> : null}
-        {sites.error || nodes.error || settings.error ? (
-          <PageError error={sites.error || nodes.error || settings.error} />
+        {sites.error ||
+        nodes.error ||
+        settings.error ||
+        wireGuardTunnels.error ? (
+          <PageError
+            error={
+              sites.error ||
+              nodes.error ||
+              settings.error ||
+              wireGuardTunnels.error
+            }
+          />
         ) : null}
         {!isNew && sites.data && !site ? (
           <EmptyState
@@ -403,7 +424,11 @@ export function SiteDetailPage() {
                 </Alert>
               ) : null}
               <BasicSettings draft={draft} setDraft={setDraft} />
-              <TrafficSettings draft={draft} setDraft={setDraft} />
+              <TrafficSettings
+                draft={draft}
+                setDraft={setDraft}
+                tunnels={wireGuardTunnels.data ?? []}
+              />
               <NodeSelector
                 nodes={nodes.data ?? []}
                 selected={draft.node_ids}
@@ -436,10 +461,26 @@ export function SiteDetailPage() {
                     }
                   />
                   {!draft.tcp_only ? (
-                    <Fact
-                      label="HTTP/3 / QUIC"
-                      value={draft.http3_enabled ? t("已开启") : t("已关闭")}
-                    />
+                    <>
+                      <Fact
+                        label={t("回源链路")}
+                        value={
+                          draft.primary_wireguard_tunnel_id
+                            ? `WireGuard · ${
+                                wireGuardTunnels.data?.find(
+                                  (tunnel) =>
+                                    tunnel.id ===
+                                    draft.primary_wireguard_tunnel_id,
+                                )?.name ?? draft.primary_wireguard_tunnel_id
+                              }`
+                            : t("公网直连")
+                        }
+                      />
+                      <Fact
+                        label="HTTP/3 / QUIC"
+                        value={draft.http3_enabled ? t("已开启") : t("已关闭")}
+                      />
+                    </>
                   ) : null}
                   <Fact
                     label={t("边缘节点")}
@@ -684,9 +725,11 @@ function BasicSettings({
 function TrafficSettings({
   draft,
   setDraft,
+  tunnels,
 }: {
   draft: SiteDraft;
   setDraft: (draft: SiteDraft) => void;
+  tunnels: WireGuardTunnel[];
 }) {
   return (
     <Card>
@@ -739,6 +782,9 @@ function TrafficSettings({
               host={draft.primary_host}
               sni={draft.primary_sni}
               httpVersion={draft.primary_http_version}
+              wireGuardTunnelID={draft.primary_wireguard_tunnel_id}
+              tunnels={tunnels}
+              nodeIDs={draft.node_ids}
               onChange={(values) =>
                 setDraft({
                   ...draft,
@@ -746,6 +792,7 @@ function TrafficSettings({
                   primary_host: values.host,
                   primary_sni: values.sni,
                   primary_http_version: values.httpVersion,
+                  primary_wireguard_tunnel_id: values.wireGuardTunnelID,
                 })
               }
             />
@@ -775,6 +822,9 @@ function TrafficSettings({
                 host={draft.backup_host}
                 sni={draft.backup_sni}
                 httpVersion={draft.backup_http_version}
+                wireGuardTunnelID={draft.backup_wireguard_tunnel_id}
+                tunnels={tunnels}
+                nodeIDs={draft.node_ids}
                 onChange={(values) =>
                   setDraft({
                     ...draft,
@@ -782,6 +832,7 @@ function TrafficSettings({
                     backup_host: values.host,
                     backup_sni: values.sni,
                     backup_http_version: values.httpVersion,
+                    backup_wireguard_tunnel_id: values.wireGuardTunnelID,
                   })
                 }
               />
@@ -966,6 +1017,9 @@ function OriginFields({
   host,
   sni,
   httpVersion,
+  wireGuardTunnelID,
+  tunnels,
+  nodeIDs,
   onChange,
 }: {
   title: string;
@@ -974,15 +1028,26 @@ function OriginFields({
   host: string;
   sni: string;
   httpVersion: OriginHTTPVersion;
+  wireGuardTunnelID: string;
+  tunnels: WireGuardTunnel[];
+  nodeIDs: string[];
   onChange: (values: {
     url: string;
     host: string;
     sni: string;
     httpVersion: OriginHTTPVersion;
+    wireGuardTunnelID: string;
   }) => void;
 }) {
   const tls = /^(https|wss|grpcs):/i.test(url);
   const supportsHTTPVersion = /^https?:/i.test(url);
+  const selectableTunnels = tunnels.filter(
+    (tunnel) =>
+      tunnel.id === wireGuardTunnelID ||
+      nodeIDs.every((nodeID) =>
+        tunnel.peers.some((peer) => peer.node_id === nodeID),
+      ),
+  );
   return (
     <div className="grid gap-4 sm:grid-cols-2">
       <div className="sm:col-span-2 text-sm font-medium">{title}</div>
@@ -1000,6 +1065,7 @@ function OriginFields({
                 event.target.value,
                 httpVersion,
               ),
+              wireGuardTunnelID,
             })
           }
           placeholder="https://origin.example.com:443"
@@ -1015,11 +1081,32 @@ function OriginFields({
               host: event.target.value,
               sni,
               httpVersion,
+              wireGuardTunnelID,
             })
           }
           placeholder="origin.example.com"
         />
       </Field>
+      <SelectField
+        label={t("回源链路")}
+        value={wireGuardTunnelID || "direct"}
+        onChange={(value) =>
+          onChange({
+            url,
+            host,
+            sni,
+            httpVersion,
+            wireGuardTunnelID: value === "direct" ? "" : value,
+          })
+        }
+        options={[
+          ["direct", t("公网直连")],
+          ...selectableTunnels.map((tunnel) => [
+            tunnel.id,
+            `WireGuard · ${tunnel.name}`,
+          ]),
+        ]}
+      />
       {supportsHTTPVersion ? (
         <SelectField
           label={t("回源 HTTP 协议")}
@@ -1030,6 +1117,7 @@ function OriginFields({
               host,
               sni,
               httpVersion: value as OriginHTTPVersion,
+              wireGuardTunnelID,
             })
           }
           options={originHTTPVersionOptions(url)}
@@ -1047,6 +1135,7 @@ function OriginFields({
                 host,
                 sni: event.target.value,
                 httpVersion,
+                wireGuardTunnelID,
               })
             }
             placeholder="origin.example.com"
@@ -1864,11 +1953,13 @@ function emptyDraft(ttl: number): SiteDraft {
     primary_host: "",
     primary_sni: "",
     primary_http_version: "http1",
+    primary_wireguard_tunnel_id: "",
     backup_enabled: false,
     backup_url: "",
     backup_host: "",
     backup_sni: "",
     backup_http_version: "http1",
+    backup_wireguard_tunnel_id: "",
     passthrough: false,
     request_body_buffering: true,
     origin_response_buffering: true,
@@ -1905,11 +1996,13 @@ function draftFromSite(site: Site, ttl: number): SiteDraft {
     primary_host: site.primary_origin.host_header || "",
     primary_sni: site.primary_origin.tls_server_name || "",
     primary_http_version: site.primary_origin.http_version || "http1",
+    primary_wireguard_tunnel_id: site.primary_origin.wireguard_tunnel_id || "",
     backup_enabled: Boolean(site.backup_origin),
     backup_url: site.backup_origin?.url || "",
     backup_host: site.backup_origin?.host_header || "",
     backup_sni: site.backup_origin?.tls_server_name || "",
     backup_http_version: site.backup_origin?.http_version || "http1",
+    backup_wireguard_tunnel_id: site.backup_origin?.wireguard_tunnel_id || "",
     passthrough: site.passthrough,
     request_body_buffering: site.request_body_buffering ?? true,
     origin_response_buffering: site.origin_response_buffering ?? true,
@@ -1947,6 +2040,9 @@ function sitePayload(draft: SiteDraft) {
       http_version: /^(https?|wss?):/i.test(draft.primary_url)
         ? draft.primary_http_version
         : undefined,
+      wireguard_tunnel_id: draft.tcp_only
+        ? ""
+        : draft.primary_wireguard_tunnel_id,
       enabled: true,
     },
     passthrough: draft.passthrough,
@@ -1971,6 +2067,9 @@ function sitePayload(draft: SiteDraft) {
       http_version: /^(https?|wss?):/i.test(draft.backup_url)
         ? draft.backup_http_version
         : undefined,
+      wireguard_tunnel_id: draft.tcp_only
+        ? ""
+        : draft.backup_wireguard_tunnel_id,
       enabled: true,
     };
   return payload;

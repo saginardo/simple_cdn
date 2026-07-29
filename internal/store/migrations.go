@@ -40,6 +40,74 @@ var schemaMigrations = []schemaMigration{
 	{Version: 21, Name: "site-http3-opt-in", Apply: migrateSiteHTTP3OptIn},
 	{Version: 22, Name: "managed-nginx-artifacts", Apply: migrateManagedNginxArtifacts},
 	{Version: 23, Name: "site-proxy-buffering-controls", Apply: migrateSiteProxyBufferingControls},
+	{Version: 24, Name: "wireguard-tunnels-and-performance", Apply: migrateWireGuard},
+}
+
+func migrateWireGuard(tx *sql.Tx) error {
+	_, err := tx.Exec(`CREATE TABLE IF NOT EXISTS wireguard_tunnels (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL UNIQUE,
+		endpoint_host TEXT NOT NULL,
+		listen_port INTEGER NOT NULL,
+		address_cidr TEXT NOT NULL UNIQUE,
+		origin_address TEXT NOT NULL UNIQUE,
+		mtu INTEGER NOT NULL,
+		persistent_keepalive_seconds INTEGER NOT NULL,
+		performance_port INTEGER NOT NULL,
+		origin_public_key TEXT NOT NULL DEFAULT '',
+		revision INTEGER NOT NULL DEFAULT 1,
+		origin_configured_revision INTEGER NOT NULL DEFAULT 0,
+		origin_configured_at TEXT,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	);
+	CREATE TABLE IF NOT EXISTS wireguard_tunnel_nodes (
+		tunnel_id TEXT NOT NULL REFERENCES wireguard_tunnels(id) ON DELETE CASCADE,
+		node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+		address TEXT NOT NULL,
+		public_key TEXT NOT NULL DEFAULT '',
+		applied_revision INTEGER NOT NULL DEFAULT 0,
+		latest_handshake_at TEXT,
+		rx_bytes INTEGER NOT NULL DEFAULT 0,
+		tx_bytes INTEGER NOT NULL DEFAULT 0,
+		last_reported_at TEXT,
+		last_error TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY(tunnel_id, node_id),
+		UNIQUE(tunnel_id, address)
+	);
+	CREATE TABLE IF NOT EXISTS wireguard_install_tokens (
+		token_hash TEXT PRIMARY KEY,
+		tunnel_id TEXT NOT NULL REFERENCES wireguard_tunnels(id) ON DELETE CASCADE,
+		expires_at TEXT NOT NULL,
+		used_at TEXT,
+		created_at TEXT NOT NULL
+	);
+	CREATE TABLE IF NOT EXISTS wireguard_performance_tests (
+		id TEXT PRIMARY KEY,
+		tunnel_id TEXT NOT NULL REFERENCES wireguard_tunnels(id) ON DELETE CASCADE,
+		node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+		target_mbps INTEGER NOT NULL,
+		duration_seconds INTEGER NOT NULL,
+		status TEXT NOT NULL,
+		result_json TEXT,
+		error TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL,
+		started_at TEXT,
+		finished_at TEXT
+	);
+	CREATE INDEX IF NOT EXISTS idx_wireguard_nodes_node ON wireguard_tunnel_nodes(node_id, tunnel_id);
+	CREATE INDEX IF NOT EXISTS idx_wireguard_tests_node_status ON wireguard_performance_tests(node_id, status, created_at);
+	CREATE INDEX IF NOT EXISTS idx_wireguard_tests_created ON wireguard_performance_tests(created_at DESC);
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_wireguard_tests_active_node
+		ON wireguard_performance_tests(node_id)
+		WHERE status IN ('queued', 'running');
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_wireguard_tests_active_tunnel
+		ON wireguard_performance_tests(tunnel_id)
+		WHERE status IN ('queued', 'running');`)
+	if err != nil {
+		return fmt.Errorf("create WireGuard schema: %w", err)
+	}
+	return nil
 }
 
 func migrateSiteProxyBufferingControls(tx *sql.Tx) error {

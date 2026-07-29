@@ -319,10 +319,78 @@ export interface Origin {
   host_header: string;
   tls_server_name?: string;
   http_version?: OriginHTTPVersion;
+  wireguard_tunnel_id?: string;
   enabled: boolean;
 }
 
 export type OriginHTTPVersion = "http1" | "http2" | "h2c";
+
+export interface WireGuardPeer {
+  node_id: string;
+  node_name: string;
+  node_public_ipv4: string;
+  address: string;
+  public_key?: string;
+  applied_revision: number;
+  latest_handshake_at?: string;
+  rx_bytes: number;
+  tx_bytes: number;
+  last_reported_at?: string;
+  last_error?: string;
+}
+
+export interface WireGuardTunnel {
+  id: string;
+  name: string;
+  endpoint_host: string;
+  listen_port: number;
+  address_cidr: string;
+  origin_address: string;
+  mtu: number;
+  persistent_keepalive_seconds: number;
+  performance_port: number;
+  origin_public_key?: string;
+  revision: number;
+  origin_configured_revision: number;
+  origin_configured_at?: string;
+  peers: WireGuardPeer[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WireGuardTCPMeasurement {
+  mbps: number;
+  retransmits: number;
+}
+
+export interface WireGuardUDPMeasurement {
+  target_mbps: number;
+  mbps: number;
+  lost_packets: number;
+  total_packets: number;
+  loss_percent: number;
+  jitter_ms: number;
+}
+
+export interface WireGuardPerformanceTest {
+  id: string;
+  tunnel_id: string;
+  tunnel_name: string;
+  node_id: string;
+  node_name: string;
+  target_mbps: number;
+  duration_seconds: number;
+  status: "queued" | "running" | "succeeded" | "failed";
+  result?: {
+    direct_tcp?: WireGuardTCPMeasurement;
+    wireguard_tcp?: WireGuardTCPMeasurement;
+    wireguard_udp?: WireGuardUDPMeasurement;
+  };
+  error?: string;
+  created_at: string;
+  started_at?: string;
+  finished_at?: string;
+}
 
 export interface TCPForward {
   name: string;

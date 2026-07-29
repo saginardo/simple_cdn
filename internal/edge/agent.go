@@ -81,6 +81,7 @@ type Config struct {
 	OriginProbeRecoveryThreshold int
 	OriginProbeWorkers           int
 	OriginProber                 OriginProber
+	WireGuardManager             WireGuardManager
 }
 
 type Agent struct {
@@ -89,6 +90,7 @@ type Agent struct {
 	security      *SecurityManager
 	cacheUsage    *cacheUsageCollector
 	machineStatus machineStatusReporter
+	wireGuard     WireGuardManager
 
 	statusMu          sync.Mutex
 	lastApplyReport   *domain.ApplyReport
@@ -111,6 +113,10 @@ type Agent struct {
 	monitoringTargets  []domain.MonitoringTarget
 	monitoringRevision string
 	monitoringLoaded   bool
+	wireGuardMu        sync.RWMutex
+	wireGuardConfigs   []domain.WireGuardEdgeConfig
+	wireGuardRevision  string
+	wireGuardLoaded    bool
 
 	clientMu          sync.Mutex
 	controlClient     *http.Client
@@ -217,6 +223,9 @@ func New(config Config) (*Agent, error) {
 	if config.OriginProber == nil {
 		config.OriginProber = newNetworkOriginProber()
 	}
+	if config.WireGuardManager == nil {
+		config.WireGuardManager = newLinuxWireGuardManager(config.StateDir, "/etc/wireguard")
+	}
 	if config.ListenerSettleTimeout <= 0 {
 		config.ListenerSettleTimeout = 5 * time.Second
 	}
@@ -250,6 +259,13 @@ func New(config Config) (*Agent, error) {
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityNginxFragments)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityControlManifest)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityOriginConnection)
+	wireGuardAvailable, wireGuardPerformanceAvailable := config.WireGuardManager.Available()
+	if wireGuardAvailable {
+		config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityWireGuard)
+	}
+	if wireGuardAvailable && wireGuardPerformanceAvailable {
+		config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityWireGuardPerformance)
+	}
 	if managedNginxVersionAtLeast(config.NginxVersion, 1, 29, 4) {
 		config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityOriginHTTP2)
 	}
@@ -275,6 +291,7 @@ func New(config Config) (*Agent, error) {
 		Config: config, logs: NewLogForwarder(config.StateDir, config.AccessLogPath),
 		cacheUsage:        newCacheUsageCollector(nginx.DefaultCachePath, nginx.DefaultCacheMaxBytes, defaultCacheUsageInterval),
 		machineStatus:     newMachineStatusCollector(config.NginxStatusSocketPath),
+		wireGuard:         config.WireGuardManager,
 		componentFailures: make(map[string]string),
 		originPools:       make(map[string]*originPoolRuntime),
 		originProbeWake:   make(chan struct{}, 1),
@@ -315,6 +332,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	start(func() { a.runPeriodic(ctx, "configuration", a.runConfigurationRound) })
 	start(func() { a.runPeriodic(ctx, "monitoring", a.runMonitoringRound) })
 	start(func() { a.runPeriodic(ctx, "upgrade", a.runUpgradeRound) })
+	if wireGuardAvailable, _ := a.wireGuard.Available(); wireGuardAvailable {
+		start(func() { a.runWireGuardLoop(ctx) })
+	}
 	err := a.runHeartbeatLoop(ctx)
 	group.Wait()
 	return err
@@ -469,7 +489,7 @@ func (a *Agent) heartbeatError() string {
 	a.statusMu.Lock()
 	defer a.statusMu.Unlock()
 	for _, component := range []string{
-		"certificate", "configuration", "origin_health_service", "origin_health_cold", "monitoring", "upgrade", "machine_status",
+		"certificate", "configuration", "wireguard", "origin_health_service", "origin_health_cold", "monitoring", "upgrade", "machine_status",
 	} {
 		if detail := a.componentFailures[component]; detail != "" {
 			return detail

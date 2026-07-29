@@ -1366,6 +1366,9 @@ func (s *Store) insertSite(site domain.Site, zoneID string) error {
 	if err := validateSiteNodes(tx, site.Nodes); err != nil {
 		return err
 	}
+	if err := validateSiteWireGuardTunnels(tx, site); err != nil {
+		return err
+	}
 	_, err = tx.Exec(`INSERT INTO sites(id, name, zone_id, domains_json, node_ids_json, primary_origin_json, backup_origin_json, stream_paths_json, passthrough, request_body_buffering, origin_response_buffering, http3_enabled, client_max_body_size_mb, client_keepalive_timeout_seconds, read_write_timeout_seconds, dns_ttl_seconds, tcp_only, tcp_forwards_json, cache_max_size_gb, cache_generation, config_version, published, enabled, deleting, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		site.ID, site.Name, zoneID, string(domains), string(nodes), string(primary), backup, string(streamPaths), boolInt(site.Passthrough), boolInt(site.RequestBodyBuffering), boolInt(site.OriginResponseBuffering), boolInt(site.HTTP3Enabled), site.ClientMaxBodySizeMB, site.ClientKeepaliveTimeoutSeconds, site.ReadWriteTimeoutSeconds, site.DNSTTLSeconds, boolInt(site.TCPOnly), string(tcpForwards), site.CacheMaxSizeGB, site.CacheGeneration, site.ConfigVersion, boolInt(site.Published), boolInt(site.Enabled), boolInt(site.Deleting), stamp(site.CreatedAt), stamp(site.UpdatedAt))
 	if err != nil {
@@ -1506,6 +1509,9 @@ func (s *Store) UpdateSite(site domain.Site, zoneID string) (domain.Site, error)
 	}
 	defer tx.Rollback()
 	if err := validateSiteNodes(tx, site.Nodes); err != nil {
+		return domain.Site{}, err
+	}
+	if err := validateSiteWireGuardTunnels(tx, site); err != nil {
 		return domain.Site{}, err
 	}
 	reservedDomains := append([]string(nil), site.Domains...)

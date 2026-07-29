@@ -1,6 +1,6 @@
 # simple_cdn 项目状态与参考技术架构
 
-更新时间：2026-07-20（基于仓库实现和占位符部署拓扑，不记录实际生产环境信息）
+更新时间：2026-07-29（基于仓库实现和占位符部署拓扑，不记录实际生产环境信息）
 
 ## 1. 项目目标与边界
 
@@ -10,7 +10,7 @@
 
 ## 2. 当前实施结论
 
-代码已经具备一个可运行的端到端闭环：节点注册、mTLS 边缘通信、站点配置、DNS-01 证书、Nginx 分片配置与回滚、缓存、流式协议、有界健康检查/DNS 对账、日志聚合、带重试的备份、离线/在线恢复、消息中心和批量节点升级均已实现。SQLite 使用显式版本、名称和事务边界的迁移，不再依赖启动时散落的条件式 DDL。
+代码已经具备一个可运行的端到端闭环：节点注册、mTLS 边缘通信、站点配置、DNS-01 证书、Nginx 分片配置与回滚、缓存、流式协议、WireGuard 专用回源、有界健康检查/DNS 对账、日志聚合、带重试的备份、离线/在线恢复、消息中心和批量节点升级均已实现。SQLite 使用显式版本、名称和事务边界的迁移，不再依赖启动时散落的条件式 DDL。
 
 参考部署由一个 Compose 控制面和多台 active 边缘节点组成。边缘节点统一使用 `/opt/cdn-edge` 集中布局，并应通过全量重新发布、健康检查、DNS 对账、业务访问和日志续传验证。
 
@@ -45,6 +45,7 @@ edge-a 上的 cdn-edge-agent ── HTTPS ${CONTROL_MTLS_PORT} ──> cdn-contr
                                           ├─ WebSocket / SSE 流式代理
                                           ├─ gRPC 原生代理
                                           └─ 主源站 -> 可选备用源站
+                                             └─ 可选 WireGuard 私网回源
 ```
 
 ### 3.1 控制面
@@ -56,6 +57,7 @@ edge-a 上的 cdn-edge-agent ── HTTPS ${CONTROL_MTLS_PORT} ──> cdn-contr
 - 节点健康：每 15 秒启动一轮有截止时间的对账，以固定上限 worker 并发探测并串行写入状态；连续 3 次失败从 DNS 池移除，连续 5 次成功恢复；所有节点均不健康时保留现有 DNS，不发布空记录。每轮聚合全部错误、记录耗时并通过诊断 API 暴露最近结果，上一轮未结束时不会重叠启动下一轮。
 - 日志与指标：ClickHouse 原始请求日志保留 7 天，请求量与回源阶段耗时分钟聚合保留 30 天；边缘控制面不可达时，本地队列暂存访问日志。访问日志包含回源建连、响应头和完整响应时间，站点页显示最近 24 小时连接复用率及按各自样本加权的平均值。5 秒机器状态和主动回源探测只在主控内存中保留最新值，不持久化历史。
 - TCP 监测与智能路由：拨测目标支持唯一名称；SQLite 保存最新评分、目标结果及每节点智能路由策略。评分门控支持双阈值和独立连续轮数，时间门控支持 `Asia/Shanghai` 每周重复窗口，两者同时启用时采用 AND 关系。每轮目标明细在 SQLite 事务提交后进入有界内存队列，由后台批量写入 ClickHouse 并保留 7 天；ClickHouse 写入或查询故障不会阻塞节点上报，也不会清空 SQLite 当前状态。具体规则见 [SMART_ROUTING.md](SMART_ROUTING.md)。
+- WireGuard 回源：SQLite 迁移 v24 持久化隧道、Peer、一次性源站安装令牌和性能任务；管理 API 受管理员会话与 CSRF 保护，边缘配置、状态和任务接口沿用节点 mTLS，唯一公开的源站配置接口只接受 15 分钟高熵令牌。发布器在源站与全部 Peer 修订收敛后才将连接主机改写为私网 IP，不提供隐式公网回退。
 
 ### 3.2 边缘面
 
@@ -64,6 +66,7 @@ edge-a 上的 cdn-edge-agent ── HTTPS ${CONTROL_MTLS_PORT} ──> cdn-contr
 - Agent 默认每 30 秒发送一次独立心跳，并每 5 秒通过同一个 mTLS HTTP/2 Transport 上报机器状态。主控在心跳响应中合并返回期望状态、监控目标、安全封禁和升级任务修订；边缘仅拉取变化项，慢速配置、拨测和升级任务不会阻塞心跳或机器状态采集。配置或证书写入采用原子替换，先执行 `nginx -t`，仅在成功时 reload，失败会恢复上一个已知可用版本。
 - 主控仅接受采集时间更新的机器快照，只在内存中保存每节点最新值，并通过受管理员会话保护的 SSE 推送到节点详情页，不写入持久化存储。快照可选包含从节点本地 Unix socket 采集的 Nginx 活动连接、读写/等待状态和累计请求；Nginx 不可用时该区域留空。SSE 每 15 秒复核会话并发送保活，前端以 30 秒 GET 作为断线回退，且按采集时间避免旧响应覆盖新事件；没有快照时不显示机器状态区域。
 - `origin_connection_v1` 节点按协议、规范化地址、Host 和 SNI 共享 upstream；每 worker 空闲连接预算由 `worker_connections` 自动分配。Agent 分层探测源站：约 5 秒复用服务连接，32-48 秒新建一次 TCP/TLS；任一层首次失败后加速到约 2 秒和 4-6 秒，单次超时 3 秒。两层分别累计，任一层连续 2 次失败把托管 include 切换为 `down`，两层分别连续成功后恢复。池状态在边缘持久化以跨重启维持熔断，但主控只接收实时快照。详见 [ORIGIN_CONNECTIONS.md](ORIGIN_CONNECTIONS.md)。
+- `wireguard_v1` 节点在本地生成并以 `0600` 持久化 Curve25519 私钥，按 ETag 拉取隧道期望状态，经 `wg-quick` 原子应用或回滚并上报握手、流量、修订与错误。`wireguard_performance_v1` 节点串行执行公网 TCP、隧道 TCP 和隧道 UDP `iperf3` 测试。源站由一次性脚本安装 systemd 服务、受管配置和按边缘公网 IPv4 收敛的 nftables 规则。详见 [WIREGUARD_ORIGIN.md](WIREGUARD_ORIGIN.md)。
 - Agent 上报自身 SHA-256 和 `online_upgrade_v1` 能力；主控可对单节点下发当前制品，独立 updater 在替换主进程后等待新 Agent 完成 mTLS 心跳，失败恢复旧二进制和 systemd/Nginx 集成。
 - 安全工作台管理全局请求路径策略、活动 IP 封禁和最近命中；Nginx 在回源前按正则返回 444，Agent 使用自有 nftables 表即时封禁 TCP 80/443 与 QUIC UDP 443，并通过 mTLS 在节点间同步和自动过期。
 - Nginx 为 HTTP 与 stream 分别生成共享 `00-base.conf` 和每站点 `site-<id>.conf`；Agent 使用版本与内容摘要目录同时暂存两个配置族，再原子切换稳定索引。每个站点仍拥有独立 `server` 和 `upstream`：80 强制跳转 HTTPS，TCP 443 保留 TLS 1.2/1.3 与 HTTP/1.1/2；站点默认关闭 HTTP/3，只有主动开启且节点报告 `http3_v1` 时才额外监听 UDP 443、广告 `Alt-Svc` 并启用 QUIC 地址验证重试。Agent 在应用前后分别检查 TCP/UDP 端口归属，站点设置发布或节点能力变化会触发节点期望状态自动重建。节点级 `worker_processes`、`worker_connections` 和 `worker_rlimit_nofile` 分别由主配置与 `events` include 管理。
@@ -80,15 +83,16 @@ edge-a 上的 cdn-edge-agent ── HTTPS ${CONTROL_MTLS_PORT} ──> cdn-contr
 - 流式路径兼容：API 暂时保留 `stream_paths` 字段；旧客户端提交的值会被忽略，响应固定为空数组，SQLite 中的历史路径值会在打开数据库时清空，Nginx 不再生成路径专用 location。
 - gRPC：`grpc://`/`grpcs://` 源站使用 Nginx `grpc_pass`，客户端经 HTTP/2 接入，默认不缓存，支持 1 小时 gRPC 读写超时和可选备用源站。
 - 源站容错：主/备源站支持连接、超时、无效响应和 5xx 的切换；HTTPS/gRPCS 源站启用 SNI 和 CA 校验。
+- WireGuard 回源：站点的主/备源站可分别选择覆盖其全部节点的隧道。发布时仅替换 URL 连接主机并保留端口、Host、SNI 和应用协议；HTTP/H2C 或 `grpc://` 可取消隧道内 TLS，HTTPS/GRPCS 继续执行证书校验。
 
 ## 4. 代码与模块状态
 
 | 模块 | 状态 | 说明 |
 | --- | --- | --- |
 | `cmd/control` | 已实现 | 控制面进程；支持 `keygen` 和仅本机使用的 `publish-all`。 |
-| `internal/control` | 已实现 | HTTP API、认证、证书任务、发布、DNS 健康对账、审计、嵌入式管理界面。 |
+| `internal/control` | 已实现 | HTTP API、认证、证书任务、发布、WireGuard 编排、DNS 健康对账、审计、嵌入式管理界面。 |
 | `internal/store` | 已实现 | 版本化事务迁移、SQLite schema、站点/节点/任务/消息/会话/证书/状态持久化。 |
-| `internal/edge` | 已实现 | 注册、mTLS、配置同步、原子应用、Nginx 回滚、心跳、日志转发、5 秒机器状态和低频缓存磁盘占用采集。 |
+| `internal/edge` | 已实现 | 注册、mTLS、配置同步、WireGuard 对账与性能任务、原子应用、Nginx 回滚、心跳、日志转发、5 秒机器状态和低频缓存磁盘占用采集。 |
 | `internal/nginx` | 已实现 | HTTP 缓存、整站透传、回源、TLS、WebSocket/SSE、gRPC、备用源站与客户端 IP 限速配置渲染。 |
 | `internal/integrations` | 已实现 | Cloudflare、Certbot、SMTP 等外部适配器。 |
 | `internal/logstore` | 已实现 | ClickHouse 原始日志、分钟指标、节点缓存状态聚合，以及 7 天 TCP 拨测历史及异步批量写入。 |
@@ -102,7 +106,8 @@ edge-a 上的 cdn-edge-agent ── HTTPS ${CONTROL_MTLS_PORT} ──> cdn-contr
 - 安全：全局访问策略增删改、内置敏感文件扫描与独立 PHP 恶意文件探测规则、拦截/IP 封禁动作、1 小时至 7 天档位，以及按客户端 IP 执行的每秒请求限速策略；限速可选择仅由 2xx/3xx/4xx/5xx 响应计数，超限由边缘返回 429。仅以 4xx/5xx 为条件的策略还可配置连续 429 次数，达到阈值后沿现有边缘事件链封禁 IP。页面同时展示访问安全/限速能力覆盖、活动封禁解封和最近命中。
 - 监测：命名 TCP 拨测目标支持新增、重命名、启停和删除；节点列表保留当前评分、成功率、时延和连续异常，点击节点进入独立历史页。历史页可在 `1h / 6h / 12h / 24h / 7d` 间切换服务端聚合区间，并用可勾选图例将多个目标的时延曲线绘制在同一图中。“智能路由”Tab 可按节点编辑评分滞回和每周允许调度窗口，并显示当前阻断原因与下次切换时间。
 - 节点：列表仅保留运行概览和管理入口，并提供“一键升级全部”；后端一次评估全量节点，只为具备能力且制品落后的可用节点排队，逐节点报告已是最新、已有任务或阻塞原因。独立二级页面集中提供部署/升级命令、在线升级、暂停/启用调度、撤销/重新启用、卸载/删除、分配站点、节点缓存总配额覆写、心跳、能力与应用版本查看，并展示边缘心跳上报的发行版、版本、uptime、系统负载、CPU、RAM、根磁盘和默认出口网卡 RX/TX，以及缓存已用空间/节点有效总配额和最近 24 小时 ClickHouse 缓存状态分布。机器状态、缓存磁盘上报与请求统计独立降级，任一故障不阻塞节点管理。
-- 站点：创建后自动申请 TLS、编辑、节点分配、主/备源站、独立回源 TLS SNI、回源读写空闲超时、整站透传开关、带 TLS 签发门禁的发布、缓存刷新、源站 CIDR 查看，以及输入站点名确认的安全删除流程。
+- 站点：创建后自动申请 TLS、编辑、节点分配、主/备源站、独立回源 TLS SNI、HTTP/2/H2C 与 WireGuard 回源链路、回源读写空闲超时、整站透传开关、带 TLS 签发门禁的发布、缓存刷新、源站 CIDR 查看，以及输入站点名确认的安全删除流程。
+- WireGuard：隧道增删改、节点能力筛选、源站一次性安装/卸载命令、修订收敛、Peer 公钥/握手/流量/错误状态，以及公网 TCP、隧道 TCP、隧道 UDP 性能对照。
 - 站点列表采用紧凑工作台布局，仅展示节点、TLS 与发布状态并保留管理入口；创建、编辑、发布、协议、缓存、请求体、超时、TLS、缓存刷新和源站 CIDR 均集中在独立二级页面。
 - TLS 状态不再解析历史任务文本。接口 `GET /api/sites/{id}/tls-status` 返回最新证书任务及 `published_after_certificate`，只要签发完成后存在成功发布任务就显示“已签发”。
 - 消息中心：顶部单行任务提示已移除；侧栏和移动端铃铛显示未读数，支持全部/未读筛选、逐条/全部已读和删除。发布、节点升级、卸载、备份及在线恢复的关键状态会按来源和状态去重持久化，已读消息保留三个月；当前浏览器操作结果使用 Sonner 即时通知。
@@ -162,6 +167,7 @@ edge-a 上的 cdn-edge-agent ── HTTPS ${CONTROL_MTLS_PORT} ──> cdn-contr
 20. S3 在线恢复：设置页可选择精确 Restic 快照，异步阶段化校验并恢复临时 ClickHouse；提交时用跨容器读写锁排空备份/证书作业，重启前后复核摘要并切换 SQLite、CA、证书和 ClickHouse，失败闭锁等待人工处置。
 21. 管理工作台：引入持久消息中心并移除页面顶部单行任务状态；节点列表新增全量升级及逐节点结果；颜色、焦点、密度、抽屉、分段筛选和移动端布局按可组合组件思路统一。
 22. TCP 拨测历史：目标增加唯一名称；最新评分、连续异常和调度状态继续由 SQLite 事务维护，每轮明细通过有界非阻塞队列异步写入保留 7 天的 ClickHouse 表。节点行进入历史详情，可切换五档范围并在同一曲线图选择多个目标；ClickHouse 不可用时当前状态和边缘上报独立降级。
+23. WireGuard 专用回源：新增能力门控的源站隧道、一次性安装、修订收敛、站点主/备回源选择、无公网回退发布门禁、Peer 状态和三路 `iperf3` 对照；源站可在隧道内使用 HTTP/H2C 或 `grpc://` 取消 TLS 证书管理，完整边界与验收见 [WIREGUARD_ORIGIN.md](WIREGUARD_ORIGIN.md)。
 
 ## 7. 当前问题、风险与下一步
 
@@ -175,6 +181,7 @@ edge-a 上的 cdn-edge-agent ── HTTPS ${CONTROL_MTLS_PORT} ──> cdn-contr
 
 - 配置 `/opt/cdn-platform/config/backup.env`、Restic 密码和 S3 兼容存储凭据，初始化仓库并启用 Compose `backup` profile；隔离备份恢复已通过，生产仓库尚未配置。
 - 使用现有两个独立边缘节点完成 DNS 健康摘除/恢复、源站 CIDR 白名单与故障切换演练。
+- 使用真实边缘和源站完成 WireGuard UDP 端口、云安全组、MTU、重启持久性、密钥与修订收敛演练，并在高峰/低峰分别记录公网 TCP、隧道 TCP 与隧道 UDP 的带宽、丢包和抖动；代码路径已具备，线路是否存在 UDP 限流只能通过目标运营商实测确认。
 - 对 Cloudflare DNS 记录、站点源站防火墙和控制面 `${CONTROL_MTLS_PORT}` 访问规则做一次上线检查，确保业务记录为 DNS-only，源站仅放行边缘 IP。
 - 为 ClickHouse 磁盘容量和日志写入失败配置外部告警，并实际触发一次备份最终失败来验收状态文件、消息中心和 SMTP 告警；代码路径已具备，生产通知链路尚需环境演练。
 
@@ -248,9 +255,11 @@ curl -fsS http://127.0.0.1/__cdn_health
 | `cmd/edge-agent/main.go` | 边缘 agent 启动和运行参数。 |
 | `internal/control/server.go` | API 路由、认证保护、TLS 状态接口、嵌入静态资源。 |
 | `internal/control/publisher.go` | 站点发布、desired state 和证书下发。 |
+| `internal/control/wireguard.go` | WireGuard 管理/边缘 API、一次性源站命令和性能任务。 |
 | `internal/control/certificates.go` | 异步 DNS-01 签发与续期。 |
 | `internal/control/health.go` | 健康检查、Cloudflare DNS 对账。 |
 | `internal/edge/agent.go` | mTLS 注册、同步、原子应用和回滚。 |
+| `internal/edge/wireguard.go` | 边缘密钥、配置对账、状态读取和 `iperf3` 执行。 |
 | `internal/nginx/render.go` | Nginx 缓存、流式、gRPC、TLS、回源配置生成。 |
 | `internal/store/migrations.go` | SQLite 版本化事务迁移和 schema 版本检查。 |
 | `internal/store/store.go` | SQLite 连接、生命周期和持久化入口。 |

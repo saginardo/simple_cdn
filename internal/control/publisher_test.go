@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -240,6 +241,103 @@ func TestPublishRequiresHTTP2OriginCapability(t *testing.T) {
 	if !strings.Contains(state.NginxConfig, "proxy_http_version 2;") || len(state.OriginPools) != 1 || state.OriginPools[0].HTTPVersion != domain.OriginHTTPVersionH2C {
 		t.Fatalf("published H2C state = %#v\n%s", state.OriginPools, state.NginxConfig)
 	}
+}
+
+func TestPublishWireGuardOriginPreservesHostPortAndTLSIdentity(t *testing.T) {
+	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	encryptionKey, _ := NewEncryptionKey()
+	cipher, _ := NewCipher(encryptionKey)
+	node, err := database.CreateNode("wireguard-origin-edge", "203.0.113.42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetNodeCapabilities(node.ID, []string{domain.EdgeCapabilityOriginConnection}); err != nil {
+		t.Fatal(err)
+	}
+	tunnel, err := database.CreateWireGuardTunnel(domain.WireGuardTunnel{
+		Name: "publisher-origin", EndpointHost: "origin-gateway.example.test", AddressCIDR: "10.253.20.0/24",
+	}, []string{node.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const tokenHash = "publisher-wireguard-token"
+	if err := database.CreateWireGuardInstallToken(tunnel.ID, tokenHash, time.Now().UTC().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	originKey := publisherWireGuardKey(1)
+	edgeKey := publisherWireGuardKey(2)
+	if _, ready, err := database.ConfigureWireGuardOrigin(tokenHash, originKey); err != nil || ready {
+		t.Fatalf("initial origin enrollment = ready:%t, %v", ready, err)
+	}
+	tunnel, err = database.GetWireGuardTunnel(tunnel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateWireGuardPeerReports(node.ID, []domain.WireGuardPeerReport{{
+		TunnelID: tunnel.ID, Revision: tunnel.Revision, InterfaceName: domain.WireGuardInterfaceName(tunnel.ID), PublicKey: edgeKey,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	tunnel, ready, err := database.ConfigureWireGuardOrigin(tokenHash, originKey)
+	if err != nil || !ready {
+		t.Fatalf("origin enrollment = ready:%t, %v", ready, err)
+	}
+	if err := database.UpdateWireGuardPeerReports(node.ID, []domain.WireGuardPeerReport{{
+		TunnelID: tunnel.ID, Revision: tunnel.Revision, InterfaceName: domain.WireGuardInterfaceName(tunnel.ID), PublicKey: edgeKey,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	site, err := database.CreateSite(domain.Site{
+		Name: "wireguard-publisher", Domains: []string{"cdn-wireguard.example.test"}, Nodes: []string{node.ID},
+		PrimaryOrigin: domain.Origin{
+			URL: "https://virtual-origin.example.test:8443", WireGuardTunnelID: tunnel.ID, Enabled: true,
+		},
+		RequestBodyBuffering: true, OriginResponseBuffering: true, Enabled: true,
+	}, "zone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	publisher := Publisher{Store: database, Cipher: cipher}
+	certificate, privateKey, notAfter := testCertificate(t, site.Domains...)
+	if err := publisher.StoreCertificate(site.ID, certificate, privateKey, notAfter); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := publisher.PublishSite(site.ID); err == nil || !strings.Contains(err.Error(), "before publishing WireGuard origins") {
+		t.Fatalf("publish without WireGuard capability = %v", err)
+	}
+	if err := database.SetNodeCapabilities(node.ID, []string{domain.EdgeCapabilityOriginConnection, domain.EdgeCapabilityWireGuard}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := publisher.PublishSite(site.ID); err != nil {
+		t.Fatal(err)
+	}
+	state, _, err := database.NodeState(node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.OriginPools) != 1 {
+		t.Fatalf("WireGuard origin pools = %#v", state.OriginPools)
+	}
+	pool := state.OriginPools[0]
+	if pool.Address != tunnel.OriginAddress+":8443" || pool.HostHeader != "virtual-origin.example.test" || pool.TLSServerName != "virtual-origin.example.test" {
+		t.Fatalf("WireGuard origin identity was not preserved: %#v", pool)
+	}
+	stored, _, err := database.GetSite(site.ID)
+	if err != nil || stored.PrimaryOrigin.URL != "https://virtual-origin.example.test:8443" || stored.PrimaryOrigin.WireGuardTunnelID != tunnel.ID {
+		t.Fatalf("stored site origin was rewritten: %#v, %v", stored.PrimaryOrigin, err)
+	}
+}
+
+func publisherWireGuardKey(fill byte) string {
+	raw := make([]byte, 32)
+	for index := range raw {
+		raw[index] = fill
+	}
+	return base64.StdEncoding.EncodeToString(raw)
 }
 
 func TestPublishNodeUpdatesNginxCapacityState(t *testing.T) {
