@@ -166,7 +166,7 @@ export function WireGuardPage() {
     onSuccess: () => {
       setDeleteTunnel(null);
       refresh();
-      toast.success(t("WireGuard 隧道已删除"));
+      toast.success(t("隧道已删除"));
     },
     onError: (error) => toast.error(errorMessage(error)),
   });
@@ -225,14 +225,14 @@ export function WireGuardPage() {
   return (
     <>
       <PageHeader
-        title="WireGuard"
+        title={t("隧道")}
         description={t("源站隧道、节点状态与链路性能")}
         actions={
           <>
             <Button
               variant="outline"
               size="icon"
-              aria-label={t("刷新 WireGuard 数据")}
+              aria-label={t("刷新隧道数据")}
               onClick={refresh}
             >
               <RefreshCw
@@ -423,7 +423,7 @@ export function WireGuardPage() {
                     />
                   </Panel>
                 ) : (
-                  <EmptyState title={t("暂无 WireGuard 隧道")} />
+                  <EmptyState title={t("暂无隧道")} />
                 )}
               </TabsContent>
               <TabsContent value="performance">
@@ -485,7 +485,7 @@ export function WireGuardPage() {
       <ConfirmDialog
         open={Boolean(deleteTunnel)}
         onOpenChange={(open) => !open && setDeleteTunnel(null)}
-        title={t("删除 WireGuard 隧道")}
+        title={t("删除隧道")}
         description={t("已被站点引用的隧道不能删除。")}
         confirmation={deleteTunnel?.name}
         confirmLabel={t("删除隧道")}
@@ -551,9 +551,7 @@ function TunnelDialog({
     onSuccess: () => {
       onOpenChange(false);
       onSaved();
-      toast.success(
-        t(tunnel ? "WireGuard 隧道已更新" : "WireGuard 隧道已创建"),
-      );
+      toast.success(t(tunnel ? "隧道已更新" : "隧道已创建"));
     },
     onError: (error) => toast.error(errorMessage(error)),
   });
@@ -567,7 +565,7 @@ function TunnelDialog({
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (!draft.node_ids.length) {
-      toast.error(t("至少选择一个支持 WireGuard 的边缘节点"));
+      toast.error(t("至少选择一个支持隧道的边缘节点"));
       return;
     }
     save.mutate();
@@ -578,9 +576,7 @@ function TunnelDialog({
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
         <form onSubmit={submit} className="space-y-5">
           <DialogHeader>
-            <DialogTitle>
-              {t(tunnel ? "编辑 WireGuard 隧道" : "添加 WireGuard 隧道")}
-            </DialogTitle>
+            <DialogTitle>{t(tunnel ? "编辑隧道" : "添加隧道")}</DialogTitle>
             <DialogDescription>
               {t("隧道参数与边缘 Peer 分配")}
             </DialogDescription>
@@ -608,7 +604,7 @@ function TunnelDialog({
                 placeholder="origin.example.com"
               />
             </Field>
-            <Field label={t("WireGuard UDP 端口")} id="wireguard-port">
+            <Field label={t("隧道 UDP 端口")} id="wireguard-port">
               <Input
                 id="wireguard-port"
                 required
@@ -789,7 +785,7 @@ function TunnelDialog({
               </div>
             ) : (
               <div className="rounded-lg border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">
-                {t("暂无支持 WireGuard 的边缘节点")}
+                {t("暂无支持隧道的边缘节点")}
               </div>
             )}
           </div>
@@ -877,7 +873,7 @@ function PerformanceDialog({
         }),
       }),
     onSuccess: () => {
-      toast.success(t("WireGuard 性能测试已排队"));
+      toast.success(t("隧道性能测试已排队"));
       onStarted();
     },
     onError: (error) => toast.error(errorMessage(error)),
@@ -894,7 +890,7 @@ function PerformanceDialog({
           }}
         >
           <DialogHeader>
-            <DialogTitle>{t("WireGuard 链路测试")}</DialogTitle>
+            <DialogTitle>{t("隧道链路测试")}</DialogTitle>
             <DialogDescription>
               {t("公网 TCP、隧道 TCP 与隧道 UDP 双向测试")}
             </DialogDescription>

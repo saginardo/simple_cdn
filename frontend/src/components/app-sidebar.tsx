@@ -48,7 +48,6 @@ const groups = [
       { label: "调度", to: "/scheduling", icon: Route },
       {
         label: "隧道",
-        englishLabel: "WireGuard",
         to: "/wireguard",
         icon: Network,
       },
@@ -79,7 +78,7 @@ export function AppSidebar({
   productVersion: string;
   onLogout: () => void;
 }) {
-  const { locale } = useI18n();
+  useI18n();
   const location = useLocation();
   const { isMobile, setOpenMobile } = useSidebar();
   const versionLabel = productVersion.startsWith("v")
@@ -131,10 +130,7 @@ export function AppSidebar({
                   const active =
                     location.pathname === item.to ||
                     location.pathname.startsWith(`${item.to}/`);
-                  const itemLabel =
-                    "englishLabel" in item && locale === "en"
-                      ? item.englishLabel
-                      : t(item.label);
+                  const itemLabel = t(item.label);
                   return (
                     <SidebarMenuItem key={item.to}>
                       <SidebarMenuButton

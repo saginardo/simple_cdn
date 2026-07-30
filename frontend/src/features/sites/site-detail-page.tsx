@@ -19,6 +19,10 @@ import { ConfirmDialog } from "@/components/confirm-dialog";
 import { CopyButton } from "@/components/copy-button";
 import { ListPagination } from "@/components/list-pagination";
 import {
+  normalOriginProbeCount,
+  OriginConnectionsTable,
+} from "@/components/origin-connections-table";
+import {
   EmptyState,
   PageBody,
   PageError,
@@ -59,7 +63,7 @@ import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { api, ApiError, errorMessage } from "@/lib/api";
-import { formatNumber, formatPercent } from "@/lib/format";
+import { formatDateTime, formatNumber, formatPercent } from "@/lib/format";
 import { useListPagination } from "@/hooks/use-list-pagination";
 import type {
   DeploymentTask,
@@ -69,6 +73,7 @@ import type {
   Settings,
   Site,
   SiteMinuteMetric,
+  SiteOriginConnections as SiteOriginConnectionsData,
   TCPForward,
   WireGuardTunnel,
 } from "@/lib/types";
@@ -198,6 +203,15 @@ export function SiteDetailPage() {
     enabled: !isNew && Boolean(site),
     refetchInterval: 30_000,
   });
+  const originConnections = useQuery({
+    queryKey: ["site-origin-connections", siteId],
+    queryFn: () =>
+      api<SiteOriginConnectionsData>(
+        `/api/sites/${encodedID}/origin-connections`,
+      ),
+    enabled: !isNew && Boolean(site) && !site?.tcp_only,
+    refetchInterval: 15_000,
+  });
   useEffect(() => {
     if (deletion.data?.task?.status !== "succeeded") return;
     toast.success(t("站点已安全删除"));
@@ -237,6 +251,9 @@ export function SiteDetailPage() {
       });
       void queryClient.invalidateQueries({
         queryKey: ["site-allowlist", saved.id],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["site-origin-connections", saved.id],
       });
       toast.success(
         isNew && siteNeedsCertificate(saved)
@@ -410,10 +427,10 @@ export function SiteDetailPage() {
         ) : null}
         {!loading && (isNew || site) ? (
           <form
-            className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]"
+            className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]"
             onSubmit={submit}
           >
-            <div className="space-y-5">
+            <div className="min-w-0 space-y-5">
               {site?.deleting ? (
                 <Alert variant="destructive">
                   <AlertTitle>{t("站点正在删除")}</AlertTitle>
@@ -429,6 +446,13 @@ export function SiteDetailPage() {
                 setDraft={setDraft}
                 tunnels={wireGuardTunnels.data ?? []}
               />
+              {site && !site.tcp_only ? (
+                <SiteOriginConnections
+                  data={originConnections.data}
+                  error={originConnections.error}
+                  loading={originConnections.isLoading}
+                />
+              ) : null}
               <NodeSelector
                 nodes={nodes.data ?? []}
                 selected={draft.node_ids}
@@ -466,7 +490,7 @@ export function SiteDetailPage() {
                         label={t("回源链路")}
                         value={
                           draft.primary_wireguard_tunnel_id
-                            ? `WireGuard · ${
+                            ? `${t("隧道")} · ${
                                 wireGuardTunnels.data?.find(
                                   (tunnel) =>
                                     tunnel.id ===
@@ -601,6 +625,106 @@ export function SiteDetailPage() {
     </>
   );
 }
+
+function SiteOriginConnections({
+  data,
+  error,
+  loading,
+}: {
+  data?: SiteOriginConnectionsData;
+  error: Error | null;
+  loading: boolean;
+}) {
+  const probes = data?.nodes.flatMap((node) => node.probes) ?? [];
+  const normal = normalOriginProbeCount(probes);
+  return (
+    <Card className="min-w-0">
+      <CardHeader>
+        <CardTitle>{t("回源连接")}</CardTitle>
+        <CardDescription>
+          {data
+            ? t("{value0} 个连接池 · {value1} 个正常", {
+                value0: probes.length,
+                value1: normal,
+              })
+            : loading
+              ? t("正在加载")
+              : errorMessage(error)}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="min-w-0 p-0">
+        {error ? (
+          <p className="border-t px-6 py-4 text-sm text-destructive">
+            {errorMessage(error)}
+          </p>
+        ) : null}
+        {!error && !data ? (
+          <p className="border-t px-6 py-4 text-sm text-muted-foreground">
+            {t("正在加载")}
+          </p>
+        ) : null}
+        {data?.nodes.length === 0 ? (
+          <p className="border-t px-6 py-4 text-sm text-muted-foreground">
+            {t("当前配置未分配边缘节点")}
+          </p>
+        ) : null}
+        {data?.nodes.map((node) => (
+          <section className="min-w-0 border-t px-6 py-4" key={node.node_id}>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h3 className="truncate text-sm font-medium">
+                  {node.node_name}
+                </h3>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  <span className="font-mono">{node.public_ipv4}</span>
+                  {node.collected_at ? (
+                    <>
+                      {" · "}
+                      {t("采集于 ")}
+                      {formatDateTime(node.collected_at)}
+                    </>
+                  ) : null}
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <StatusBadge status={node.status} />
+                {!node.available ? (
+                  <StatusBadge status="pending" label={t("等待上报")} />
+                ) : node.stale ? (
+                  <StatusBadge status="failed" label={t("数据过期")} />
+                ) : (
+                  <StatusBadge status="active" label={t("数据正常")} />
+                )}
+              </div>
+            </div>
+            {node.probes.length ? (
+              <div className="mt-4">
+                <OriginConnectionsTable
+                  probes={node.probes}
+                  contextHeading={t("角色")}
+                  contexts={(probe) =>
+                    probe.references.map((reference) => ({
+                      key: `${reference.site_id}-${reference.role}`,
+                      label:
+                        reference.role === "primary" ? t("主源") : t("备源"),
+                    }))
+                  }
+                />
+              </div>
+            ) : (
+              <p className="mt-3 text-sm text-muted-foreground">
+                {node.available
+                  ? t("等待节点上报回源连接")
+                  : t(node.unavailable_reason ?? "等待上报")}
+              </p>
+            )}
+          </section>
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
 function OriginPerformance({ metrics }: { metrics?: SiteMinuteMetric[] }) {
   const samples =
     metrics?.reduce((total, metric) => total + metric.upstream_samples, 0) ?? 0;
@@ -1103,7 +1227,7 @@ function OriginFields({
           ["direct", t("公网直连")],
           ...selectableTunnels.map((tunnel) => [
             tunnel.id,
-            `WireGuard · ${tunnel.name}`,
+            `${t("隧道")} · ${tunnel.name}`,
           ]),
         ]}
       />

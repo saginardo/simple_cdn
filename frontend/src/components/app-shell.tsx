@@ -32,7 +32,7 @@ const pageNames: Record<string, string> = {
   security: "安全",
   monitoring: "监测",
   scheduling: "调度",
-  wireguard: "WireGuard",
+  wireguard: "隧道",
   nodes: "节点",
   sites: "站点",
   certificates: "证书",

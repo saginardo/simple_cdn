@@ -262,6 +262,23 @@ export interface OriginProbeStatus {
   checked_at: string;
 }
 
+export interface SiteOriginConnectionNode {
+  node_id: string;
+  node_name: string;
+  public_ipv4: string;
+  status: NodeStatus;
+  available: boolean;
+  unavailable_reason?: string;
+  stale: boolean;
+  collected_at?: string;
+  probes: OriginProbeStatus[];
+}
+
+export interface SiteOriginConnections {
+  site_id: string;
+  nodes: SiteOriginConnectionNode[];
+}
+
 export interface NodeMachineStatus {
   available: boolean;
   unavailable_reason?: string;

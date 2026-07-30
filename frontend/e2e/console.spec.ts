@@ -824,6 +824,10 @@ async function mockAPI(page: Page, overrides: Record<string, unknown> = {}) {
         },
         published_after_certificate: true,
       },
+      "/api/sites/site-1/origin-connections": {
+        site_id: "site-1",
+        nodes: [],
+      },
       "/api/nodes": [],
       "/api/wireguard/tunnels": [],
       "/api/wireguard/performance-tests": [],
@@ -1763,6 +1767,7 @@ test("language switch localizes workspaces and survives reload", async ({
     ["logs", "Logs"],
     ["monitoring", "Monitoring"],
     ["scheduling", "Scheduling"],
+    ["wireguard", "WireGuard"],
     ["nodes", "Nodes"],
     ["sites", "Sites"],
     ["security", "Security"],
@@ -1774,6 +1779,21 @@ test("language switch localizes workspaces and survives reload", async ({
       page.getByRole("heading", { name: heading, level: 1 }),
     ).toBeVisible();
   }
+
+  await page.goto("/#/wireguard");
+  await expect(page.getByRole("tab", { name: "WireGuard" })).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("wireguard-english.png"),
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "Add WireGuard tunnel" }).click();
+  const englishTunnelDialog = page.getByRole("dialog", {
+    name: "Add WireGuard tunnel",
+  });
+  await expect(englishTunnelDialog).toBeVisible();
+  await expect(page.getByLabel("WireGuard UDP port")).toBeVisible();
+  await englishTunnelDialog.getByRole("button", { name: "Cancel" }).click();
+  await page.goto("/#/settings");
 
   await page.reload();
   await expect(page.locator("html")).toHaveAttribute("lang", "en");
@@ -2325,8 +2345,10 @@ test("WireGuard workspace shows tunnel health and performance on desktop and mob
   await page.goto("/#/wireguard");
 
   await expect(
-    page.getByRole("heading", { name: "WireGuard", level: 1 }),
+    page.getByRole("heading", { name: "隧道", level: 1 }),
   ).toBeVisible();
+  await expect(page.getByRole("tab", { name: "隧道" })).toBeVisible();
+  await expect(page.getByText(/WireGuard/)).toHaveCount(0);
   await expect(page.getByText("源站主隧道", { exact: true })).toBeVisible();
   await expect(page.getByText("1 / 1", { exact: true })).toBeVisible();
   await expect(page.getByText("2/2 已应用", { exact: true })).toBeVisible();
@@ -2349,12 +2371,24 @@ test("WireGuard workspace shows tunnel health and performance on desktop and mob
   await detail.getByRole("button", { name: "关闭" }).last().click();
 
   await page.getByRole("button", { name: "编辑隧道" }).click();
+  const tunnelEditor = page.getByRole("dialog", { name: "编辑隧道" });
+  await expect(tunnelEditor).toBeVisible();
+  await expect(page.getByLabel("隧道 UDP 端口")).toBeVisible();
+  await expect(tunnelEditor.getByText(/WireGuard/)).toHaveCount(0);
   await expect(page.getByLabel("源站出口上限（Mbps）")).toHaveValue("120");
   const edgeLimits = page.getByLabel("边缘出口上限（Mbps）");
   await expect(edgeLimits).toHaveCount(2);
   await expect(edgeLimits.nth(0)).toHaveValue("50");
   await expect(edgeLimits.nth(1)).toHaveValue("40");
   await page.getByRole("button", { name: "取消" }).click();
+
+  await page.getByRole("button", { name: "链路测试" }).click();
+  const performanceDialog = page.getByRole("dialog", {
+    name: "隧道链路测试",
+  });
+  await expect(performanceDialog).toBeVisible();
+  await expect(performanceDialog.getByText(/WireGuard/)).toHaveCount(0);
+  await performanceDialog.getByRole("button", { name: "取消" }).click();
 
   await page.getByRole("tab", { name: "性能测试" }).click();
   await expect(page.getByText("942.8 Mbps / 1 retx")).toBeVisible();
@@ -2370,7 +2404,7 @@ test("WireGuard workspace shows tunnel health and performance on desktop and mob
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
   await expect(
-    page.getByRole("heading", { name: "WireGuard", level: 1 }),
+    page.getByRole("heading", { name: "隧道", level: 1 }),
   ).toBeVisible();
   expect(
     await page.evaluate(
@@ -2412,6 +2446,67 @@ test("site editor exposes the selected WireGuard origin path", async ({
     "/api/sites": [tunneledSite],
     "/api/nodes": wireGuardNodes,
     "/api/wireguard/tunnels": [wireGuardTunnel],
+    "/api/sites/site-1/origin-connections": {
+      site_id: "site-1",
+      nodes: [
+        {
+          node_id: wireGuardNodes[0].id,
+          node_name: wireGuardNodes[0].name,
+          public_ipv4: wireGuardNodes[0].public_ipv4,
+          status: "active",
+          available: true,
+          stale: false,
+          collected_at: now.toISOString(),
+          probes: [
+            {
+              pool_id: "origin-pool-1",
+              address: "10.253.0.1:8443",
+              scheme: "http",
+              http_version: "h2c",
+              keepalive_connections: 64,
+              references: [{ site_id: "site-1", role: "primary" }],
+              healthy: true,
+              circuit_state: "closed",
+              service_consecutive_failures: 0,
+              service_consecutive_successes: 4,
+              cold_consecutive_failures: 0,
+              cold_consecutive_successes: 4,
+              service_probe: {
+                healthy: true,
+                connection_reused: true,
+                connect_ms: 0,
+                tls_handshake_ms: 0,
+                header_ms: 1.2,
+                total_ms: 1.5,
+                http_status: 200,
+                checked_at: now.toISOString(),
+              },
+              cold_probe: {
+                healthy: true,
+                connection_reused: false,
+                connect_ms: 0.8,
+                tls_handshake_ms: 0,
+                header_ms: 1.6,
+                total_ms: 2.4,
+                http_status: 200,
+                checked_at: now.toISOString(),
+              },
+              checked_at: now.toISOString(),
+            },
+          ],
+        },
+        {
+          node_id: wireGuardNodes[1].id,
+          node_name: wireGuardNodes[1].name,
+          public_ipv4: wireGuardNodes[1].public_ipv4,
+          status: "active",
+          available: false,
+          unavailable_reason: "等待边缘节点首次上报机器状态",
+          stale: false,
+          probes: [],
+        },
+      ],
+    },
   });
   await page.goto("/#/sites/site-1");
 
@@ -2419,15 +2514,45 @@ test("site editor exposes the selected WireGuard origin path", async ({
     page.getByRole("heading", { name: "静态资源主站", level: 1 }),
   ).toBeVisible();
   const originPath = page.getByLabel("回源链路");
-  await expect(originPath).toHaveText("WireGuard · 源站主隧道");
+  await expect(originPath).toHaveText("隧道 · 源站主隧道");
   const summary = page
     .locator('[data-slot="card"]')
     .filter({ hasText: "配置摘要" });
   await expect(
-    summary.getByText("WireGuard · 源站主隧道", { exact: true }),
+    summary.getByText("隧道 · 源站主隧道", { exact: true }),
+  ).toBeVisible();
+  const connections = page
+    .locator('[data-slot="card"]')
+    .filter({ hasText: "回源连接" });
+  await expect(connections.getByText("1 个连接池 · 1 个正常")).toBeVisible();
+  await expect(
+    connections.getByText("edge-hong-kong", { exact: true }),
+  ).toBeVisible();
+  const originCell = connections
+    .getByRole("cell")
+    .filter({ hasText: "10.253.0.1:8443" });
+  await expect(originCell).toContainText("H2C");
+  await expect(
+    connections.getByText("复用连接", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    connections.getByText("edge-singapore", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    connections.getByText("等待上报", { exact: true }),
   ).toBeVisible();
   await page.screenshot({
     path: testInfo.outputPath("site-wireguard-origin.png"),
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth + 1,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: testInfo.outputPath("site-origin-connections-mobile.png"),
     fullPage: true,
   });
 
@@ -2448,7 +2573,7 @@ test("all primary workspaces and the new-site editor mount without runtime error
     ["security", "安全"],
     ["monitoring", "监测"],
     ["scheduling", "调度"],
-    ["wireguard", "WireGuard"],
+    ["wireguard", "隧道"],
     ["nodes", "节点"],
     ["sites", "站点"],
     ["certificates", "证书"],

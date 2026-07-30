@@ -22,6 +22,11 @@ import { ConfirmDialog } from "@/components/confirm-dialog";
 import { CopyButton } from "@/components/copy-button";
 import { ListPagination } from "@/components/list-pagination";
 import {
+  latestOriginProbeTime,
+  normalOriginProbeCount,
+  OriginConnectionsTable,
+} from "@/components/origin-connections-table";
+import {
   EmptyState,
   PageBody,
   PageError,
@@ -79,8 +84,6 @@ import type {
   NodeCacheStatus,
   NodeDetail,
   NginxCapacity,
-  OriginProbeSample,
-  OriginProbeStatus,
   NodeStatus,
   NodeUninstallStatus,
 } from "@/lib/types";
@@ -832,9 +835,8 @@ function NginxRuntime({ detail }: { detail: NodeDetail }) {
 function OriginConnections({ detail }: { detail: NodeDetail }) {
   const probes = detail.machine.report?.origin_probes ?? [];
   const sites = new Map(detail.sites.map((site) => [site.id, site.name]));
-  const normal = probes.filter(
-    (probe) => probe.healthy && probe.circuit_state === "closed",
-  ).length;
+  const normal = normalOriginProbeCount(probes);
+  const checkedAt = latestOriginProbeTime(probes);
   return (
     <div className="sm:col-span-2 xl:col-span-3 min-w-0 border-t pt-4">
       <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
@@ -849,165 +851,22 @@ function OriginConnections({ detail }: { detail: NodeDetail }) {
         </div>
         <span className="text-xs tabular-nums text-muted-foreground">
           {t("检测于 ")}
-          {formatDateTime(
-            probes.reduce(
-              (latest, probe) =>
-                Date.parse(probe.checked_at) > Date.parse(latest)
-                  ? probe.checked_at
-                  : latest,
-              probes[0]?.checked_at ?? "",
-            ),
-          )}
+          {checkedAt ? formatDateTime(checkedAt) : "--"}
         </span>
       </div>
-      <div className="overflow-x-auto rounded-md border">
-        <Table className="min-w-[980px]">
-          <TableHeader>
-            <TableRow>
-              <TableHead className="w-28">{t("状态")}</TableHead>
-              <TableHead>{t("源站")}</TableHead>
-              <TableHead>{t("关联站点")}</TableHead>
-              <TableHead className="text-right">{t("池容量")}</TableHead>
-              <TableHead>{t("服务探测")}</TableHead>
-              <TableHead>{t("冷连接")}</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {probes.map((probe) => {
-              const state = originProbeState(probe);
-              return (
-                <TableRow key={probe.pool_id}>
-                  <TableCell>
-                    <StatusBadge status={state.status} label={state.label} />
-                  </TableCell>
-                  <TableCell className="max-w-64">
-                    <div className="font-mono text-xs font-medium">
-                      {probe.address}
-                    </div>
-                    <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
-                      <span className="uppercase">{probe.scheme}</span>
-                      {probe.scheme === "http" || probe.scheme === "https" ? (
-                        <span>
-                          ·{" "}
-                          {probe.http_version === "h2c"
-                            ? "H2C"
-                            : probe.http_version === "http2"
-                              ? "HTTP/2"
-                              : "HTTP/1.1"}
-                        </span>
-                      ) : null}
-                    </div>
-                  </TableCell>
-                  <TableCell className="max-w-56 text-xs">
-                    {probe.references.map((reference) => (
-                      <div key={`${reference.site_id}-${reference.role}`}>
-                        {sites.get(reference.site_id) ?? reference.site_id}
-                        <span className="ml-1 text-muted-foreground">
-                          ·{" "}
-                          {reference.role === "primary" ? t("主源") : t("备源")}
-                        </span>
-                      </div>
-                    ))}
-                  </TableCell>
-                  <TableCell className="text-right text-xs tabular-nums">
-                    {t("每工作进程 {value0}", {
-                      value0: probe.keepalive_connections,
-                    })}
-                  </TableCell>
-                  <ProbeSampleCell
-                    sample={probe.service_probe}
-                    scheme={probe.scheme}
-                  />
-                  <ProbeSampleCell
-                    sample={probe.cold_probe}
-                    scheme={probe.scheme}
-                  />
-                </TableRow>
-              );
-            })}
-          </TableBody>
-        </Table>
-      </div>
+      <OriginConnectionsTable
+        probes={probes}
+        contextHeading={t("关联站点")}
+        contexts={(probe) =>
+          probe.references.map((reference) => ({
+            key: `${reference.site_id}-${reference.role}`,
+            label: sites.get(reference.site_id) ?? reference.site_id,
+            detail: reference.role === "primary" ? t("主源") : t("备源"),
+          }))
+        }
+      />
     </div>
   );
-}
-
-function originProbeState(probe: OriginProbeStatus) {
-  if (probe.circuit_state === "open")
-    return { status: "failed", label: t("已熔断") };
-  if (probe.circuit_state === "recovering")
-    return { status: "pending", label: t("恢复确认") };
-  if (!probe.healthy) return { status: "failed", label: t("探测异常") };
-  return { status: "active", label: t("正常") };
-}
-
-function ProbeSampleCell({
-  sample,
-  scheme,
-}: {
-  sample?: OriginProbeSample;
-  scheme: OriginProbeStatus["scheme"];
-}) {
-  if (!sample) {
-    return (
-      <TableCell className="min-w-56 text-xs text-muted-foreground">
-        --
-      </TableCell>
-    );
-  }
-  const timings = [
-    sample.connect_ms > 0
-      ? `TCP ${formatProbeTiming(sample.connect_ms)}`
-      : null,
-    sample.tls_handshake_ms > 0
-      ? `TLS ${formatProbeTiming(sample.tls_handshake_ms)}`
-      : null,
-    sample.header_ms > 0
-      ? `${scheme.startsWith("grpc") ? "RPC" : "TTFB"} ${formatProbeTiming(sample.header_ms)}`
-      : null,
-    `${t("总耗时")} ${formatProbeTiming(sample.total_ms)}`,
-  ].filter(Boolean);
-  return (
-    <TableCell className="min-w-56 align-top text-xs">
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-        <span
-          aria-hidden="true"
-          className={`size-1.5 rounded-full ${sample.healthy ? "bg-success" : "bg-destructive"}`}
-        />
-        <span className="font-medium">
-          {sample.healthy ? t("可用") : t("异常")}
-        </span>
-        <span className="text-muted-foreground">
-          {sample.connection_reused ? t("复用连接") : t("新建连接")}
-        </span>
-        {sample.http_status ? (
-          <span className="font-mono tabular-nums text-muted-foreground">
-            HTTP {sample.http_status}
-          </span>
-        ) : null}
-      </div>
-      <div className="mt-1 font-mono text-[11px] leading-5 tabular-nums text-muted-foreground">
-        {timings.join(" · ")}
-      </div>
-      {sample.error ? (
-        <p
-          className="mt-1 max-w-64 truncate text-xs text-destructive"
-          title={sample.error}
-        >
-          {sample.error}
-        </p>
-      ) : null}
-      <div className="mt-1 text-[11px] text-muted-foreground">
-        {formatDateTime(sample.checked_at)}
-      </div>
-    </TableCell>
-  );
-}
-
-function formatProbeTiming(value: number) {
-  return value > 0
-    ? `${value < 1 ? value.toFixed(2) : value.toFixed(1)} ms`
-    : "0 ms";
 }
 
 function CacheStatus({

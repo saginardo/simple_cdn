@@ -191,6 +191,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/sites/{id}/certificate-task", s.requireAdmin(s.latestCertificateTask))
 	mux.HandleFunc("GET /api/sites/{id}/tls-status", s.requireAdmin(s.tlsStatus))
 	mux.HandleFunc("GET /api/sites/{id}/origin-allowlist", s.requireAdmin(s.originAllowlist))
+	mux.HandleFunc("GET /api/sites/{id}/origin-connections", s.requireAdmin(s.siteOriginConnections))
 	mux.HandleFunc("GET /api/tasks/{id}", s.requireAdmin(s.getTask))
 	mux.HandleFunc("GET /api/sites/{id}/logs", s.requireAdmin(s.siteLogs))
 	mux.HandleFunc("GET /api/sites/{id}/metrics", s.requireAdmin(s.siteMetrics))
