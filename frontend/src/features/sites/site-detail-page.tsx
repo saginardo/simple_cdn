@@ -210,7 +210,7 @@ export function SiteDetailPage() {
         `/api/sites/${encodedID}/origin-connections`,
       ),
     enabled: !isNew && Boolean(site) && !site?.tcp_only,
-    refetchInterval: 15_000,
+    refetchInterval: 5_000,
   });
   useEffect(() => {
     if (deletion.data?.task?.status !== "succeeded") return;

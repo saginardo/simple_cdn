@@ -49,6 +49,17 @@ func TestValidOriginPoolAndProbeStatus(t *testing.T) {
 	if !ValidOriginProbeStatus(status) {
 		t.Fatalf("valid origin status was rejected: %#v", status)
 	}
+	establishedConnections := int64(3)
+	status.EstablishedConnections = &establishedConnections
+	if !ValidOriginProbeStatus(status) {
+		t.Fatalf("origin status with a connection count was rejected: %#v", status)
+	}
+	invalidConnectionCount := int64(-1)
+	status.EstablishedConnections = &invalidConnectionCount
+	if ValidOriginProbeStatus(status) {
+		t.Fatal("negative origin connection count was accepted")
+	}
+	status.EstablishedConnections = &establishedConnections
 	status.ServiceProbe.TotalMS = math.NaN()
 	if ValidOriginProbeStatus(status) {
 		t.Fatal("NaN origin timing was accepted")

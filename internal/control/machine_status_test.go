@@ -28,10 +28,12 @@ func TestEdgeMachineStatusStoresNewestSnapshot(t *testing.T) {
 	}
 	server := &Server{Store: database}
 	report := controlTestMachineStatus(time.Now().UTC().Truncate(time.Millisecond))
+	establishedConnections := int64(6)
 	report.OriginProbes = []domain.OriginProbeStatus{{
 		PoolID: "0123456789abcdef01234567", Address: "203.0.113.10:8080", Scheme: "http",
-		KeepaliveConnections: 32, References: []domain.OriginPoolReference{{SiteID: "site-1", Role: "primary"}},
-		Healthy: true, CircuitState: domain.OriginCircuitClosed, CheckedAt: report.CollectedAt,
+		KeepaliveConnections: 32, EstablishedConnections: &establishedConnections,
+		References: []domain.OriginPoolReference{{SiteID: "site-1", Role: "primary"}},
+		Healthy:    true, CircuitState: domain.OriginCircuitClosed, CheckedAt: report.CollectedAt,
 		ServiceProbe: &domain.OriginProbeSample{
 			Healthy: true, ConnectionReused: true, HeaderMS: 8.5, TotalMS: 9,
 			HTTPStatus: http.StatusNoContent, CheckedAt: report.CollectedAt,
@@ -44,7 +46,8 @@ func TestEdgeMachineStatusStoresNewestSnapshot(t *testing.T) {
 	}
 	stored := server.nodeMachineStatus(node, time.Now().UTC())
 	if !stored.Available || stored.Report == nil || !stored.Report.CollectedAt.Equal(report.CollectedAt) ||
-		len(stored.Report.OriginProbes) != 1 || stored.Report.OriginProbes[0].ServiceProbe == nil || stored.Report.OriginProbes[0].ServiceProbe.HeaderMS != 8.5 {
+		len(stored.Report.OriginProbes) != 1 || stored.Report.OriginProbes[0].ServiceProbe == nil || stored.Report.OriginProbes[0].ServiceProbe.HeaderMS != 8.5 ||
+		stored.Report.OriginProbes[0].EstablishedConnections == nil || *stored.Report.OriginProbes[0].EstablishedConnections != 6 {
 		t.Fatalf("stored machine status = %#v", stored)
 	}
 	older := report

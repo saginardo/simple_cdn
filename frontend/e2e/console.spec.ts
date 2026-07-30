@@ -154,6 +154,72 @@ const wireGuardTunnel = {
   updated_at: now.toISOString(),
 };
 
+const wireGuardOriginServices = [
+  {
+    port: 8443,
+    scheme: "http",
+    http_version: "h2c",
+    status: "degraded",
+    reachable_nodes: 1,
+    observed_nodes: 2,
+    total_nodes: 2,
+    last_reported_at: now.toISOString(),
+    sites: [
+      {
+        site_id: "site-1",
+        site_name: "API 加速",
+        domains: ["api.example.com"],
+        role: "primary",
+        published: true,
+      },
+      {
+        site_id: "site-2",
+        site_name: "API 备用",
+        domains: ["api-backup.example.com"],
+        role: "backup",
+        published: true,
+      },
+    ],
+  },
+  {
+    port: 8443,
+    scheme: "https",
+    http_version: "http2",
+    status: "healthy",
+    reachable_nodes: 2,
+    observed_nodes: 2,
+    total_nodes: 2,
+    last_reported_at: now.toISOString(),
+    sites: [
+      {
+        site_id: "site-3",
+        site_name: "管理后台",
+        domains: ["admin.example.com"],
+        role: "primary",
+        published: true,
+      },
+    ],
+  },
+  {
+    port: 50051,
+    scheme: "grpc",
+    status: "unknown",
+    reachable_nodes: 0,
+    observed_nodes: 0,
+    total_nodes: 2,
+    last_reported_at: new Date(now.getTime() - 60_000).toISOString(),
+    sites: [
+      {
+        site_id: "site-4",
+        site_name: "事件服务",
+        domains: ["events.example.com"],
+        role: "primary",
+        published: true,
+      },
+    ],
+  },
+];
+
 const wireGuardPerformanceTests = [
   {
     id: "performance-1",
@@ -2340,6 +2406,14 @@ test("WireGuard workspace shows tunnel health and performance on desktop and mob
   await mockAPI(page, {
     "/api/nodes": wireGuardNodes,
     "/api/wireguard/tunnels": [freshTunnel],
+    [`/api/wireguard/tunnels/${freshTunnel.id}`]: {
+      tunnel: freshTunnel,
+      origin_services: wireGuardOriginServices,
+    },
+    [`/api/wireguard/tunnels/${freshTunnel.id}/uninstall-command`]: {
+      uninstall_command:
+        "curl -fsSL https://control.example.com/install-origin-wireguard.sh | sudo bash -s -- --tunnel-id test --uninstall",
+    },
     "/api/wireguard/performance-tests": wireGuardPerformanceTests,
   });
   await page.goto("/#/wireguard");
@@ -2355,20 +2429,61 @@ test("WireGuard workspace shows tunnel health and performance on desktop and mob
   await expect(
     page.getByRole("button", { name: "安装/升级源站代理" }),
   ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "生成源站卸载命令" }),
+  ).toBeVisible();
   await expect(page.getByRole("button", { name: "测试隧道" })).toHaveCount(0);
   await page.screenshot({
     path: testInfo.outputPath("wireguard-desktop.png"),
     fullPage: true,
   });
 
-  await page.getByRole("button", { name: "查看隧道" }).click();
-  const detail = page.getByRole("dialog", { name: "源站主隧道" });
-  await expect(detail).toBeVisible();
-  await expect(detail.getByText("10.253.0.2", { exact: true })).toBeVisible();
-  await expect(detail.getByText("10.253.0.3", { exact: true })).toBeVisible();
-  await expect(detail.getByText("120 Mbps", { exact: true })).toBeVisible();
-  await expect(detail.getByText("50 Mbps", { exact: true })).toBeVisible();
-  await detail.getByRole("button", { name: "关闭" }).last().click();
+  await page.getByRole("button", { name: "生成源站卸载命令" }).click();
+  const uninstallCommand = page.getByRole("dialog", {
+    name: "源站主隧道 源站卸载命令",
+  });
+  await expect(uninstallCommand).toContainText("--uninstall");
+  await uninstallCommand.getByRole("button", { name: "关闭" }).first().click();
+
+  await page.getByRole("link", { name: "查看隧道" }).click();
+  await expect(page).toHaveURL(
+    new RegExp(`/#/wireguard/${freshTunnel.id.replaceAll("-", "\\-")}$`),
+  );
+  await expect(
+    page.getByRole("heading", { name: "源站主隧道", level: 1 }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "回源服务", level: 2 }),
+  ).toBeVisible();
+  const h2cService = page
+    .getByRole("row")
+    .filter({ hasText: "H2C" })
+    .filter({ hasText: "API 加速" });
+  await expect(h2cService).toContainText("部分异常");
+  await expect(h2cService).toContainText("1 / 2");
+  await expect(h2cService).toContainText("主源站");
+  await expect(h2cService).toContainText("备用源站");
+  const httpsService = page
+    .getByRole("row")
+    .filter({ hasText: "HTTPS" })
+    .filter({ hasText: "管理后台" });
+  await expect(httpsService).toContainText("HTTP/2");
+  await expect(httpsService).toContainText("全部可达");
+  const unknownService = page
+    .getByRole("row")
+    .filter({ hasText: "50051" })
+    .filter({ hasText: "事件服务" });
+  await expect(unknownService).toContainText("状态未知");
+  await expect(unknownService).toContainText("-- / 2");
+  await expect(page.getByText("10.253.0.2", { exact: true })).toBeVisible();
+  await expect(page.getByText("10.253.0.3", { exact: true })).toBeVisible();
+  await expect(page.getByText("120 Mbps", { exact: true })).toBeVisible();
+  await expect(page.getByText("50 Mbps", { exact: true })).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("wireguard-detail-desktop.png"),
+    fullPage: true,
+  });
+  await page.getByRole("link", { name: "返回隧道" }).click();
 
   await page.getByRole("button", { name: "编辑隧道" }).click();
   const tunnelEditor = page.getByRole("dialog", { name: "编辑隧道" });
@@ -2415,6 +2530,20 @@ test("WireGuard workspace shows tunnel health and performance on desktop and mob
     path: testInfo.outputPath("wireguard-mobile.png"),
     fullPage: true,
   });
+  await page.getByRole("link", { name: "查看隧道" }).click();
+  await expect(
+    page.getByRole("heading", { name: "源站主隧道", level: 1 }),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth + 1,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: testInfo.outputPath("wireguard-detail-mobile.png"),
+    fullPage: true,
+  });
+  await page.getByRole("link", { name: "返回隧道" }).click();
   await page.getByRole("tab", { name: "性能测试" }).click();
   await expect(page.getByText("901.3 Mbps / 2 retx")).toBeVisible();
   expect(
@@ -2464,6 +2593,7 @@ test("site editor exposes the selected WireGuard origin path", async ({
               scheme: "http",
               http_version: "h2c",
               keepalive_connections: 64,
+              established_connections: 3,
               references: [{ site_id: "site-1", role: "primary" }],
               healthy: true,
               circuit_state: "closed",
@@ -2532,6 +2662,12 @@ test("site editor exposes the selected WireGuard origin path", async ({
     .getByRole("cell")
     .filter({ hasText: "10.253.0.1:8443" });
   await expect(originCell).toContainText("H2C");
+  await expect(
+    connections.getByRole("columnheader", { name: "当前连接" }),
+  ).toBeVisible();
+  await expect(
+    connections.getByRole("cell", { name: "3", exact: true }),
+  ).toBeVisible();
   await expect(
     connections.getByText("复用连接", { exact: true }),
   ).toBeVisible();

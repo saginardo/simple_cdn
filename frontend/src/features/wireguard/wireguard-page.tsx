@@ -20,6 +20,7 @@ import {
   type FormEvent,
   type ReactNode,
 } from "react";
+import { Link } from "react-router";
 import { toast } from "sonner";
 
 import { ConfirmDialog } from "@/components/confirm-dialog";
@@ -69,13 +70,7 @@ import {
 } from "@/components/ui/tooltip";
 import { useListPagination } from "@/hooks/use-list-pagination";
 import { api, errorMessage, jsonBody } from "@/lib/api";
-import {
-  formatBytes,
-  formatDateTime,
-  formatNumber,
-  formatPercent,
-  shortHash,
-} from "@/lib/format";
+import { formatDateTime, formatNumber, formatPercent } from "@/lib/format";
 import { t, useI18n } from "@/lib/i18n";
 import type {
   Node,
@@ -112,9 +107,6 @@ export function WireGuardPage() {
   const [editTunnel, setEditTunnel] = useState<
     WireGuardTunnel | null | undefined
   >();
-  const [detailTunnel, setDetailTunnel] = useState<WireGuardTunnel | null>(
-    null,
-  );
   const [deleteTunnel, setDeleteTunnel] = useState<WireGuardTunnel | null>(
     null,
   );
@@ -323,7 +315,7 @@ export function WireGuardPage() {
                           <TableHead>{t("源站修订")}</TableHead>
                           <TableHead>{t("边缘状态")}</TableHead>
                           <TableHead>{t("最近握手")}</TableHead>
-                          <TableHead className="w-44 pr-5 text-right">
+                          <TableHead className="w-52 pr-5 text-right">
                             {t("操作")}
                           </TableHead>
                         </TableRow>
@@ -386,18 +378,25 @@ export function WireGuardPage() {
                             </TableCell>
                             <TableCell className="pr-5">
                               <div className="flex justify-end gap-1">
-                                <IconAction
+                                <IconLinkAction
                                   label={t("查看隧道")}
-                                  onClick={() => setDetailTunnel(tunnel)}
+                                  to={`/wireguard/${encodeURIComponent(tunnel.id)}`}
                                 >
                                   <Eye />
-                                </IconAction>
+                                </IconLinkAction>
                                 <IconAction
                                   label={t("安装/升级源站代理")}
                                   onClick={() => install.mutate(tunnel)}
                                   disabled={install.isPending}
                                 >
                                   <Terminal />
+                                </IconAction>
+                                <IconAction
+                                  label={t("生成源站卸载命令")}
+                                  onClick={() => uninstall.mutate(tunnel)}
+                                  disabled={uninstall.isPending}
+                                >
+                                  <Unplug />
                                 </IconAction>
                                 <IconAction
                                   label={t("编辑隧道")}
@@ -466,16 +465,6 @@ export function WireGuardPage() {
           setPerformanceTunnel(undefined);
           setSection("performance");
           refresh();
-        }}
-      />
-      <TunnelDetailDialog
-        tunnel={detailTunnel}
-        onOpenChange={(open) => {
-          if (!open) setDetailTunnel(null);
-        }}
-        onUninstall={(tunnel) => {
-          setDetailTunnel(null);
-          uninstall.mutate(tunnel);
         }}
       />
       <CommandDialog
@@ -986,116 +975,6 @@ function PerformanceDialog({
   );
 }
 
-function TunnelDetailDialog({
-  tunnel,
-  onOpenChange,
-  onUninstall,
-}: {
-  tunnel: WireGuardTunnel | null;
-  onOpenChange: (open: boolean) => void;
-  onUninstall: (tunnel: WireGuardTunnel) => void;
-}) {
-  if (!tunnel) return null;
-  return (
-    <Dialog open onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-4xl">
-        <DialogHeader>
-          <DialogTitle>{tunnel.name}</DialogTitle>
-          <DialogDescription>
-            {tunnel.endpoint_host}:{tunnel.listen_port} · {tunnel.address_cidr}{" "}
-            · r{tunnel.revision}
-          </DialogDescription>
-        </DialogHeader>
-        <div className="grid gap-3 text-sm sm:grid-cols-3">
-          <Fact label={t("源站隧道 IP")} value={tunnel.origin_address} />
-          <Fact
-            label={t("源站公钥")}
-            value={shortHash(tunnel.origin_public_key)}
-          />
-          <Fact label={t("性能端口")} value={String(tunnel.performance_port)} />
-          <Fact
-            label={t("源站出口上限")}
-            value={formatEgressLimit(tunnel.origin_egress_limit_mbps)}
-          />
-          <Fact label="MTU" value={String(tunnel.mtu)} />
-          <Fact
-            label={t("保活间隔")}
-            value={`${tunnel.persistent_keepalive_seconds}s`}
-          />
-          <Fact
-            label={t("源站应用时间")}
-            value={formatDateTime(tunnel.origin_configured_at)}
-          />
-        </div>
-        <Panel>
-          <Table className="min-w-[950px]">
-            <TableHeader>
-              <TableRow>
-                <TableHead className="pl-5">{t("节点")}</TableHead>
-                <TableHead>{t("隧道 IP")}</TableHead>
-                <TableHead>{t("修订")}</TableHead>
-                <TableHead>{t("公钥")}</TableHead>
-                <TableHead>{t("边缘出口上限")}</TableHead>
-                <TableHead>{t("接收 / 发送")}</TableHead>
-                <TableHead className="pr-5">{t("最近握手")}</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {tunnel.peers.map((peer) => (
-                <TableRow key={peer.node_id}>
-                  <TableCell className="pl-5">
-                    <div className="font-medium">{peer.node_name}</div>
-                    <div className="font-mono text-xs text-muted-foreground">
-                      {peer.node_public_ipv4}
-                    </div>
-                  </TableCell>
-                  <TableCell className="font-mono">{peer.address}</TableCell>
-                  <TableCell>
-                    <StatusBadge
-                      status={
-                        peerApplied(peer, tunnel)
-                          ? "ready"
-                          : peer.last_error
-                            ? "failed"
-                            : "pending"
-                      }
-                      label={`r${peer.applied_revision}`}
-                    />
-                    {peer.last_error ? (
-                      <p className="mt-1 max-w-64 text-xs text-destructive">
-                        {peer.last_error}
-                      </p>
-                    ) : null}
-                  </TableCell>
-                  <TableCell className="font-mono text-xs">
-                    {shortHash(peer.public_key)}
-                  </TableCell>
-                  <TableCell className="text-xs">
-                    {formatEgressLimit(peer.edge_egress_limit_mbps)}
-                  </TableCell>
-                  <TableCell className="text-xs">
-                    {formatBytes(peer.rx_bytes)} / {formatBytes(peer.tx_bytes)}
-                  </TableCell>
-                  <TableCell className="pr-5">
-                    {formatDateTime(peer.latest_handshake_at)}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </Panel>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onUninstall(tunnel)}>
-            <Unplug />
-            {t("生成源站卸载命令")}
-          </Button>
-          <Button onClick={() => onOpenChange(false)}>{t("关闭")}</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
 function CommandDialog({
   command,
   onOpenChange,
@@ -1272,6 +1151,29 @@ function IconAction({
   );
 }
 
+function IconLinkAction({
+  label,
+  to,
+  children,
+}: {
+  label: string;
+  to: string;
+  children: ReactNode;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button asChild variant="ghost" size="icon-sm">
+          <Link to={to} aria-label={label}>
+            {children}
+          </Link>
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
+  );
+}
+
 function Field({
   label,
   id,
@@ -1285,15 +1187,6 @@ function Field({
     <div className="grid gap-2">
       <Label htmlFor={id}>{label}</Label>
       {children}
-    </div>
-  );
-}
-
-function Fact({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-md border px-3 py-2">
-      <div className="text-xs text-muted-foreground">{label}</div>
-      <div className="mt-1 truncate font-mono text-xs">{value}</div>
     </div>
   );
 }
@@ -1391,10 +1284,6 @@ function handshakeFresh(value?: string) {
   const timestamp = new Date(value).getTime();
   const age = Date.now() - timestamp;
   return Number.isFinite(timestamp) && age >= -30_000 && age <= 180_000;
-}
-
-function formatEgressLimit(limitMbps: number) {
-  return limitMbps > 0 ? `${formatNumber(limitMbps)} Mbps` : t("不限速");
 }
 
 function metricNumber(value: number) {

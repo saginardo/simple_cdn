@@ -250,6 +250,7 @@ export interface OriginProbeStatus {
   scheme: "http" | "https" | "grpc" | "grpcs";
   http_version?: OriginHTTPVersion;
   keepalive_connections: number;
+  established_connections?: number;
   references: OriginPoolReference[];
   healthy: boolean;
   circuit_state: "closed" | "open" | "recovering";
@@ -375,6 +376,34 @@ export interface WireGuardTunnel {
   peers: WireGuardPeer[];
   created_at: string;
   updated_at: string;
+}
+
+export type WireGuardOriginServiceStatus =
+  "unknown" | "healthy" | "partial" | "degraded" | "unreachable";
+
+export interface WireGuardOriginServiceReference {
+  site_id: string;
+  site_name: string;
+  domains: string[];
+  role: "primary" | "backup";
+  published: boolean;
+}
+
+export interface WireGuardOriginService {
+  port: number;
+  scheme: "http" | "https" | "grpc" | "grpcs";
+  http_version?: OriginHTTPVersion;
+  status: WireGuardOriginServiceStatus;
+  reachable_nodes: number;
+  observed_nodes: number;
+  total_nodes: number;
+  last_reported_at?: string;
+  sites: WireGuardOriginServiceReference[];
+}
+
+export interface WireGuardTunnelDetail {
+  tunnel: WireGuardTunnel;
+  origin_services: WireGuardOriginService[];
 }
 
 export interface WireGuardTCPMeasurement {

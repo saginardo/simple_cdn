@@ -47,9 +47,11 @@ func TestSiteOriginConnectionsFiltersNodeReportsBySite(t *testing.T) {
 	}
 	checkedAt := time.Now().UTC().Truncate(time.Millisecond)
 	report := controlTestMachineStatus(checkedAt)
+	establishedConnections := int64(4)
 	report.OriginProbes = []domain.OriginProbeStatus{
 		{
 			PoolID: "shared", Address: "10.253.0.1:8443", Scheme: "http",
+			EstablishedConnections: &establishedConnections,
 			References: []domain.OriginPoolReference{
 				{SiteID: site.ID, Role: "primary"},
 				{SiteID: other.ID, Role: "backup"},
@@ -85,7 +87,8 @@ func TestSiteOriginConnectionsFiltersNodeReportsBySite(t *testing.T) {
 	if gotReporting.NodeID != reporting.ID || !gotReporting.Available || gotReporting.Stale || gotReporting.CollectedAt == nil {
 		t.Fatalf("reporting node = %#v", gotReporting)
 	}
-	if len(gotReporting.Probes) != 1 || gotReporting.Probes[0].PoolID != "shared" {
+	if len(gotReporting.Probes) != 1 || gotReporting.Probes[0].PoolID != "shared" ||
+		gotReporting.Probes[0].EstablishedConnections == nil || *gotReporting.Probes[0].EstablishedConnections != 4 {
 		t.Fatalf("filtered probes = %#v", gotReporting.Probes)
 	}
 	if references := gotReporting.Probes[0].References; len(references) != 1 || references[0].SiteID != site.ID || references[0].Role != "primary" {

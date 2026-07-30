@@ -7,7 +7,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { formatDateTime } from "@/lib/format";
+import { formatDateTime, formatNumber } from "@/lib/format";
 import { t } from "@/lib/i18n";
 import type { OriginProbeSample, OriginProbeStatus } from "@/lib/types";
 
@@ -28,13 +28,21 @@ export function OriginConnectionsTable({
 }) {
   return (
     <div className="w-full min-w-0 max-w-full overflow-x-auto rounded-md border">
-      <Table className="min-w-[980px]">
+      <Table className="min-w-[1060px]">
         <TableHeader>
           <TableRow>
             <TableHead className="w-28">{t("状态")}</TableHead>
             <TableHead>{t("源站")}</TableHead>
             <TableHead>{contextHeading}</TableHead>
             <TableHead className="text-right">{t("池容量")}</TableHead>
+            <TableHead
+              className="text-right"
+              title={t(
+                "Nginx 当前持有的 ESTABLISHED TCP 连接，包含空闲复用连接",
+              )}
+            >
+              {t("当前连接")}
+            </TableHead>
             <TableHead>{t("服务探测")}</TableHead>
             <TableHead>{t("冷连接")}</TableHead>
           </TableRow>
@@ -84,6 +92,11 @@ export function OriginConnectionsTable({
                   {t("每工作进程 {value0}", {
                     value0: probe.keepalive_connections,
                   })}
+                </TableCell>
+                <TableCell className="text-right text-xs tabular-nums">
+                  {probe.established_connections == null
+                    ? "--"
+                    : formatNumber(probe.established_connections)}
                 </TableCell>
                 <ProbeSampleCell
                   sample={probe.service_probe}

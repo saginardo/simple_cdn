@@ -85,12 +85,13 @@ type Config struct {
 }
 
 type Agent struct {
-	Config        Config
-	logs          *LogForwarder
-	security      *SecurityManager
-	cacheUsage    *cacheUsageCollector
-	machineStatus machineStatusReporter
-	wireGuard     WireGuardManager
+	Config            Config
+	logs              *LogForwarder
+	security          *SecurityManager
+	cacheUsage        *cacheUsageCollector
+	machineStatus     machineStatusReporter
+	originConnections originConnectionCounter
+	wireGuard         WireGuardManager
 
 	statusMu          sync.Mutex
 	lastApplyReport   *domain.ApplyReport
@@ -292,6 +293,7 @@ func New(config Config) (*Agent, error) {
 		Config: config, logs: NewLogForwarder(config.StateDir, config.AccessLogPath),
 		cacheUsage:        newCacheUsageCollector(nginx.DefaultCachePath, nginx.DefaultCacheMaxBytes, defaultCacheUsageInterval),
 		machineStatus:     newMachineStatusCollector(config.NginxStatusSocketPath),
+		originConnections: newNginxOriginConnectionCounter(config.NginxPIDPath),
 		wireGuard:         config.WireGuardManager,
 		componentFailures: make(map[string]string),
 		originPools:       make(map[string]*originPoolRuntime),
@@ -377,6 +379,7 @@ func (a *Agent) runMachineStatusRound(ctx context.Context) {
 	action := "collect machine status"
 	if err == nil && report != nil {
 		report.OriginProbes = a.originProbeStatuses()
+		a.attachOriginConnectionCounts(ctx, report.OriginProbes)
 		a.setLatestMachineStatus(report)
 		action = "report machine status"
 		requestCtx, cancel := context.WithTimeout(ctx, min(10*time.Second, a.Config.MachineStatusInterval))
@@ -589,6 +592,10 @@ func cloneMachineStatus(report domain.MachineStatus) domain.MachineStatus {
 	report.OriginProbes = append([]domain.OriginProbeStatus(nil), report.OriginProbes...)
 	for index := range report.OriginProbes {
 		report.OriginProbes[index].References = append([]domain.OriginPoolReference(nil), report.OriginProbes[index].References...)
+		if count := report.OriginProbes[index].EstablishedConnections; count != nil {
+			copyOfCount := *count
+			report.OriginProbes[index].EstablishedConnections = &copyOfCount
+		}
 		if sample := report.OriginProbes[index].ServiceProbe; sample != nil {
 			copyOfSample := *sample
 			report.OriginProbes[index].ServiceProbe = &copyOfSample

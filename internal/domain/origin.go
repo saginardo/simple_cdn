@@ -68,6 +68,7 @@ type OriginProbeStatus struct {
 	Scheme                      string                `json:"scheme"`
 	HTTPVersion                 OriginHTTPVersion     `json:"http_version,omitempty"`
 	KeepaliveConnections        int                   `json:"keepalive_connections"`
+	EstablishedConnections      *int64                `json:"established_connections,omitempty"`
 	References                  []OriginPoolReference `json:"references"`
 	Healthy                     bool                  `json:"healthy"`
 	CircuitState                OriginCircuitState    `json:"circuit_state"`
@@ -137,6 +138,7 @@ func ValidOriginPool(pool OriginPool) bool {
 func ValidOriginProbeStatus(status OriginProbeStatus) bool {
 	if status.PoolID == "" || len(status.PoolID) != 24 || !lowerHex(status.PoolID) ||
 		status.KeepaliveConnections < 1 || status.KeepaliveConnections > 128 ||
+		status.EstablishedConnections != nil && (*status.EstablishedConnections < 0 || *status.EstablishedConnections > 1<<53-1) ||
 		!validOriginProbeStreak(status.ServiceConsecutiveFailures) || !validOriginProbeStreak(status.ServiceConsecutiveSuccesses) ||
 		!validOriginProbeStreak(status.ColdConsecutiveFailures) || !validOriginProbeStreak(status.ColdConsecutiveSuccesses) ||
 		status.CheckedAt.IsZero() || status.ServiceProbe == nil && status.ColdProbe == nil ||

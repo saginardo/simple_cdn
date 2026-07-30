@@ -55,6 +55,11 @@ const WireGuardPage = lazy(() =>
     default: module.WireGuardPage,
   })),
 );
+const WireGuardDetailPage = lazy(() =>
+  import("@/features/wireguard/wireguard-detail-page").then((module) => ({
+    default: module.WireGuardDetailPage,
+  })),
+);
 const NodesPage = lazy(() =>
   import("@/features/nodes/nodes-page").then((module) => ({
     default: module.NodesPage,
@@ -128,6 +133,10 @@ export default function App() {
                       <Route path="/monitoring" element={<MonitoringPage />} />
                       <Route path="/scheduling" element={<SchedulingPage />} />
                       <Route path="/wireguard" element={<WireGuardPage />} />
+                      <Route
+                        path="/wireguard/:tunnelId"
+                        element={<WireGuardDetailPage />}
+                      />
                       <Route
                         path="/monitoring/nodes/:nodeId"
                         element={<MonitoringNodeHistoryPage />}

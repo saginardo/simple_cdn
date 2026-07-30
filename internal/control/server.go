@@ -171,6 +171,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/wireguard/tunnels", s.requireAdmin(s.listWireGuardTunnels))
 	mux.HandleFunc("GET /api/wireguard/suggested-cidr", s.requireAdmin(s.suggestedWireGuardCIDR))
 	mux.HandleFunc("POST /api/wireguard/tunnels", s.requireAdmin(s.createWireGuardTunnel))
+	mux.HandleFunc("GET /api/wireguard/tunnels/{id}", s.requireAdmin(s.getWireGuardTunnel))
 	mux.HandleFunc("PUT /api/wireguard/tunnels/{id}", s.requireAdmin(s.updateWireGuardTunnel))
 	mux.HandleFunc("DELETE /api/wireguard/tunnels/{id}", s.requireAdmin(s.deleteWireGuardTunnel))
 	mux.HandleFunc("POST /api/wireguard/tunnels/{id}/install-command", s.requireAdmin(s.createWireGuardInstallCommand))

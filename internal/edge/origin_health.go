@@ -623,6 +623,10 @@ func cloneOriginProbeStatus(status *domain.OriginProbeStatus) *domain.OriginProb
 	}
 	cloned := *status
 	cloned.References = append([]domain.OriginPoolReference(nil), status.References...)
+	if status.EstablishedConnections != nil {
+		count := *status.EstablishedConnections
+		cloned.EstablishedConnections = &count
+	}
 	if status.ServiceProbe != nil {
 		service := *status.ServiceProbe
 		cloned.ServiceProbe = &service
@@ -1010,7 +1014,11 @@ func (a *Agent) originProbeStatuses() []domain.OriginProbeStatus {
 		if runtime.Status == nil || runtime.Status.CheckedAt.IsZero() {
 			continue
 		}
-		statuses = append(statuses, *cloneOriginProbeStatus(runtime.Status))
+		status := *cloneOriginProbeStatus(runtime.Status)
+		// Connection counts are sampled with the machine report, not persisted
+		// with probe state. Clear any value decoded from a future state format.
+		status.EstablishedConnections = nil
+		statuses = append(statuses, status)
 	}
 	sort.Slice(statuses, func(i, j int) bool { return statuses[i].PoolID < statuses[j].PoolID })
 	return statuses
