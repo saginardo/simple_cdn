@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -194,6 +195,126 @@ esac
 	}
 }
 
+func TestWireGuardActiveConfigUsesLiveSyncAndPreservesPreviousConfigOnFailure(t *testing.T) {
+	directory := t.TempDir()
+	configDirectory := filepath.Join(directory, "configs")
+	if err := os.MkdirAll(configDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	commandLog := filepath.Join(directory, "commands.log")
+	runtimeConfig := filepath.Join(directory, "runtime.conf")
+	failSync := filepath.Join(directory, "fail-sync")
+	ipPath := writeWireGuardTestCommand(t, directory, "ip", commandLog, "exit 0")
+	wgPath := writeWireGuardTestCommand(t, directory, "wg", commandLog, fmt.Sprintf(`
+if [ "$1" = "syncconf" ]; then
+  if [ -f %q ]; then exit 1; fi
+  cp "$3" %q
+fi
+exit 0`, failSync, runtimeConfig))
+	wgQuickPath := writeWireGuardTestCommand(t, directory, "wg-quick", commandLog, "exit 0")
+	manager := &linuxWireGuardManager{
+		configDirectory: configDirectory, ipPath: ipPath, wgPath: wgPath, wgQuickPath: wgQuickPath,
+	}
+	config := domain.WireGuardEdgeConfig{
+		TunnelID: "12345678-1234-4234-8234-123456789abc", InterfaceName: "scwg1234567812",
+		Address: "10.253.40.2/32", OriginAddress: "10.253.40.1", OriginPublicKey: wireGuardEdgeTestKey(1),
+		Endpoint: "origin.example.test:51820", MTU: 1420, PersistentKeepaliveSecs: 25,
+	}
+	privateKey := wireGuardEdgeTestKey(9)
+	path := manager.configPath(config)
+	previous := renderWireGuardEdgeConfig(config, privateKey)
+	if err := os.WriteFile(path, previous, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	config.Address = "10.253.41.2/32"
+	config.OriginAddress = "10.253.41.1"
+	config.Endpoint = "origin.example.test:51821"
+	config.MTU = 1380
+	desired := renderWireGuardEdgeConfig(config, privateKey)
+	started, err := manager.applyConfig(context.Background(), config, desired)
+	if err != nil || started {
+		t.Fatalf("live update = started:%t err:%v", started, err)
+	}
+	log := readWireGuardTestFile(t, commandLog)
+	for _, expected := range []string{
+		"ip link show dev scwg1234567812",
+		"wg syncconf scwg1234567812 ",
+		"ip -4 address replace 10.253.41.2/32 dev scwg1234567812",
+		"ip -4 route replace 10.253.41.1/32 dev scwg1234567812",
+		"ip link set dev scwg1234567812 mtu 1380",
+		"ip -4 route delete 10.253.40.1/32 dev scwg1234567812",
+		"ip -4 address delete 10.253.40.2/32 dev scwg1234567812",
+	} {
+		if !strings.Contains(log, expected) {
+			t.Fatalf("live update command log is missing %q:\n%s", expected, log)
+		}
+	}
+	if strings.Contains(log, "wg-quick ") {
+		t.Fatalf("live update restarted the WireGuard interface:\n%s", log)
+	}
+	if got := readWireGuardTestFile(t, path); got != string(desired) {
+		t.Fatalf("persisted live configuration = %q, want %q", got, desired)
+	}
+	runtime := readWireGuardTestFile(t, runtimeConfig)
+	if strings.Contains(runtime, "Address =") || strings.Contains(runtime, "MTU =") ||
+		!strings.Contains(runtime, "Endpoint = origin.example.test:51821") {
+		t.Fatalf("wg syncconf configuration contains wg-quick directives or misses the peer:\n%s", runtime)
+	}
+
+	if err := os.WriteFile(commandLog, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if started, err := manager.applyConfig(context.Background(), config, desired); err != nil || started {
+		t.Fatalf("idempotent live update = started:%t err:%v", started, err)
+	}
+	if log := strings.TrimSpace(readWireGuardTestFile(t, commandLog)); log != "ip link show dev scwg1234567812" {
+		t.Fatalf("idempotent live update commands = %q", log)
+	}
+
+	if err := os.WriteFile(failSync, []byte("fail\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	failedConfig := config
+	failedConfig.Endpoint = "origin.example.test:51822"
+	failedContents := renderWireGuardEdgeConfig(failedConfig, privateKey)
+	if _, err := manager.applyConfig(context.Background(), failedConfig, failedContents); err == nil || !strings.Contains(err.Error(), "synchronize active WireGuard interface") {
+		t.Fatalf("failed live update error = %v", err)
+	}
+	if got := readWireGuardTestFile(t, path); got != string(desired) {
+		t.Fatalf("failed live update replaced the previous config: %q", got)
+	}
+	if log := readWireGuardTestFile(t, commandLog); strings.Contains(log, "wg-quick ") {
+		t.Fatalf("failed live update fell back to a disruptive restart:\n%s", log)
+	}
+}
+
+func TestWireGuardMissingInterfaceUsesInitialWgQuickStart(t *testing.T) {
+	directory := t.TempDir()
+	configDirectory := filepath.Join(directory, "configs")
+	if err := os.MkdirAll(configDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	commandLog := filepath.Join(directory, "commands.log")
+	ipPath := writeWireGuardTestCommand(t, directory, "ip", commandLog, "exit 1")
+	wgQuickPath := writeWireGuardTestCommand(t, directory, "wg-quick", commandLog, "exit 0")
+	manager := &linuxWireGuardManager{configDirectory: configDirectory, ipPath: ipPath, wgQuickPath: wgQuickPath}
+	config := domain.WireGuardEdgeConfig{
+		TunnelID: "12345678-1234-4234-8234-123456789abc", InterfaceName: "scwg1234567812",
+		Address: "10.253.40.2/32", OriginAddress: "10.253.40.1", OriginPublicKey: wireGuardEdgeTestKey(1),
+		Endpoint: "origin.example.test:51820", MTU: 1420, PersistentKeepaliveSecs: 25,
+	}
+	contents := renderWireGuardEdgeConfig(config, wireGuardEdgeTestKey(9))
+	started, err := manager.applyConfig(context.Background(), config, contents)
+	if err != nil || !started {
+		t.Fatalf("initial WireGuard start = started:%t err:%v", started, err)
+	}
+	log := readWireGuardTestFile(t, commandLog)
+	if !strings.Contains(log, "wg-quick up "+manager.configPath(config)) || strings.Contains(log, "wg syncconf") {
+		t.Fatalf("initial WireGuard start commands:\n%s", log)
+	}
+}
+
 func TestWireGuardSameHostGuardPreservesExistingConfig(t *testing.T) {
 	const tunnelID = "12345678-1234-4234-8234-123456789abc"
 	stateDirectory := filepath.Join(t.TempDir(), "state")
@@ -272,4 +393,23 @@ func wireGuardEdgeTestKey(fill byte) string {
 		raw[index] = fill
 	}
 	return base64.StdEncoding.EncodeToString(raw)
+}
+
+func writeWireGuardTestCommand(t *testing.T, directory, name, logPath, body string) string {
+	t.Helper()
+	path := filepath.Join(directory, name)
+	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"%s $*\" >> %q\n%s\n", name, logPath, body)
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func readWireGuardTestFile(t *testing.T, path string) string {
+	t.Helper()
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(contents)
 }

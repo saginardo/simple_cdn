@@ -351,6 +351,79 @@ func renderWireGuardEdgeConfig(config domain.WireGuardEdgeConfig, privateKey str
 	return []byte(contents.String())
 }
 
+type wireGuardEdgeNetworkConfig struct {
+	address       string
+	originAddress string
+	mtu           int
+}
+
+func parseWireGuardEdgeNetworkConfig(contents []byte) (wireGuardEdgeNetworkConfig, error) {
+	var result wireGuardEdgeNetworkConfig
+	section := ""
+	for _, rawLine := range strings.Split(string(contents), "\n") {
+		line := strings.TrimSpace(rawLine)
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			section = line
+			continue
+		}
+		key, value, found := strings.Cut(line, "=")
+		if !found {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		switch {
+		case section == "[Interface]" && key == "Address":
+			result.address = value
+		case section == "[Interface]" && key == "MTU":
+			result.mtu, _ = strconv.Atoi(value)
+		case section == "[Peer]" && key == "AllowedIPs":
+			result.originAddress = strings.TrimSuffix(value, "/32")
+		}
+	}
+	address, network, addressErr := net.ParseCIDR(result.address)
+	ones, bits := 0, 0
+	if network != nil {
+		ones, bits = network.Mask.Size()
+	}
+	origin := net.ParseIP(result.originAddress)
+	if addressErr != nil || address.To4() == nil || bits != 32 || ones != 32 ||
+		origin == nil || origin.To4() == nil || result.mtu < 1280 || result.mtu > 1500 {
+		return wireGuardEdgeNetworkConfig{}, errors.New("existing managed WireGuard configuration is invalid")
+	}
+	return result, nil
+}
+
+func stripWireGuardQuickDirectives(contents []byte) []byte {
+	quickDirectives := map[string]bool{
+		"Address": true, "DNS": true, "MTU": true, "Table": true,
+		"PreUp": true, "PostUp": true, "PreDown": true, "PostDown": true, "SaveConfig": true,
+	}
+	var result strings.Builder
+	section := ""
+	for _, rawLine := range strings.Split(string(contents), "\n") {
+		line := strings.TrimSpace(rawLine)
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			section = line
+		}
+		key, _, found := strings.Cut(line, "=")
+		if section == "[Interface]" && found && quickDirectives[strings.TrimSpace(key)] {
+			continue
+		}
+		result.WriteString(rawLine)
+		result.WriteByte('\n')
+	}
+	return []byte(result.String())
+}
+
+type wireGuardEdgeNetworkTransition struct {
+	addressAdded      bool
+	routeAdded        bool
+	mtuChanged        bool
+	oldRouteRemoved   bool
+	oldAddressRemoved bool
+}
+
 func (m *linuxWireGuardManager) applyConfig(ctx context.Context, config domain.WireGuardEdgeConfig, contents []byte) (bool, error) {
 	path := m.configPath(config)
 	previous, readErr := os.ReadFile(path)
@@ -362,10 +435,35 @@ func (m *linuxWireGuardManager) applyConfig(ctx context.Context, config domain.W
 		return false, nil
 	}
 	if exists {
-		delete(m.appliedEgressLimitsMbps, config.TunnelID)
-		if err := m.run(ctx, m.wgQuickPath, "down", path); err != nil {
-			return false, fmt.Errorf("stop interface before update: %w", err)
+		if readErr != nil {
+			return false, errors.New("active WireGuard interface has no managed configuration file")
 		}
+		previousNetwork, err := parseWireGuardEdgeNetworkConfig(previous)
+		if err != nil {
+			return false, err
+		}
+		desiredNetwork := wireGuardEdgeNetworkConfig{
+			address: config.Address, originAddress: config.OriginAddress, mtu: config.MTU,
+		}
+		if err := m.syncRunningConfig(ctx, config.InterfaceName, stripWireGuardQuickDirectives(contents)); err != nil {
+			return false, fmt.Errorf("synchronize active WireGuard interface: %w", err)
+		}
+		transition, err := m.transitionEdgeNetwork(ctx, config.InterfaceName, previousNetwork, desiredNetwork)
+		if err != nil {
+			rollbackErr := errors.Join(
+				m.rollbackEdgeNetwork(ctx, config.InterfaceName, previousNetwork, desiredNetwork, transition),
+				m.syncRunningConfig(ctx, config.InterfaceName, stripWireGuardQuickDirectives(previous)),
+			)
+			return false, errors.Join(fmt.Errorf("update active WireGuard network settings: %w", err), rollbackError("WireGuard network settings", rollbackErr))
+		}
+		if err := atomicWriteFile(path, contents, 0o600); err != nil {
+			rollbackErr := errors.Join(
+				m.rollbackEdgeNetwork(ctx, config.InterfaceName, previousNetwork, desiredNetwork, transition),
+				m.syncRunningConfig(ctx, config.InterfaceName, stripWireGuardQuickDirectives(previous)),
+			)
+			return false, errors.Join(fmt.Errorf("write WireGuard configuration: %w", err), rollbackError("WireGuard configuration", rollbackErr))
+		}
+		return false, nil
 	}
 	if err := atomicWriteFile(path, contents, 0o600); err != nil {
 		if readErr == nil {
@@ -383,6 +481,97 @@ func (m *linuxWireGuardManager) applyConfig(ctx context.Context, config domain.W
 		return false, fmt.Errorf("start WireGuard interface: %w", err)
 	}
 	return true, nil
+}
+
+func (m *linuxWireGuardManager) syncRunningConfig(ctx context.Context, interfaceName string, contents []byte) error {
+	file, err := os.CreateTemp(m.configDirectory, "."+interfaceName+".sync-*")
+	if err != nil {
+		return fmt.Errorf("create temporary WireGuard runtime configuration: %w", err)
+	}
+	path := file.Name()
+	defer os.Remove(path)
+	if err := file.Chmod(0o600); err != nil {
+		file.Close()
+		return err
+	}
+	if _, err := file.Write(contents); err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	return m.run(ctx, m.wgPath, "syncconf", interfaceName, path)
+}
+
+func (m *linuxWireGuardManager) transitionEdgeNetwork(ctx context.Context, interfaceName string, previous, desired wireGuardEdgeNetworkConfig) (wireGuardEdgeNetworkTransition, error) {
+	var transition wireGuardEdgeNetworkTransition
+	run := func(arguments ...string) error {
+		return m.run(ctx, m.ipPath, arguments...)
+	}
+	if previous.address != desired.address {
+		if err := run("-4", "address", "replace", desired.address, "dev", interfaceName); err != nil {
+			return transition, err
+		}
+		transition.addressAdded = true
+	}
+	if previous.originAddress != desired.originAddress {
+		if err := run("-4", "route", "replace", desired.originAddress+"/32", "dev", interfaceName); err != nil {
+			return transition, err
+		}
+		transition.routeAdded = true
+	}
+	if previous.mtu != desired.mtu {
+		if err := run("link", "set", "dev", interfaceName, "mtu", strconv.Itoa(desired.mtu)); err != nil {
+			return transition, err
+		}
+		transition.mtuChanged = true
+	}
+	if previous.originAddress != desired.originAddress {
+		if err := run("-4", "route", "delete", previous.originAddress+"/32", "dev", interfaceName); err != nil {
+			return transition, err
+		}
+		transition.oldRouteRemoved = true
+	}
+	if previous.address != desired.address {
+		if err := run("-4", "address", "delete", previous.address, "dev", interfaceName); err != nil {
+			return transition, err
+		}
+		transition.oldAddressRemoved = true
+	}
+	return transition, nil
+}
+
+func (m *linuxWireGuardManager) rollbackEdgeNetwork(ctx context.Context, interfaceName string, previous, desired wireGuardEdgeNetworkConfig, transition wireGuardEdgeNetworkTransition) error {
+	var problems []error
+	run := func(arguments ...string) {
+		if err := m.run(ctx, m.ipPath, arguments...); err != nil {
+			problems = append(problems, err)
+		}
+	}
+	if transition.oldAddressRemoved {
+		run("-4", "address", "replace", previous.address, "dev", interfaceName)
+	}
+	if transition.oldRouteRemoved {
+		run("-4", "route", "replace", previous.originAddress+"/32", "dev", interfaceName)
+	}
+	if transition.mtuChanged {
+		run("link", "set", "dev", interfaceName, "mtu", strconv.Itoa(previous.mtu))
+	}
+	if transition.routeAdded {
+		run("-4", "route", "delete", desired.originAddress+"/32", "dev", interfaceName)
+	}
+	if transition.addressAdded {
+		run("-4", "address", "delete", desired.address, "dev", interfaceName)
+	}
+	return errors.Join(problems...)
+}
+
+func rollbackError(component string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("restore previous %s: %w", component, err)
 }
 
 func (m *linuxWireGuardManager) applyEgressLimit(ctx context.Context, config domain.WireGuardEdgeConfig, force bool) error {

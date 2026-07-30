@@ -85,6 +85,21 @@ valid_private_cidr() {
   valid_private_ipv4 "$address" && [[ "$prefix" =~ ^[0-9]{1,2}$ && "$prefix" -ge 16 && "$prefix" -le 32 ]]
 }
 
+strip_wg_quick_config() {
+  awk '
+    /^\[Interface\][[:space:]]*$/ { section = "interface"; print; next }
+    /^\[[^]]+\][[:space:]]*$/ { section = "other"; print; next }
+    {
+      key = $0
+      sub(/[[:space:]]*=.*$/, "", key)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+      if (section == "interface" && (key == "Address" || key == "DNS" || key == "MTU" || key == "Table" ||
+          key == "PreUp" || key == "PostUp" || key == "PreDown" || key == "PostDown" || key == "SaveConfig")) next
+      print
+    }
+  ' "$1"
+}
+
 export DEBIAN_FRONTEND=noninteractive
 if command -v apt-get >/dev/null 2>&1; then
   apt-get update
@@ -159,7 +174,12 @@ fi
 
 temporary_config=$(mktemp "$CONFIG_ROOT/.${interface}.conf.XXXXXX")
 temporary_nft=$(mktemp "$CONFIG_ROOT/.${interface}.nft.XXXXXX")
-trap 'rm -f "$request_file" "$response_file" "$temporary_config" "$temporary_nft"' EXIT
+temporary_runtime=$(mktemp "$CONFIG_ROOT/.${interface}.runtime.XXXXXX")
+temporary_old_runtime=$(mktemp "$CONFIG_ROOT/.${interface}.old-runtime.XXXXXX")
+temporary_nft_update=$(mktemp "$CONFIG_ROOT/.${interface}.nft-update.XXXXXX")
+temporary_service=$(mktemp "/etc/systemd/system/.simple-cdn-origin-iperf-${interface}.XXXXXX")
+temporary_state=$(mktemp "$STATE_ROOT/.${TUNNEL_ID}.state.XXXXXX")
+trap 'rm -f "$request_file" "$response_file" "$temporary_config" "$temporary_nft" "$temporary_runtime" "$temporary_old_runtime" "$temporary_nft_update" "$temporary_service" "$temporary_state"' EXIT
 tc_binary=$(command -v tc)
 if [[ "$tc_binary" != /* || "$tc_binary" == *[[:space:]]* ]]; then
   echo "tc executable path is invalid" >&2
@@ -198,6 +218,8 @@ fi
   done < <(jq -c '.peers[]' "$response_file")
 } >"$temporary_config"
 chmod 0600 "$temporary_config"
+strip_wg_quick_config "$temporary_config" >"$temporary_runtime"
+chmod 0600 "$temporary_runtime"
 
 while IFS= read -r edge_ip; do
   if ! valid_ipv4 "$edge_ip"; then
@@ -225,14 +247,7 @@ table inet $table_name {
 EOF
 chmod 0600 "$temporary_nft"
 
-systemctl stop "simple-cdn-origin-iperf-$interface.service" >/dev/null 2>&1 || true
-systemctl stop "wg-quick@$interface.service" >/dev/null 2>&1 || true
-wg-quick down "$interface" >/dev/null 2>&1 || true
-nft delete table inet "$table_name" >/dev/null 2>&1 || true
-mv "$temporary_config" "$config_file"
-mv "$temporary_nft" "$nft_file"
-
-cat >"$service_file" <<EOF
+cat >"$temporary_service" <<EOF
 [Unit]
 Description=simple_cdn origin performance server ($interface)
 After=network-online.target wg-quick@$interface.service
@@ -247,15 +262,183 @@ RestartSec=2s
 [Install]
 WantedBy=multi-user.target
 EOF
-chmod 0644 "$service_file"
+chmod 0644 "$temporary_service"
+jq 'del(.peers[].public_key)' "$response_file" >"$temporary_state"
+chmod 0600 "$temporary_state"
 
-jq 'del(.peers[].public_key)' "$response_file" >"$state_file"
-chmod 0600 "$state_file"
+cat >"$temporary_nft_update" <<EOF
+flush chain inet $table_name input
+add rule inet $table_name input iifname "$interface" tcp dport $performance_port accept
+add rule inet $table_name input ip saddr { $edge_ips } tcp dport $performance_port accept
+add rule inet $table_name input tcp dport $performance_port drop
+add rule inet $table_name input ip saddr { $edge_ips } udp dport $listen_port accept
+add rule inet $table_name input udp dport $listen_port drop
+EOF
+chmod 0600 "$temporary_nft_update"
+
+apply_nft_rules() {
+  local full_config="$1"
+  if nft list chain inet "$table_name" input >/dev/null 2>&1; then
+    nft -f "$temporary_nft_update"
+    return
+  fi
+  nft delete table inet "$table_name" >/dev/null 2>&1 || true
+  nft -f "$full_config"
+}
+
+restore_nft_rules() {
+  nft delete table inet "$table_name" >/dev/null 2>&1 || true
+  if [[ -s "$nft_file" ]]; then
+    nft -f "$nft_file"
+  fi
+}
+
+managed_qdisc_active() {
+  "$tc_binary" qdisc show dev "$interface" 2>/dev/null | grep -q 'qdisc htb 1: root'
+}
+
+apply_egress_limit() {
+  local limit="$1" rate
+  if [[ "$limit" -eq 0 ]]; then
+    if managed_qdisc_active; then
+      "$tc_binary" qdisc delete dev "$interface" root
+    fi
+    return
+  fi
+  rate="${limit}mbit"
+  "$tc_binary" qdisc replace dev "$interface" root handle 1: htb default 10
+  "$tc_binary" class replace dev "$interface" parent 1: classid 1:10 htb rate "$rate" ceil "$rate"
+  "$tc_binary" qdisc replace dev "$interface" parent 1:10 handle 10: fq_codel
+}
+
+config_changed=1
+nft_changed=1
+service_changed=1
+if [[ -s "$config_file" ]] && cmp -s "$config_file" "$temporary_config"; then config_changed=0; fi
+if [[ -s "$nft_file" ]] && cmp -s "$nft_file" "$temporary_nft"; then nft_changed=0; fi
+if [[ -s "$service_file" ]] && cmp -s "$service_file" "$temporary_service"; then service_changed=0; fi
+
+interface_active=0
+if ip link show dev "$interface" >/dev/null 2>&1; then
+  if wg show "$interface" >/dev/null 2>&1; then
+    interface_active=1
+  else
+    echo "managed interface $interface exists but is not an active WireGuard interface" >&2
+    exit 1
+  fi
+fi
+
+if [[ $interface_active == 1 ]]; then
+  if [[ ! -s "$config_file" ]]; then
+    echo "active WireGuard interface $interface has no managed configuration file" >&2
+    exit 1
+  fi
+  old_origin_cidr=$(awk -F ' *= *' '$1 == "Address" { print $2; exit }' "$config_file")
+  old_mtu=$(awk -F ' *= *' '$1 == "MTU" { print $2; exit }' "$config_file")
+  old_egress_limit_mbps=$(sed -n 's/.* htb rate \([0-9][0-9]*\)mbit ceil .*/\1/p' "$config_file" | head -n 1)
+  old_egress_limit_mbps=${old_egress_limit_mbps:-0}
+  old_origin_cidr_valid=0
+  if valid_private_cidr "$old_origin_cidr"; then old_origin_cidr_valid=1; fi
+  if [[ "$old_origin_cidr_valid" != "1" || ! "$old_mtu" =~ ^[0-9]+$ || "$old_mtu" -lt 1280 || "$old_mtu" -gt 1500 ||
+        ! "$old_egress_limit_mbps" =~ ^[0-9]+$ || "$old_egress_limit_mbps" -gt 10000 ]]; then
+    echo "existing managed WireGuard configuration is invalid; refusing a disruptive replacement" >&2
+    exit 1
+  fi
+  strip_wg_quick_config "$config_file" >"$temporary_old_runtime"
+  chmod 0600 "$temporary_old_runtime"
+
+  nft_updated=0
+  wireguard_updated=0
+  address_updated=0
+  mtu_updated=0
+  egress_updated=0
+  rollback_live_update() {
+    local rollback_failed=0
+    set +e
+    if [[ $egress_updated == 1 ]]; then apply_egress_limit "$old_egress_limit_mbps" || rollback_failed=1; fi
+    if [[ $mtu_updated == 1 ]]; then ip link set dev "$interface" mtu "$old_mtu" || rollback_failed=1; fi
+    if [[ $address_updated == 1 ]]; then
+      ip -4 address replace "$old_origin_cidr" dev "$interface" || rollback_failed=1
+      ip -4 address delete "$origin_cidr" dev "$interface" || rollback_failed=1
+    fi
+    if [[ $wireguard_updated == 1 ]]; then wg syncconf "$interface" "$temporary_old_runtime" || rollback_failed=1; fi
+    if [[ $nft_updated == 1 ]]; then restore_nft_rules || rollback_failed=1; fi
+    set -e
+    if [[ $rollback_failed == 1 ]]; then
+      echo "warning: failed to fully restore the previous WireGuard runtime configuration" >&2
+    fi
+  }
+
+  if [[ $nft_changed == 1 ]] || ! nft list chain inet "$table_name" input >/dev/null 2>&1; then
+    if ! apply_nft_rules "$temporary_nft"; then
+      echo "failed to update the managed WireGuard firewall rules" >&2
+      exit 1
+    fi
+    nft_updated=1
+  fi
+  if [[ $config_changed == 1 ]]; then
+    if ! wg syncconf "$interface" "$temporary_runtime"; then
+      rollback_live_update
+      echo "failed to synchronize the active WireGuard interface; the previous configuration remains active" >&2
+      exit 1
+    fi
+    wireguard_updated=1
+    if [[ "$old_origin_cidr" != "$origin_cidr" ]]; then
+      if ! ip -4 address replace "$origin_cidr" dev "$interface"; then
+        rollback_live_update
+        echo "failed to add the updated WireGuard source address" >&2
+        exit 1
+      fi
+      address_updated=1
+      if ! ip -4 address delete "$old_origin_cidr" dev "$interface"; then
+        rollback_live_update
+        echo "failed to remove the previous WireGuard source address" >&2
+        exit 1
+      fi
+    fi
+    if [[ "$old_mtu" != "$mtu" ]]; then
+      if ! ip link set dev "$interface" mtu "$mtu"; then
+        rollback_live_update
+        echo "failed to update the WireGuard MTU" >&2
+        exit 1
+      fi
+      mtu_updated=1
+    fi
+  fi
+  egress_needs_apply=$config_changed
+  if [[ $egress_needs_apply == 0 ]]; then
+    if [[ "$origin_egress_limit_mbps" -gt 0 ]]; then
+      if ! managed_qdisc_active; then egress_needs_apply=1; fi
+    elif managed_qdisc_active; then
+      egress_needs_apply=1
+    fi
+  fi
+  if [[ $egress_needs_apply == 1 ]]; then
+    egress_updated=1
+    if ! apply_egress_limit "$origin_egress_limit_mbps"; then
+      rollback_live_update
+      echo "failed to update the WireGuard source egress limit" >&2
+      exit 1
+    fi
+  fi
+  mv "$temporary_config" "$config_file"
+  mv "$temporary_nft" "$nft_file"
+else
+  mv "$temporary_config" "$config_file"
+  mv "$temporary_nft" "$nft_file"
+  nft delete table inet "$table_name" >/dev/null 2>&1 || true
+  systemctl enable "wg-quick@$interface.service"
+  systemctl restart "wg-quick@$interface.service"
+fi
+
+mv "$temporary_service" "$service_file"
+mv "$temporary_state" "$state_file"
 systemctl daemon-reload
 systemctl enable "wg-quick@$interface.service"
-systemctl restart "wg-quick@$interface.service"
 systemctl enable "simple-cdn-origin-iperf-$interface.service"
-systemctl restart "simple-cdn-origin-iperf-$interface.service"
+if [[ $service_changed == 1 ]] || ! systemctl is-active --quiet "simple-cdn-origin-iperf-$interface.service"; then
+  systemctl restart "simple-cdn-origin-iperf-$interface.service"
+fi
 
 echo "WireGuard origin tunnel $TUNNEL_ID applied at revision $revision"
 echo "Interface: $interface ($origin_cidr), performance port: $performance_port, egress limit: ${origin_egress_limit_mbps} Mbps (0 = unlimited)"
