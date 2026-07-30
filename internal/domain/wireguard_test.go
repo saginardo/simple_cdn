@@ -52,3 +52,21 @@ func TestWireGuardEgressLimitAndHandshakeFreshness(t *testing.T) {
 		t.Fatal("WireGuard handshake freshness boundaries are incorrect")
 	}
 }
+
+func TestWireGuardPerformanceResultAcceptsBidirectionalMeasurements(t *testing.T) {
+	result := WireGuardPerformanceResult{
+		DirectTCP:           &WireGuardTCPMeasurement{Mbps: 100, Retransmits: 1},
+		DirectTCPReverse:    &WireGuardTCPMeasurement{Mbps: 90, Retransmits: 2},
+		WireGuardTCP:        &WireGuardTCPMeasurement{Mbps: 95, Retransmits: 0},
+		WireGuardTCPReverse: &WireGuardTCPMeasurement{Mbps: 85, Retransmits: 1},
+		WireGuardUDP:        &WireGuardUDPMeasurement{TargetMbps: 50, Mbps: 49, LostPackets: 1, TotalPackets: 1000, LossPercent: 0.1, JitterMS: 0.4},
+		WireGuardUDPReverse: &WireGuardUDPMeasurement{TargetMbps: 50, Mbps: 48, LostPackets: 2, TotalPackets: 1000, LossPercent: 0.2, JitterMS: 0.5},
+	}
+	if !ValidWireGuardPerformanceResult(result) {
+		t.Fatalf("bidirectional result rejected: %#v", result)
+	}
+	result.WireGuardTCPReverse.Retransmits = -1
+	if ValidWireGuardPerformanceResult(result) {
+		t.Fatal("invalid reverse TCP result was accepted")
+	}
+}

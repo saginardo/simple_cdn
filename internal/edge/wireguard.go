@@ -602,20 +602,35 @@ func (m *linuxWireGuardManager) RunPerformance(ctx context.Context, test domain.
 
 	result := &domain.WireGuardPerformanceResult{}
 	var problems []error
-	if measurement, err := m.runIperfTCP(ctx, config.DirectPerformanceHost, config.PerformancePort, test.DurationSeconds); err != nil {
-		problems = append(problems, fmt.Errorf("direct TCP: %w", err))
+	if measurement, err := m.runIperfTCP(ctx, config.DirectPerformanceHost, config.PerformancePort, test.DurationSeconds, false); err != nil {
+		problems = append(problems, fmt.Errorf("direct TCP edge-to-origin: %w", err))
 	} else {
 		result.DirectTCP = measurement
 	}
-	if measurement, err := m.runIperfTCP(ctx, config.OriginAddress, config.PerformancePort, test.DurationSeconds); err != nil {
-		problems = append(problems, fmt.Errorf("WireGuard TCP: %w", err))
+	if measurement, err := m.runIperfTCP(ctx, config.DirectPerformanceHost, config.PerformancePort, test.DurationSeconds, true); err != nil {
+		problems = append(problems, fmt.Errorf("direct TCP origin-to-edge: %w", err))
+	} else {
+		result.DirectTCPReverse = measurement
+	}
+	if measurement, err := m.runIperfTCP(ctx, config.OriginAddress, config.PerformancePort, test.DurationSeconds, false); err != nil {
+		problems = append(problems, fmt.Errorf("WireGuard TCP edge-to-origin: %w", err))
 	} else {
 		result.WireGuardTCP = measurement
 	}
-	if measurement, err := m.runIperfUDP(ctx, config.OriginAddress, config.PerformancePort, test.TargetMbps, test.DurationSeconds); err != nil {
-		problems = append(problems, fmt.Errorf("WireGuard UDP: %w", err))
+	if measurement, err := m.runIperfTCP(ctx, config.OriginAddress, config.PerformancePort, test.DurationSeconds, true); err != nil {
+		problems = append(problems, fmt.Errorf("WireGuard TCP origin-to-edge: %w", err))
+	} else {
+		result.WireGuardTCPReverse = measurement
+	}
+	if measurement, err := m.runIperfUDP(ctx, config.OriginAddress, config.PerformancePort, test.TargetMbps, test.DurationSeconds, false); err != nil {
+		problems = append(problems, fmt.Errorf("WireGuard UDP edge-to-origin: %w", err))
 	} else {
 		result.WireGuardUDP = measurement
+	}
+	if measurement, err := m.runIperfUDP(ctx, config.OriginAddress, config.PerformancePort, test.TargetMbps, test.DurationSeconds, true); err != nil {
+		problems = append(problems, fmt.Errorf("WireGuard UDP origin-to-edge: %w", err))
+	} else {
+		result.WireGuardUDPReverse = measurement
 	}
 	if !domain.ValidWireGuardPerformanceResult(*result) {
 		result = nil
@@ -640,8 +655,13 @@ type iperfResult struct {
 	} `json:"end"`
 }
 
-func (m *linuxWireGuardManager) runIperfTCP(ctx context.Context, host string, port, durationSeconds int) (*domain.WireGuardTCPMeasurement, error) {
-	result, err := m.runIperf(ctx, durationSeconds, "-c", host, "-p", strconv.Itoa(port), "-t", strconv.Itoa(durationSeconds), "--json")
+func (m *linuxWireGuardManager) runIperfTCP(ctx context.Context, host string, port, durationSeconds int, reverse bool) (*domain.WireGuardTCPMeasurement, error) {
+	arguments := []string{"-c", host, "-p", strconv.Itoa(port)}
+	if reverse {
+		arguments = append(arguments, "-R")
+	}
+	arguments = append(arguments, "-t", strconv.Itoa(durationSeconds), "--json")
+	result, err := m.runIperf(ctx, durationSeconds, arguments...)
 	if err != nil {
 		return nil, err
 	}
@@ -652,8 +672,13 @@ func (m *linuxWireGuardManager) runIperfTCP(ctx context.Context, host string, po
 	return measurement, nil
 }
 
-func (m *linuxWireGuardManager) runIperfUDP(ctx context.Context, host string, port, targetMbps, durationSeconds int) (*domain.WireGuardUDPMeasurement, error) {
-	result, err := m.runIperf(ctx, durationSeconds, "-c", host, "-p", strconv.Itoa(port), "-u", "-b", fmt.Sprintf("%dM", targetMbps), "-t", strconv.Itoa(durationSeconds), "--json")
+func (m *linuxWireGuardManager) runIperfUDP(ctx context.Context, host string, port, targetMbps, durationSeconds int, reverse bool) (*domain.WireGuardUDPMeasurement, error) {
+	arguments := []string{"-c", host, "-p", strconv.Itoa(port), "-u", "-b", fmt.Sprintf("%dM", targetMbps)}
+	if reverse {
+		arguments = append(arguments, "-R")
+	}
+	arguments = append(arguments, "-t", strconv.Itoa(durationSeconds), "--json")
+	result, err := m.runIperf(ctx, durationSeconds, arguments...)
 	if err != nil {
 		return nil, err
 	}

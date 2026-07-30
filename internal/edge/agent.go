@@ -265,6 +265,7 @@ func New(config Config) (*Agent, error) {
 	}
 	if wireGuardAvailable && wireGuardPerformanceAvailable {
 		config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityWireGuardPerformance)
+		config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityWireGuardPerformanceV2)
 	}
 	if managedNginxVersionAtLeast(config.NginxVersion, 1, 29, 4) {
 		config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityOriginHTTP2)

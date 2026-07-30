@@ -110,9 +110,12 @@ type WireGuardUDPMeasurement struct {
 }
 
 type WireGuardPerformanceResult struct {
-	DirectTCP    *WireGuardTCPMeasurement `json:"direct_tcp,omitempty"`
-	WireGuardTCP *WireGuardTCPMeasurement `json:"wireguard_tcp,omitempty"`
-	WireGuardUDP *WireGuardUDPMeasurement `json:"wireguard_udp,omitempty"`
+	DirectTCP           *WireGuardTCPMeasurement `json:"direct_tcp,omitempty"`
+	DirectTCPReverse    *WireGuardTCPMeasurement `json:"direct_tcp_reverse,omitempty"`
+	WireGuardTCP        *WireGuardTCPMeasurement `json:"wireguard_tcp,omitempty"`
+	WireGuardTCPReverse *WireGuardTCPMeasurement `json:"wireguard_tcp_reverse,omitempty"`
+	WireGuardUDP        *WireGuardUDPMeasurement `json:"wireguard_udp,omitempty"`
+	WireGuardUDPReverse *WireGuardUDPMeasurement `json:"wireguard_udp_reverse,omitempty"`
 }
 
 type WireGuardPerformanceTest struct {
@@ -238,17 +241,25 @@ func ValidWireGuardPerformanceResult(result WireGuardPerformanceResult) bool {
 	validTCP := func(value *WireGuardTCPMeasurement) bool {
 		return value == nil || finiteRange(value.Mbps, 0, 1_000_000) && value.Retransmits >= 0
 	}
-	if !validTCP(result.DirectTCP) || !validTCP(result.WireGuardTCP) {
-		return false
+	for _, value := range []*WireGuardTCPMeasurement{
+		result.DirectTCP, result.DirectTCPReverse, result.WireGuardTCP, result.WireGuardTCPReverse,
+	} {
+		if !validTCP(value) {
+			return false
+		}
 	}
-	if value := result.WireGuardUDP; value != nil {
+	for _, value := range []*WireGuardUDPMeasurement{result.WireGuardUDP, result.WireGuardUDPReverse} {
+		if value == nil {
+			continue
+		}
 		if value.TargetMbps < 1 || value.TargetMbps > 10_000 || !finiteRange(value.Mbps, 0, 1_000_000) ||
 			value.LostPackets < 0 || value.TotalPackets < 0 || value.LostPackets > value.TotalPackets ||
 			!finiteRange(value.LossPercent, 0, 100) || !finiteRange(value.JitterMS, 0, 60_000) {
 			return false
 		}
 	}
-	return result.DirectTCP != nil || result.WireGuardTCP != nil || result.WireGuardUDP != nil
+	return result.DirectTCP != nil || result.DirectTCPReverse != nil || result.WireGuardTCP != nil ||
+		result.WireGuardTCPReverse != nil || result.WireGuardUDP != nil || result.WireGuardUDPReverse != nil
 }
 
 func WireGuardInterfaceName(tunnelID string) string {

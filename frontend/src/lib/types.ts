@@ -385,8 +385,11 @@ export interface WireGuardPerformanceTest {
   status: "queued" | "running" | "succeeded" | "failed";
   result?: {
     direct_tcp?: WireGuardTCPMeasurement;
+    direct_tcp_reverse?: WireGuardTCPMeasurement;
     wireguard_tcp?: WireGuardTCPMeasurement;
+    wireguard_tcp_reverse?: WireGuardTCPMeasurement;
     wireguard_udp?: WireGuardUDPMeasurement;
+    wireguard_udp_reverse?: WireGuardUDPMeasurement;
   };
   error?: string;
   created_at: string;

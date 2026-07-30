@@ -54,6 +54,7 @@ func TestCreateWireGuardPerformanceTestRequiresRecentHandshake(t *testing.T) {
 	}
 	if err := database.SetNodeCapabilities(node.ID, []string{
 		domain.EdgeCapabilityWireGuard, domain.EdgeCapabilityWireGuardPerformance,
+		domain.EdgeCapabilityWireGuardPerformanceV2,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -102,6 +103,22 @@ func TestCreateWireGuardPerformanceTestRequiresRecentHandshake(t *testing.T) {
 		TunnelID: tunnel.ID, Revision: tunnel.Revision, InterfaceName: domain.WireGuardInterfaceName(tunnel.ID),
 		PublicKey: edgeKey, LatestHandshake: &fresh,
 	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetNodeCapabilities(node.ID, []string{
+		domain.EdgeCapabilityWireGuard, domain.EdgeCapabilityWireGuardPerformance,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	response = httptest.NewRecorder()
+	server.createWireGuardPerformanceTest(response, httptest.NewRequest(http.MethodPost, "/api/wireguard/performance-tests", bytes.NewReader(body)))
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "bidirectional") {
+		t.Fatalf("legacy capability response = %d %s", response.Code, response.Body.String())
+	}
+	if err := database.SetNodeCapabilities(node.ID, []string{
+		domain.EdgeCapabilityWireGuard, domain.EdgeCapabilityWireGuardPerformance,
+		domain.EdgeCapabilityWireGuardPerformanceV2,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	response = httptest.NewRecorder()

@@ -83,6 +83,7 @@ import type {
   WireGuardPerformanceTest,
   WireGuardTCPMeasurement,
   WireGuardTunnel,
+  WireGuardUDPMeasurement,
 } from "@/lib/types";
 
 interface TunnelDraft {
@@ -178,7 +179,7 @@ export function WireGuardPage() {
       ),
     onSuccess: (result, tunnel) =>
       setCommand({
-        title: t("{value0} 源站安装命令", { value0: tunnel.name }),
+        title: t("{value0} 安装/升级源站代理", { value0: tunnel.name }),
         command: result.install_command,
         expiresAt: result.expires_at,
       }),
@@ -200,7 +201,21 @@ export function WireGuardPage() {
 
   const data = tunnels.data ?? [];
   const peers = data.flatMap((tunnel) => tunnel.peers);
-  const readyTunnels = data.filter(tunnelPerformanceReady);
+  const readyTunnels = data.filter(tunnelReady);
+  const performanceNodeIDs = useMemo(
+    () =>
+      new Set(
+        (nodes.data ?? [])
+          .filter((node) =>
+            node.capabilities.includes("wireguard_performance_v2"),
+          )
+          .map((node) => node.id),
+      ),
+    [nodes.data],
+  );
+  const performanceTunnels = data.filter((tunnel) =>
+    tunnelPerformanceReady(tunnel, performanceNodeIDs),
+  );
   const freshHandshakes = peers.filter((peer) =>
     handshakeFresh(peer.latest_handshake_at),
   );
@@ -229,7 +244,7 @@ export function WireGuardPage() {
             <Button
               variant="outline"
               onClick={() => setPerformanceTunnel(null)}
-              disabled={!readyTunnels.length}
+              disabled={!performanceTunnels.length}
             >
               <Gauge />
               {t("链路测试")}
@@ -378,18 +393,11 @@ export function WireGuardPage() {
                                   <Eye />
                                 </IconAction>
                                 <IconAction
-                                  label={t("生成源站安装命令")}
+                                  label={t("安装/升级源站代理")}
                                   onClick={() => install.mutate(tunnel)}
                                   disabled={install.isPending}
                                 >
                                   <Terminal />
-                                </IconAction>
-                                <IconAction
-                                  label={t("测试隧道")}
-                                  onClick={() => setPerformanceTunnel(tunnel)}
-                                  disabled={!tunnelPerformanceReady(tunnel)}
-                                >
-                                  <Gauge />
                                 </IconAction>
                                 <IconAction
                                   label={t("编辑隧道")}
@@ -450,6 +458,7 @@ export function WireGuardPage() {
         open={performanceTunnel !== undefined}
         initialTunnel={performanceTunnel ?? null}
         tunnels={data}
+        performanceNodeIDs={performanceNodeIDs}
         onOpenChange={(open) => {
           if (!open) setPerformanceTunnel(undefined);
         }}
@@ -812,18 +821,23 @@ function PerformanceDialog({
   open,
   initialTunnel,
   tunnels,
+  performanceNodeIDs,
   onOpenChange,
   onStarted,
 }: {
   open: boolean;
   initialTunnel: WireGuardTunnel | null;
   tunnels: WireGuardTunnel[];
+  performanceNodeIDs: Set<string>;
   onOpenChange: (open: boolean) => void;
   onStarted: () => void;
 }) {
   const ready = useMemo(
-    () => tunnels.filter(tunnelPerformanceReady),
-    [tunnels],
+    () =>
+      tunnels.filter((tunnel) =>
+        tunnelPerformanceReady(tunnel, performanceNodeIDs),
+      ),
+    [performanceNodeIDs, tunnels],
   );
   const [tunnelID, setTunnelID] = useState("");
   const [nodeID, setNodeID] = useState("");
@@ -831,23 +845,25 @@ function PerformanceDialog({
   const [durationSeconds, setDurationSeconds] = useState(10);
   const selected = ready.find((tunnel) => tunnel.id === tunnelID);
   const availablePeers =
-    selected?.peers.filter((peer) => peerPerformanceReady(peer, selected)) ??
-    [];
+    selected?.peers.filter((peer) =>
+      peerPerformanceReady(peer, selected, performanceNodeIDs),
+    ) ?? [];
 
   useEffect(() => {
     if (!open) return;
     const nextTunnel =
-      initialTunnel && tunnelPerformanceReady(initialTunnel)
+      initialTunnel && tunnelPerformanceReady(initialTunnel, performanceNodeIDs)
         ? initialTunnel
         : ready[0];
     setTunnelID(nextTunnel?.id ?? "");
     setNodeID(
-      nextTunnel?.peers.find((peer) => peerPerformanceReady(peer, nextTunnel))
-        ?.node_id ?? "",
+      nextTunnel?.peers.find((peer) =>
+        peerPerformanceReady(peer, nextTunnel, performanceNodeIDs),
+      )?.node_id ?? "",
     );
     setTargetMbps(100);
     setDurationSeconds(10);
-  }, [initialTunnel, open, ready]);
+  }, [initialTunnel, open, performanceNodeIDs, ready]);
 
   const start = useMutation({
     mutationFn: () =>
@@ -880,7 +896,7 @@ function PerformanceDialog({
           <DialogHeader>
             <DialogTitle>{t("WireGuard 链路测试")}</DialogTitle>
             <DialogDescription>
-              {t("公网 TCP、隧道 TCP 与隧道 UDP")}
+              {t("公网 TCP、隧道 TCP 与隧道 UDP 双向测试")}
             </DialogDescription>
           </DialogHeader>
           <Field label={t("隧道")} id="performance-tunnel">
@@ -891,7 +907,7 @@ function PerformanceDialog({
                 const tunnel = ready.find((item) => item.id === value);
                 setNodeID(
                   tunnel?.peers.find((peer) =>
-                    peerPerformanceReady(peer, tunnel),
+                    peerPerformanceReady(peer, tunnel, performanceNodeIDs),
                   )?.node_id ?? "",
                 );
               }}
@@ -1124,7 +1140,7 @@ function CommandDialog({
 function PerformanceTable({ tests }: { tests: WireGuardPerformanceTest[] }) {
   return (
     <Panel className="rounded-b-none">
-      <Table className="min-w-[1180px]">
+      <Table className="min-w-[1480px]">
         <TableHeader>
           <TableRow>
             <TableHead className="pl-5">{t("时间")}</TableHead>
@@ -1140,12 +1156,11 @@ function PerformanceTable({ tests }: { tests: WireGuardPerformanceTest[] }) {
         <TableBody>
           {tests.map((test) => {
             const direct = test.result?.direct_tcp;
+            const directReverse = test.result?.direct_tcp_reverse;
             const tunneled = test.result?.wireguard_tcp;
+            const tunneledReverse = test.result?.wireguard_tcp_reverse;
             const udp = test.result?.wireguard_udp;
-            const difference =
-              direct && direct.mbps > 0 && tunneled
-                ? tunneled.mbps / direct.mbps - 1
-                : null;
+            const udpReverse = test.result?.wireguard_udp_reverse;
             return (
               <TableRow key={test.id}>
                 <TableCell className="pl-5">
@@ -1157,20 +1172,35 @@ function PerformanceTable({ tests }: { tests: WireGuardPerformanceTest[] }) {
                     {test.node_name}
                   </div>
                 </TableCell>
-                <TableCell>{tcpMetric(direct)}</TableCell>
-                <TableCell>{tcpMetric(tunneled)}</TableCell>
                 <TableCell>
-                  {difference == null ? "--" : formatPercent(difference, 1)}
+                  <DirectionMetrics
+                    forward={tcpMetric(direct)}
+                    reverse={tcpMetric(directReverse)}
+                  />
                 </TableCell>
                 <TableCell>
-                  {udp
-                    ? `${metricNumber(udp.mbps)} Mbps / ${formatNumber(udp.target_mbps)} Mbps`
-                    : "--"}
+                  <DirectionMetrics
+                    forward={tcpMetric(tunneled)}
+                    reverse={tcpMetric(tunneledReverse)}
+                  />
                 </TableCell>
                 <TableCell>
-                  {udp
-                    ? `${formatPercent(udp.loss_percent / 100, 2)} / ${metricNumber(udp.jitter_ms)} ms`
-                    : "--"}
+                  <DirectionMetrics
+                    forward={tcpDifference(direct, tunneled)}
+                    reverse={tcpDifference(directReverse, tunneledReverse)}
+                  />
+                </TableCell>
+                <TableCell>
+                  <DirectionMetrics
+                    forward={udpMetric(udp)}
+                    reverse={udpMetric(udpReverse)}
+                  />
+                </TableCell>
+                <TableCell>
+                  <DirectionMetrics
+                    forward={udpQuality(udp)}
+                    reverse={udpQuality(udpReverse)}
+                  />
                 </TableCell>
                 <TableCell className="pr-5">
                   <StatusBadge status={test.status} />
@@ -1328,14 +1358,27 @@ function tunnelReady(tunnel: WireGuardTunnel) {
   );
 }
 
-function peerPerformanceReady(peer: WireGuardPeer, tunnel: WireGuardTunnel) {
-  return peerApplied(peer, tunnel) && handshakeFresh(peer.latest_handshake_at);
+function peerPerformanceReady(
+  peer: WireGuardPeer,
+  tunnel: WireGuardTunnel,
+  performanceNodeIDs: Set<string>,
+) {
+  return (
+    performanceNodeIDs.has(peer.node_id) &&
+    peerApplied(peer, tunnel) &&
+    handshakeFresh(peer.latest_handshake_at)
+  );
 }
 
-function tunnelPerformanceReady(tunnel: WireGuardTunnel) {
+function tunnelPerformanceReady(
+  tunnel: WireGuardTunnel,
+  performanceNodeIDs: Set<string>,
+) {
   return (
     tunnelReady(tunnel) &&
-    tunnel.peers.some((peer) => peerPerformanceReady(peer, tunnel))
+    tunnel.peers.some((peer) =>
+      peerPerformanceReady(peer, tunnel, performanceNodeIDs),
+    )
   );
 }
 
@@ -1368,4 +1411,43 @@ function metricNumber(value: number) {
 function tcpMetric(value?: WireGuardTCPMeasurement) {
   if (!value) return "--";
   return `${metricNumber(value.mbps)} Mbps / ${formatNumber(value.retransmits)} retx`;
+}
+
+function tcpDifference(
+  direct?: WireGuardTCPMeasurement,
+  tunneled?: WireGuardTCPMeasurement,
+) {
+  if (!direct || direct.mbps <= 0 || !tunneled) return "--";
+  return formatPercent(tunneled.mbps / direct.mbps - 1, 1);
+}
+
+function udpMetric(value?: WireGuardUDPMeasurement) {
+  if (!value) return "--";
+  return `${metricNumber(value.mbps)} Mbps / ${formatNumber(value.target_mbps)} Mbps`;
+}
+
+function udpQuality(value?: WireGuardUDPMeasurement) {
+  if (!value) return "--";
+  return `${formatPercent(value.loss_percent / 100, 2)} / ${metricNumber(value.jitter_ms)} ms`;
+}
+
+function DirectionMetrics({
+  forward,
+  reverse,
+}: {
+  forward: string;
+  reverse: string;
+}) {
+  return (
+    <div className="grid min-w-52 gap-1 text-xs tabular-nums">
+      <div className="grid grid-cols-[5.5rem_1fr] items-baseline gap-2 whitespace-nowrap">
+        <span className="text-muted-foreground">{t("边缘 → 源站")}</span>
+        <span>{forward}</span>
+      </div>
+      <div className="grid grid-cols-[5.5rem_1fr] items-baseline gap-2 whitespace-nowrap">
+        <span className="text-muted-foreground">{t("源站 → 边缘")}</span>
+        <span>{reverse}</span>
+      </div>
+    </div>
+  );
 }

@@ -133,8 +133,8 @@ func (s *Server) validateWireGuardNodes(nodeIDs []string, performance bool) erro
 		if !slices.Contains(node.Capabilities, domain.EdgeCapabilityWireGuard) {
 			return fmt.Errorf("edge node %s must be upgraded or reinstalled with WireGuard support", node.Name)
 		}
-		if performance && !slices.Contains(node.Capabilities, domain.EdgeCapabilityWireGuardPerformance) {
-			return fmt.Errorf("edge node %s does not have iperf3 performance-test support", node.Name)
+		if performance && !slices.Contains(node.Capabilities, domain.EdgeCapabilityWireGuardPerformanceV2) {
+			return fmt.Errorf("edge node %s must be upgraded for bidirectional iperf3 performance tests", node.Name)
 		}
 	}
 	return nil

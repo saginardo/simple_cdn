@@ -43,7 +43,8 @@ func (manager *fakeWireGuardManager) Reconcile(_ context.Context, configs []doma
 func (manager *fakeWireGuardManager) RunPerformance(_ context.Context, _ domain.WireGuardPerformanceTest, _ domain.WireGuardEdgeConfig) (*domain.WireGuardPerformanceResult, error) {
 	manager.performanceCount++
 	return &domain.WireGuardPerformanceResult{
-		DirectTCP: &domain.WireGuardTCPMeasurement{Mbps: 90, Retransmits: 1},
+		DirectTCP:        &domain.WireGuardTCPMeasurement{Mbps: 90, Retransmits: 1},
+		DirectTCPReverse: &domain.WireGuardTCPMeasurement{Mbps: 95, Retransmits: 0},
 	}, errors.New("WireGuard UDP: blocked")
 }
 
@@ -108,7 +109,8 @@ func TestWireGuardRoundCachesConfigurationReportsStatusAndPartialPerformance(t *
 		t.Fatal(err)
 	}
 	if !slicesContain(agent.Config.Capabilities, domain.EdgeCapabilityWireGuard) ||
-		!slicesContain(agent.Config.Capabilities, domain.EdgeCapabilityWireGuardPerformance) {
+		!slicesContain(agent.Config.Capabilities, domain.EdgeCapabilityWireGuardPerformance) ||
+		!slicesContain(agent.Config.Capabilities, domain.EdgeCapabilityWireGuardPerformanceV2) {
 		t.Fatalf("WireGuard capabilities = %#v", agent.Config.Capabilities)
 	}
 	if err := agent.runWireGuardRound(context.Background()); err == nil || !strings.Contains(err.Error(), "blocked") {
@@ -151,8 +153,11 @@ func TestWireGuardKeyPersistenceConfigRenderingAndIperfParsing(t *testing.T) {
 		}
 	}
 
-	commandPath := filepath.Join(t.TempDir(), "iperf3")
+	directory := t.TempDir()
+	commandPath := filepath.Join(directory, "iperf3")
+	commandLog := filepath.Join(directory, "iperf3.log")
 	script := `#!/bin/sh
+printf '%s\n' "$*" >> "` + commandLog + `"
 case " $* " in
   *" -u "*) printf '%s\n' '{"end":{"sum":{"bits_per_second":80000000,"jitter_ms":1.25,"lost_packets":2,"packets":1000,"lost_percent":0.2}}}' ;;
   *) printf '%s\n' '{"end":{"sum_sent":{"bits_per_second":100000000,"retransmits":3}}}' ;;
@@ -162,13 +167,30 @@ esac
 		t.Fatal(err)
 	}
 	manager.iperf3Path = commandPath
-	tcp, err := manager.runIperfTCP(context.Background(), "origin.example.test", 5201, 3)
+	tcp, err := manager.runIperfTCP(context.Background(), "origin.example.test", 5201, 3, false)
 	if err != nil || tcp.Mbps != 100 || tcp.Retransmits != 3 {
 		t.Fatalf("TCP iperf result = %#v, %v", tcp, err)
 	}
-	udp, err := manager.runIperfUDP(context.Background(), "10.253.40.1", 5201, 100, 3)
+	reverseTCP, err := manager.runIperfTCP(context.Background(), "origin.example.test", 5201, 3, true)
+	if err != nil || reverseTCP.Mbps != 100 || reverseTCP.Retransmits != 3 {
+		t.Fatalf("reverse TCP iperf result = %#v, %v", reverseTCP, err)
+	}
+	udp, err := manager.runIperfUDP(context.Background(), "10.253.40.1", 5201, 100, 3, false)
 	if err != nil || udp.Mbps != 80 || udp.LostPackets != 2 || udp.TotalPackets != 1000 || udp.LossPercent != 0.2 || udp.JitterMS != 1.25 {
 		t.Fatalf("UDP iperf result = %#v, %v", udp, err)
+	}
+	reverseUDP, err := manager.runIperfUDP(context.Background(), "10.253.40.1", 5201, 100, 3, true)
+	if err != nil || reverseUDP.Mbps != 80 || reverseUDP.LostPackets != 2 || reverseUDP.TotalPackets != 1000 || reverseUDP.LossPercent != 0.2 || reverseUDP.JitterMS != 1.25 {
+		t.Fatalf("reverse UDP iperf result = %#v, %v", reverseUDP, err)
+	}
+	commands, err := os.ReadFile(commandLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(commands)), "\n")
+	if len(lines) != 4 || strings.Contains(lines[0], " -R ") || !strings.Contains(" "+lines[1]+" ", " -R ") ||
+		strings.Contains(lines[2], " -R ") || !strings.Contains(" "+lines[3]+" ", " -R ") {
+		t.Fatalf("iperf direction commands = %#v", lines)
 	}
 }
 

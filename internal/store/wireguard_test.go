@@ -114,13 +114,15 @@ func TestWireGuardTunnelEnrollmentSiteReferencesAndPerformance(t *testing.T) {
 		t.Fatalf("claimed test = %#v, %v", claimed, err)
 	}
 	partial := &domain.WireGuardPerformanceResult{
-		DirectTCP: &domain.WireGuardTCPMeasurement{Mbps: 90, Retransmits: 1},
+		DirectTCP:        &domain.WireGuardTCPMeasurement{Mbps: 90, Retransmits: 1},
+		DirectTCPReverse: &domain.WireGuardTCPMeasurement{Mbps: 80, Retransmits: 2},
 	}
 	if err := database.FinishWireGuardPerformanceTest(node.ID, test.ID, partial, "WireGuard UDP: connection refused"); err != nil {
 		t.Fatal(err)
 	}
 	finished, err := database.GetWireGuardPerformanceTest(test.ID)
-	if err != nil || finished.Status != domain.WireGuardPerformanceFailed || finished.Result == nil || finished.Result.DirectTCP == nil || finished.Error == "" {
+	if err != nil || finished.Status != domain.WireGuardPerformanceFailed || finished.Result == nil || finished.Result.DirectTCP == nil ||
+		finished.Result.DirectTCPReverse == nil || finished.Result.DirectTCPReverse.Mbps != 80 || finished.Error == "" {
 		t.Fatalf("partial performance result = %#v, %v", finished, err)
 	}
 }

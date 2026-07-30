@@ -58,7 +58,7 @@ export function SitesPage() {
                 <TableHeader>
                   <TableRow>
                     <TableHead className="pl-5">{t("站点")}</TableHead>
-                    <TableHead>{t("协议")}</TableHead>
+                    <TableHead>{t("回源类型")}</TableHead>
                     <TableHead>{t("节点")}</TableHead>
                     <TableHead>{t("版本")}</TableHead>
                     <TableHead>{t("发布状态")}</TableHead>
@@ -78,7 +78,7 @@ export function SitesPage() {
                         </div>
                       </TableCell>
                       <TableCell className="text-sm">
-                        {siteProtocol(site)}
+                        {siteOriginType(site)}
                       </TableCell>
                       <TableCell className="tabular-nums">
                         {formatNumber(site.node_ids.length)}
@@ -160,11 +160,15 @@ function SiteStatus({ site }: { site: Site }) {
     />
   );
 }
-function siteProtocol(site: Site) {
-  if (site.tcp_only) return "TCP / TLS";
-  if (site.tcp_forwards.length) return "HTTP + TCP";
-  const scheme = site.primary_origin.url.split(":", 1)[0]?.toLowerCase();
-  if (scheme === "grpc" || scheme === "grpcs") return "gRPC";
-  if (scheme === "ws" || scheme === "wss") return "WebSocket";
-  return "HTTP / WS / SSE";
+function siteOriginType(site: Site) {
+  if (site.tcp_only) return t("直连");
+  const origins = [site.primary_origin, site.backup_origin].filter(
+    (origin) => origin?.enabled,
+  );
+  const direct = origins.some((origin) => !origin?.wireguard_tunnel_id);
+  const tunneled = origins.some((origin) =>
+    Boolean(origin?.wireguard_tunnel_id),
+  );
+  if (direct && tunneled) return t("直连 + 隧道");
+  return tunneled ? t("隧道") : t("直连");
 }

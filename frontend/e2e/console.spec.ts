@@ -90,7 +90,11 @@ const wireGuardNodes = [
     name: "edge-hong-kong",
     public_ipv4: "203.0.113.41",
     status: "active",
-    capabilities: ["wireguard_v1", "wireguard_performance_v1"],
+    capabilities: [
+      "wireguard_v1",
+      "wireguard_performance_v1",
+      "wireguard_performance_v2",
+    ],
     applied_version: 8,
     last_heartbeat_at: now.toISOString(),
     created_at: now.toISOString(),
@@ -101,7 +105,11 @@ const wireGuardNodes = [
     name: "edge-singapore",
     public_ipv4: "203.0.113.42",
     status: "active",
-    capabilities: ["wireguard_v1", "wireguard_performance_v1"],
+    capabilities: [
+      "wireguard_v1",
+      "wireguard_performance_v1",
+      "wireguard_performance_v2",
+    ],
     applied_version: 8,
     last_heartbeat_at: now.toISOString(),
     created_at: now.toISOString(),
@@ -158,7 +166,9 @@ const wireGuardPerformanceTests = [
     status: "succeeded",
     result: {
       direct_tcp: { mbps: 942.8, retransmits: 1 },
+      direct_tcp_reverse: { mbps: 901.3, retransmits: 2 },
       wireguard_tcp: { mbps: 918.4, retransmits: 0 },
+      wireguard_tcp_reverse: { mbps: 876.5, retransmits: 1 },
       wireguard_udp: {
         target_mbps: 800,
         mbps: 793.2,
@@ -166,6 +176,14 @@ const wireGuardPerformanceTests = [
         total_packets: 68_442,
         loss_percent: 0.03,
         jitter_ms: 0.41,
+      },
+      wireguard_udp_reverse: {
+        target_mbps: 800,
+        mbps: 781.6,
+        lost_packets: 31,
+        total_packets: 68_210,
+        loss_percent: 0.05,
+        jitter_ms: 0.52,
       },
     },
     created_at: series[22].time,
@@ -1064,19 +1082,50 @@ test("sites list shows only the publish status", async ({ page }) => {
       tlsRequests.push(request.url());
     }
   });
-  await mockAPI(page);
+  const tunneledListSite = {
+    ...site,
+    id: "site-tunnel",
+    name: "隧道回源站",
+    primary_origin: {
+      ...site.primary_origin,
+      wireguard_tunnel_id: wireGuardTunnel.id,
+    },
+  };
+  await mockAPI(page, {
+    "/api/sites": [site, tunneledListSite],
+    "/api/sites/site-tunnel/publish-status": {
+      task: {
+        id: "publish-tunnel",
+        kind: "publish",
+        site_id: "site-tunnel",
+        status: "succeeded",
+        created_at: now.toISOString(),
+        updated_at: now.toISOString(),
+      },
+      nodes: [],
+    },
+  });
   await page.goto("/#/sites");
 
   await expect(
     page.getByRole("columnheader", { name: "发布状态" }),
   ).toBeVisible();
   await expect(page.getByRole("columnheader", { name: "版本" })).toBeVisible();
+  await expect(
+    page.getByRole("columnheader", { name: "回源类型" }),
+  ).toBeVisible();
+  await expect(page.getByRole("columnheader", { name: "协议" })).toHaveCount(0);
   const row = page.getByRole("row").filter({ hasText: site.name });
   await expect(row.getByText("V8", { exact: true })).toBeVisible();
+  await expect(row.getByText("直连", { exact: true })).toBeVisible();
   await expect(row.getByText("Cache Version V2", { exact: true })).toHaveCount(
     0,
   );
   await expect(row.getByText("成功", { exact: true })).toHaveCount(1);
+  const tunneledRow = page
+    .getByRole("row")
+    .filter({ hasText: tunneledListSite.name });
+  await expect(tunneledRow.getByText("隧道", { exact: true })).toBeVisible();
   expect(tlsRequests).toEqual([]);
 
   await row.getByRole("link", { name: `管理 ${site.name}` }).click();
@@ -2281,6 +2330,10 @@ test("WireGuard workspace shows tunnel health and performance on desktop and mob
   await expect(page.getByText("源站主隧道", { exact: true })).toBeVisible();
   await expect(page.getByText("1 / 1", { exact: true })).toBeVisible();
   await expect(page.getByText("2/2 已应用", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "安装/升级源站代理" }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "测试隧道" })).toHaveCount(0);
   await page.screenshot({
     path: testInfo.outputPath("wireguard-desktop.png"),
     fullPage: true,
@@ -2305,7 +2358,10 @@ test("WireGuard workspace shows tunnel health and performance on desktop and mob
 
   await page.getByRole("tab", { name: "性能测试" }).click();
   await expect(page.getByText("942.8 Mbps / 1 retx")).toBeVisible();
+  await expect(page.getByText("901.3 Mbps / 2 retx")).toBeVisible();
+  await expect(page.getByText("876.5 Mbps / 1 retx")).toBeVisible();
   await expect(page.getByText("793.2 Mbps / 800 Mbps")).toBeVisible();
+  await expect(page.getByText("781.6 Mbps / 800 Mbps")).toBeVisible();
   await page.screenshot({
     path: testInfo.outputPath("wireguard-performance-desktop.png"),
     fullPage: true,
@@ -2323,6 +2379,17 @@ test("WireGuard workspace shows tunnel health and performance on desktop and mob
   ).toBe(true);
   await page.screenshot({
     path: testInfo.outputPath("wireguard-mobile.png"),
+    fullPage: true,
+  });
+  await page.getByRole("tab", { name: "性能测试" }).click();
+  await expect(page.getByText("901.3 Mbps / 2 retx")).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth + 1,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: testInfo.outputPath("wireguard-performance-mobile.png"),
     fullPage: true,
   });
   expect(errors).toEqual([]);
