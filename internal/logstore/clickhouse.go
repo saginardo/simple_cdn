@@ -35,6 +35,7 @@ var (
 type LogQuery struct {
 	From        time.Time
 	To          time.Time
+	RequestID   string
 	SiteID      string
 	NodeID      string
 	Method      string
@@ -97,17 +98,22 @@ func (c ClickHouse) EnsureSchema(ctx context.Context) error {
 	}
 	statements := []string{
 		`CREATE TABLE IF NOT EXISTS ` + identifier(c.database()) + `.cdn_access_logs (
-	 request_id String, timestamp DateTime64(3, 'UTC'), node_id String, site_id String, client_ip String, host String, scheme LowCardinality(String), protocol LowCardinality(String), method LowCardinality(String), path String, status UInt16, request_bytes Int64, bytes Int64, duration_ms Int64, upstream String, upstream_status String, upstream_connect_time String, upstream_header_time String, upstream_response_time String, cache_status LowCardinality(String), user_agent String, referer String, request_content_type String, response_content_type String, request_accept String, request_range String
+		 request_id String, client_request_id String, upstream_request_id String, timestamp DateTime64(3, 'UTC'), node_id String, site_id String, client_ip String, host String, scheme LowCardinality(String), protocol LowCardinality(String), method LowCardinality(String), path String, status UInt16, request_bytes Int64, bytes Int64, duration_ms Int64, request_completion LowCardinality(String) DEFAULT 'UNKNOWN', upstream String, upstream_status String, upstream_connect_time String, upstream_header_time String, upstream_response_time String, upstream_bytes_sent String, upstream_bytes_received String, cache_status LowCardinality(String), user_agent String, referer String, request_content_type String, response_content_type String, request_accept String, request_range String
 ) ENGINE = MergeTree PARTITION BY toDate(timestamp) ORDER BY (site_id, timestamp, node_id) TTL timestamp + INTERVAL 7 DAY DELETE`,
 		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS request_id String`,
+		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS client_request_id String`,
+		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS upstream_request_id String`,
 		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS host String`,
 		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS scheme LowCardinality(String)`,
 		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS protocol LowCardinality(String)`,
 		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS request_bytes Int64`,
+		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS request_completion LowCardinality(String) DEFAULT 'UNKNOWN'`,
 		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS upstream_status String`,
 		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS upstream_connect_time String`,
 		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS upstream_header_time String`,
 		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS upstream_response_time String`,
+		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS upstream_bytes_sent String`,
+		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS upstream_bytes_received String`,
 		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS user_agent String`,
 		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS referer String`,
 		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS request_content_type String`,
@@ -161,27 +167,32 @@ func (c ClickHouse) Append(ctx context.Context, events []domain.AccessLogEvent) 
 		}
 		event.Path = stripQuery(event.Path)
 		row := accessLogInsert{
-			ID:                   event.ID,
-			Timestamp:            event.Timestamp.UTC().Format("2006-01-02 15:04:05.000"),
-			NodeID:               event.NodeID,
-			SiteID:               event.SiteID,
-			ClientIP:             event.ClientIP,
-			Host:                 event.Host,
-			Scheme:               event.Scheme,
-			Protocol:             event.Protocol,
-			Method:               event.Method,
-			Path:                 event.Path,
-			Status:               event.Status,
-			RequestBytes:         event.RequestBytes,
-			Bytes:                event.Bytes,
-			DurationMS:           event.DurationMS,
-			Upstream:             event.Upstream,
-			UpstreamStatus:       event.UpstreamStatus,
-			UpstreamConnectTime:  event.UpstreamConnectTime,
-			UpstreamHeaderTime:   event.UpstreamHeaderTime,
-			UpstreamResponseTime: event.UpstreamResponseTime,
-			CacheStatus:          event.CacheStatus,
-			UserAgent:            event.UserAgent, Referer: event.Referer, ContentType: event.ContentType,
+			ID:                    event.ID,
+			ClientRequestID:       event.ClientRequestID,
+			UpstreamRequestID:     event.UpstreamRequestID,
+			Timestamp:             event.Timestamp.UTC().Format("2006-01-02 15:04:05.000"),
+			NodeID:                event.NodeID,
+			SiteID:                event.SiteID,
+			ClientIP:              event.ClientIP,
+			Host:                  event.Host,
+			Scheme:                event.Scheme,
+			Protocol:              event.Protocol,
+			Method:                event.Method,
+			Path:                  event.Path,
+			Status:                event.Status,
+			RequestBytes:          event.RequestBytes,
+			Bytes:                 event.Bytes,
+			DurationMS:            event.DurationMS,
+			RequestCompletion:     normalizedRequestCompletion(event.RequestCompletion),
+			Upstream:              event.Upstream,
+			UpstreamStatus:        event.UpstreamStatus,
+			UpstreamConnectTime:   event.UpstreamConnectTime,
+			UpstreamHeaderTime:    event.UpstreamHeaderTime,
+			UpstreamResponseTime:  event.UpstreamResponseTime,
+			UpstreamBytesSent:     event.UpstreamBytesSent,
+			UpstreamBytesReceived: event.UpstreamBytesReceived,
+			CacheStatus:           event.CacheStatus,
+			UserAgent:             event.UserAgent, Referer: event.Referer, ContentType: event.ContentType,
 			ResponseContentType: event.ResponseContentType, Accept: event.Accept, Range: event.Range,
 		}
 		if err := encoder.Encode(row); err != nil {
@@ -191,7 +202,7 @@ func (c ClickHouse) Append(ctx context.Context, events []domain.AccessLogEvent) 
 	return c.query(ctx, "INSERT INTO "+identifier(c.database())+".cdn_access_logs FORMAT JSONEachRow", &body)
 }
 
-const accessLogSelectColumns = `request_id, timestamp, node_id, site_id, client_ip, host, scheme, protocol, method, path, status, request_bytes, bytes, duration_ms, upstream, upstream_status, upstream_connect_time, upstream_header_time, upstream_response_time, cache_status, user_agent, referer, request_content_type, response_content_type, request_accept, request_range`
+const accessLogSelectColumns = `request_id, client_request_id, upstream_request_id, timestamp, node_id, site_id, client_ip, host, scheme, protocol, method, path, status, request_bytes, bytes, duration_ms, request_completion, upstream, upstream_status, upstream_connect_time, upstream_header_time, upstream_response_time, upstream_bytes_sent, upstream_bytes_received, cache_status, user_agent, referer, request_content_type, response_content_type, request_accept, request_range`
 
 func (c ClickHouse) Get(ctx context.Context, id string) (domain.AccessLogEvent, error) {
 	query := `SELECT ` + accessLogSelectColumns + ` FROM ` + identifier(c.database()) + `.cdn_access_logs WHERE request_id = {request_id:String} ORDER BY timestamp DESC LIMIT 1 FORMAT JSONEachRow`
@@ -249,10 +260,14 @@ func (c ClickHouse) Search(ctx context.Context, search LogQuery) (LogPage, error
 	if offset < 0 {
 		offset = 0
 	}
-	conditions := make([]string, 0, 8)
+	conditions := make([]string, 0, 9)
 	parameters := url.Values{
 		"param_from": {search.From.UTC().Format("2006-01-02 15:04:05.000")},
 		"param_to":   {search.To.UTC().Format("2006-01-02 15:04:05.000")},
+	}
+	if search.RequestID != "" {
+		conditions = append(conditions, "(request_id = {request_id:String} OR client_request_id = {request_id:String} OR upstream_request_id = {request_id:String} OR has(arrayMap(value -> trimBoth(value), splitByRegexp('[,:]', upstream_request_id)), {request_id:String}))")
+		parameters.Set("param_request_id", search.RequestID)
 	}
 	if search.SiteID != "" {
 		conditions = append(conditions, "site_id = {site_id:String}")
@@ -533,61 +548,71 @@ func (Noop) NodeCache(context.Context, string, time.Time, time.Time) ([]NodeCach
 }
 
 type accessLogRow struct {
-	ID                   string `json:"request_id"`
-	Timestamp            string `json:"timestamp"`
-	NodeID               string `json:"node_id"`
-	SiteID               string `json:"site_id"`
-	ClientIP             string `json:"client_ip"`
-	Host                 string `json:"host"`
-	Scheme               string `json:"scheme"`
-	Protocol             string `json:"protocol"`
-	Method               string `json:"method"`
-	Path                 string `json:"path"`
-	Status               int    `json:"status"`
-	RequestBytes         int64  `json:"request_bytes"`
-	Bytes                int64  `json:"bytes"`
-	DurationMS           int64  `json:"duration_ms"`
-	Upstream             string `json:"upstream"`
-	UpstreamStatus       string `json:"upstream_status"`
-	UpstreamConnectTime  string `json:"upstream_connect_time"`
-	UpstreamHeaderTime   string `json:"upstream_header_time"`
-	UpstreamResponseTime string `json:"upstream_response_time"`
-	CacheStatus          string `json:"cache_status"`
-	UserAgent            string `json:"user_agent"`
-	Referer              string `json:"referer"`
-	ContentType          string `json:"request_content_type"`
-	ResponseContentType  string `json:"response_content_type"`
-	Accept               string `json:"request_accept"`
-	Range                string `json:"request_range"`
+	ID                    string `json:"request_id"`
+	ClientRequestID       string `json:"client_request_id"`
+	UpstreamRequestID     string `json:"upstream_request_id"`
+	Timestamp             string `json:"timestamp"`
+	NodeID                string `json:"node_id"`
+	SiteID                string `json:"site_id"`
+	ClientIP              string `json:"client_ip"`
+	Host                  string `json:"host"`
+	Scheme                string `json:"scheme"`
+	Protocol              string `json:"protocol"`
+	Method                string `json:"method"`
+	Path                  string `json:"path"`
+	Status                int    `json:"status"`
+	RequestBytes          int64  `json:"request_bytes"`
+	Bytes                 int64  `json:"bytes"`
+	DurationMS            int64  `json:"duration_ms"`
+	RequestCompletion     string `json:"request_completion"`
+	Upstream              string `json:"upstream"`
+	UpstreamStatus        string `json:"upstream_status"`
+	UpstreamConnectTime   string `json:"upstream_connect_time"`
+	UpstreamHeaderTime    string `json:"upstream_header_time"`
+	UpstreamResponseTime  string `json:"upstream_response_time"`
+	UpstreamBytesSent     string `json:"upstream_bytes_sent"`
+	UpstreamBytesReceived string `json:"upstream_bytes_received"`
+	CacheStatus           string `json:"cache_status"`
+	UserAgent             string `json:"user_agent"`
+	Referer               string `json:"referer"`
+	ContentType           string `json:"request_content_type"`
+	ResponseContentType   string `json:"response_content_type"`
+	Accept                string `json:"request_accept"`
+	Range                 string `json:"request_range"`
 }
 
 type accessLogInsert struct {
-	ID                   string `json:"request_id"`
-	Timestamp            string `json:"timestamp"`
-	NodeID               string `json:"node_id"`
-	SiteID               string `json:"site_id"`
-	ClientIP             string `json:"client_ip"`
-	Host                 string `json:"host"`
-	Scheme               string `json:"scheme"`
-	Protocol             string `json:"protocol"`
-	Method               string `json:"method"`
-	Path                 string `json:"path"`
-	Status               int    `json:"status"`
-	RequestBytes         int64  `json:"request_bytes"`
-	Bytes                int64  `json:"bytes"`
-	DurationMS           int64  `json:"duration_ms"`
-	Upstream             string `json:"upstream"`
-	UpstreamStatus       string `json:"upstream_status"`
-	UpstreamConnectTime  string `json:"upstream_connect_time"`
-	UpstreamHeaderTime   string `json:"upstream_header_time"`
-	UpstreamResponseTime string `json:"upstream_response_time"`
-	CacheStatus          string `json:"cache_status"`
-	UserAgent            string `json:"user_agent"`
-	Referer              string `json:"referer"`
-	ContentType          string `json:"request_content_type"`
-	ResponseContentType  string `json:"response_content_type"`
-	Accept               string `json:"request_accept"`
-	Range                string `json:"request_range"`
+	ID                    string `json:"request_id"`
+	ClientRequestID       string `json:"client_request_id"`
+	UpstreamRequestID     string `json:"upstream_request_id"`
+	Timestamp             string `json:"timestamp"`
+	NodeID                string `json:"node_id"`
+	SiteID                string `json:"site_id"`
+	ClientIP              string `json:"client_ip"`
+	Host                  string `json:"host"`
+	Scheme                string `json:"scheme"`
+	Protocol              string `json:"protocol"`
+	Method                string `json:"method"`
+	Path                  string `json:"path"`
+	Status                int    `json:"status"`
+	RequestBytes          int64  `json:"request_bytes"`
+	Bytes                 int64  `json:"bytes"`
+	DurationMS            int64  `json:"duration_ms"`
+	RequestCompletion     string `json:"request_completion"`
+	Upstream              string `json:"upstream"`
+	UpstreamStatus        string `json:"upstream_status"`
+	UpstreamConnectTime   string `json:"upstream_connect_time"`
+	UpstreamHeaderTime    string `json:"upstream_header_time"`
+	UpstreamResponseTime  string `json:"upstream_response_time"`
+	UpstreamBytesSent     string `json:"upstream_bytes_sent"`
+	UpstreamBytesReceived string `json:"upstream_bytes_received"`
+	CacheStatus           string `json:"cache_status"`
+	UserAgent             string `json:"user_agent"`
+	Referer               string `json:"referer"`
+	ContentType           string `json:"request_content_type"`
+	ResponseContentType   string `json:"response_content_type"`
+	Accept                string `json:"request_accept"`
+	Range                 string `json:"request_range"`
 }
 
 func (r accessLogRow) event() (domain.AccessLogEvent, error) {
@@ -596,14 +621,25 @@ func (r accessLogRow) event() (domain.AccessLogEvent, error) {
 		return domain.AccessLogEvent{}, fmt.Errorf("decode access-log timestamp: %w", err)
 	}
 	return domain.AccessLogEvent{
-		ID: r.ID, Timestamp: timestamp, NodeID: r.NodeID, SiteID: r.SiteID, ClientIP: r.ClientIP,
+		ID: r.ID, ClientRequestID: r.ClientRequestID, UpstreamRequestID: r.UpstreamRequestID,
+		Timestamp: timestamp, NodeID: r.NodeID, SiteID: r.SiteID, ClientIP: r.ClientIP,
 		Host: r.Host, Scheme: r.Scheme, Protocol: r.Protocol, Method: r.Method, Path: r.Path,
 		Status: r.Status, RequestBytes: r.RequestBytes, Bytes: r.Bytes, DurationMS: r.DurationMS,
-		Upstream: r.Upstream, UpstreamStatus: r.UpstreamStatus, UpstreamConnectTime: r.UpstreamConnectTime,
+		RequestCompletion: normalizedRequestCompletion(r.RequestCompletion),
+		Upstream:          r.Upstream, UpstreamStatus: r.UpstreamStatus, UpstreamConnectTime: r.UpstreamConnectTime,
 		UpstreamHeaderTime: r.UpstreamHeaderTime, UpstreamResponseTime: r.UpstreamResponseTime,
+		UpstreamBytesSent: r.UpstreamBytesSent, UpstreamBytesReceived: r.UpstreamBytesReceived,
 		CacheStatus: r.CacheStatus, UserAgent: r.UserAgent, Referer: r.Referer,
 		ContentType: r.ContentType, ResponseContentType: r.ResponseContentType, Accept: r.Accept, Range: r.Range,
 	}, nil
+}
+
+func normalizedRequestCompletion(value string) string {
+	value = strings.ToUpper(strings.TrimSpace(value))
+	if value == "" {
+		return "UNKNOWN"
+	}
+	return value
 }
 
 func (m *MinuteMetric) UnmarshalJSON(contents []byte) error {

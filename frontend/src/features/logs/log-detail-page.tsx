@@ -96,6 +96,7 @@ function LogDetails({
     ["Accept", entry.accept],
     ["Range", entry.range],
   ].filter((item): item is [string, string] => Boolean(item[1]));
+  const completion = completionState(entry.request_completion);
   return (
     <div className="space-y-5">
       <Card>
@@ -169,6 +170,48 @@ function LogDetails({
       <div className="grid gap-5 xl:grid-cols-2">
         <Card>
           <CardHeader>
+            <CardTitle>{t("请求追踪")}</CardTitle>
+            <CardDescription>{t("客户端、边缘与源站标识")}</CardDescription>
+          </CardHeader>
+          <CardContent className="divide-y border-t p-0">
+            <DetailRow
+              label={t("边缘请求 ID")}
+              value={
+                <TraceID value={entry.id} copyLabel={t("复制边缘请求 ID")} />
+              }
+            />
+            <DetailRow
+              label={t("客户端请求 ID")}
+              value={
+                <TraceID
+                  value={entry.client_request_id}
+                  copyLabel={t("复制客户端请求 ID")}
+                />
+              }
+            />
+            <DetailRow
+              label={t("源站请求 ID")}
+              value={
+                <TraceID
+                  value={entry.upstream_request_id}
+                  copyLabel={t("复制源站请求 ID")}
+                />
+              }
+            />
+            <DetailRow
+              label={t("边缘传输状态")}
+              value={
+                <StatusBadge
+                  status={completion.status}
+                  label={completion.label}
+                />
+              }
+            />
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
             <CardTitle>{t("上游响应")}</CardTitle>
             <CardDescription>{t("源站连接与响应结果")}</CardDescription>
           </CardHeader>
@@ -191,30 +234,38 @@ function LogDetails({
               value={formatUpstreamTime(entry.upstream_response_time)}
             />
             <DetailRow
+              label={t("回源发送大小")}
+              value={formatUpstreamBytes(entry.upstream_bytes_sent)}
+            />
+            <DetailRow
+              label={t("回源接收大小")}
+              value={formatUpstreamBytes(entry.upstream_bytes_received)}
+            />
+            <DetailRow
               label={t("响应 Content-Type")}
               value={entry.response_content_type || "--"}
             />
           </CardContent>
         </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>{t("请求头")}</CardTitle>
-            <CardDescription>{t("边缘节点采集的常用请求头")}</CardDescription>
-          </CardHeader>
-          <CardContent className="divide-y border-t p-0">
-            {headers.length ? (
-              headers.map(([name, value]) => (
-                <DetailRow key={name} label={name} value={value} />
-              ))
-            ) : (
-              <div className="p-5 text-sm text-muted-foreground">
-                {t("暂无请求头数据")}
-              </div>
-            )}
-          </CardContent>
-        </Card>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>{t("请求头")}</CardTitle>
+          <CardDescription>{t("边缘节点采集的常用请求头")}</CardDescription>
+        </CardHeader>
+        <CardContent className="divide-y border-t p-0">
+          {headers.length ? (
+            headers.map(([name, value]) => (
+              <DetailRow key={name} label={name} value={value} />
+            ))
+          ) : (
+            <div className="p-5 text-sm text-muted-foreground">
+              {t("暂无请求头数据")}
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }
@@ -239,13 +290,32 @@ function Metric({
     </div>
   );
 }
-function DetailRow({ label, value }: { label: string; value: string }) {
+function DetailRow({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="grid gap-1 px-5 py-3 sm:grid-cols-[10rem_minmax(0,1fr)] sm:gap-4">
       <span className="text-xs text-muted-foreground">{label}</span>
       <span className="break-all font-mono text-xs leading-5">{value}</span>
     </div>
   );
+}
+function TraceID({ value, copyLabel }: { value: string; copyLabel: string }) {
+  if (!value) return <span>--</span>;
+  return (
+    <span className="flex min-w-0 items-center gap-2">
+      <span className="min-w-0 break-all">{value}</span>
+      <CopyButton value={value} label={copyLabel} />
+    </span>
+  );
+}
+function completionState(value: string) {
+  switch (value?.toUpperCase()) {
+    case "OK":
+      return { status: "completed", label: t("边缘传输已完成") };
+    case "INTERRUPTED":
+      return { status: "failed", label: t("边缘传输中断") };
+    default:
+      return { status: "pending", label: t("未知") };
+  }
 }
 function formatUpstreamTime(value: string) {
   if (!value || value === "-") return "--";
@@ -256,6 +326,16 @@ function formatUpstreamTime(value: string) {
       return Number.isFinite(seconds)
         ? `${formatNumber(seconds * 1000)} ms`
         : part;
+    })
+    .join("");
+}
+function formatUpstreamBytes(value: string) {
+  if (!value || value === "-") return "--";
+  return value
+    .split(/([,:])/)
+    .map((part) => {
+      const bytes = Number(part.trim());
+      return Number.isFinite(bytes) ? formatBytes(bytes) : part;
     })
     .join("");
 }

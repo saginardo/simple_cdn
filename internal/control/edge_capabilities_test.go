@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"simple_cdn/internal/domain"
+	"simple_cdn/internal/nginx"
 	"simple_cdn/internal/store"
 )
 
@@ -122,6 +123,31 @@ func TestOriginHTTP2StateRebuildsAfterCapabilityRemoval(t *testing.T) {
 	}
 	if originHTTP2StateNeedsRebuild(domain.DesiredState{NginxConfig: "proxy_http_version 1.1;"}, nil) {
 		t.Fatal("HTTP/1.1 state incorrectly requires an HTTP/2 capability")
+	}
+}
+
+func TestRequestTracingStateRebuildsOnlyForCapableHTTPNodes(t *testing.T) {
+	legacy := domain.DesiredState{NginxConfig: "location / { proxy_pass https://origin; }"}
+	capabilities := []string{domain.EdgeCapabilityRequestTracing}
+	if !requestTracingStateNeedsRebuild(legacy, capabilities) {
+		t.Fatal("capable node did not request a legacy HTTP state rebuild")
+	}
+	if requestTracingStateNeedsRebuild(legacy, nil) {
+		t.Fatal("legacy agent requested tracing state before advertising support")
+	}
+	tracedConfig, err := nginx.Render([]domain.Site{{
+		ID: "traced", Name: "traced", Domains: []string{"traced.example.test"},
+		PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, Enabled: true,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	traced := domain.DesiredState{NginxConfig: tracedConfig}
+	if requestTracingStateNeedsRebuild(traced, capabilities) {
+		t.Fatal("traced HTTP state requested another rebuild")
+	}
+	if requestTracingStateNeedsRebuild(domain.DesiredState{NginxConfig: "server { listen 80; }"}, capabilities) {
+		t.Fatal("pure TCP state requested an HTTP tracing rebuild")
 	}
 }
 

@@ -587,6 +587,8 @@ export interface Overview {
 
 export interface AccessLog {
   id: string;
+  client_request_id: string;
+  upstream_request_id: string;
   timestamp: string;
   node_id: string;
   site_id: string;
@@ -600,11 +602,14 @@ export interface AccessLog {
   request_bytes: number;
   bytes: number;
   duration_ms: number;
+  request_completion: string;
   upstream: string;
   upstream_status: string;
   upstream_connect_time: string;
   upstream_header_time: string;
   upstream_response_time: string;
+  upstream_bytes_sent: string;
+  upstream_bytes_received: string;
   cache_status: string;
   user_agent: string;
   referer: string;

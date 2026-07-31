@@ -21,7 +21,7 @@ import (
 )
 
 func TestDecodeNginxLogIncludesRequestDetails(t *testing.T) {
-	line := []byte(`{"request_id":"request-1","timestamp":"2026-07-18T10:20:30Z","site_id":"site-1","client_ip":"203.0.113.5","host":"cdn.example.test","scheme":"https","protocol":"HTTP/2.0","method":"GET","path":"/asset.js?token=secret","status":404,"request_bytes":512,"bytes":2048,"duration_seconds":0.037,"upstream":"192.0.2.10:443","upstream_status":"404","upstream_connect_time":"0.004","upstream_header_time":"0.020","upstream_response_time":"0.036","cache_status":"MISS","user_agent":"test-agent","referer":"https://example.test/","content_type":"application/json","response_content_type":"text/javascript","accept":"*/*","range":"bytes=0-1023"}`)
+	line := []byte(`{"request_id":"request-1","client_request_id":"client-1","upstream_request_id":"origin-1","timestamp":"2026-07-18T10:20:30Z","site_id":"site-1","client_ip":"203.0.113.5","host":"cdn.example.test","scheme":"https","protocol":"HTTP/2.0","method":"GET","path":"/asset.js?token=secret","status":404,"request_bytes":512,"bytes":2048,"duration_seconds":0.037,"request_completion":"OK","upstream":"192.0.2.10:443","upstream_status":"404","upstream_connect_time":"0.004","upstream_header_time":"0.020","upstream_response_time":"0.036","upstream_bytes_sent":"640","upstream_bytes_received":"2304","cache_status":"MISS","user_agent":"test-agent","referer":"https://example.test/","content_type":"application/json","response_content_type":"text/javascript","accept":"*/*","range":"bytes=0-1023"}`)
 	event, err := decodeNginxLog(line)
 	if err != nil {
 		t.Fatal(err)
@@ -35,6 +35,9 @@ func TestDecodeNginxLogIncludesRequestDetails(t *testing.T) {
 	if event.UpstreamConnectTime != "0.004" || event.UpstreamHeaderTime != "0.020" || event.UpstreamResponseTime != "0.036" {
 		t.Fatalf("decoded upstream timings = %#v", event)
 	}
+	if event.ClientRequestID != "client-1" || event.UpstreamRequestID != "origin-1" || event.RequestCompletion != "OK" || event.UpstreamBytesSent != "640" || event.UpstreamBytesReceived != "2304" {
+		t.Fatalf("decoded trace details = %#v", event)
+	}
 }
 
 func TestDecodeNginxLogGeneratesMissingRequestID(t *testing.T) {
@@ -44,6 +47,19 @@ func TestDecodeNginxLogGeneratesMissingRequestID(t *testing.T) {
 	}
 	if _, err := uuid.Parse(event.ID); err != nil {
 		t.Fatalf("generated request ID %q is invalid: %v", event.ID, err)
+	}
+	if event.RequestCompletion != "UNKNOWN" {
+		t.Fatalf("legacy request completion = %q, want UNKNOWN", event.RequestCompletion)
+	}
+}
+
+func TestDecodeNginxLogMarksEmptyCompletionAsInterrupted(t *testing.T) {
+	event, err := decodeNginxLog([]byte(`{"timestamp":"2026-07-18T10:20:30Z","duration_seconds":0,"request_completion":""}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.RequestCompletion != "INTERRUPTED" {
+		t.Fatalf("request completion = %q, want INTERRUPTED", event.RequestCompletion)
 	}
 }
 

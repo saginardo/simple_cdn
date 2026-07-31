@@ -545,7 +545,8 @@ func TestApplyWritesVersionedNginxFragmentDirectories(t *testing.T) {
 			t.Fatalf("fragment files %s = %#v, %v", pattern, paths, err)
 		}
 	}
-	if !slicesContain(agent.Config.Capabilities, domain.EdgeCapabilityNginxFragments) {
+	if !slicesContain(agent.Config.Capabilities, domain.EdgeCapabilityNginxFragments) ||
+		!slicesContain(agent.Config.Capabilities, domain.EdgeCapabilityRequestTracing) {
 		t.Fatalf("agent capabilities = %#v", agent.Config.Capabilities)
 	}
 }

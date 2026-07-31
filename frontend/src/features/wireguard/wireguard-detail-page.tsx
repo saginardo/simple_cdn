@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, RefreshCw } from "lucide-react";
+import { Fragment } from "react";
 import { Link, useParams } from "react-router";
 
 import {
@@ -311,23 +312,21 @@ function TunnelPeers({
                   </TableCell>
                   <TableCell className="min-w-52 text-xs tabular-nums">
                     {sampled ? (
-                      <div className="space-y-1">
-                        <PeerMetric
-                          label={t("源站 → 边缘")}
-                          value={formatBitRate(peer.rx_bytes_per_second)}
-                        />
-                        <PeerMetric
-                          label={t("边缘 → 源站")}
-                          value={formatBitRate(peer.tx_bytes_per_second)}
-                        />
-                        <div className="text-muted-foreground">
-                          {t("近 {value0} 秒", {
-                            value0: Math.round(
-                              peer.transfer_sample_seconds ?? 0,
-                            ),
-                          })}
-                        </div>
-                      </div>
+                      <PeerMetrics
+                        items={[
+                          {
+                            label: t("源站 → 边缘"),
+                            value: formatBitRate(peer.rx_bytes_per_second),
+                          },
+                          {
+                            label: t("边缘 → 源站"),
+                            value: formatBitRate(peer.tx_bytes_per_second),
+                          },
+                        ]}
+                        footer={t("近 {value0} 秒", {
+                          value0: Math.round(peer.transfer_sample_seconds ?? 0),
+                        })}
+                      />
                     ) : (
                       <span className="text-muted-foreground">
                         {state.online ? t("重新采样") : "--"}
@@ -345,13 +344,17 @@ function TunnelPeers({
                     </div>
                   </TableCell>
                   <TableCell className="min-w-48 text-xs tabular-nums">
-                    <PeerMetric
-                      label={t("源站 → 边缘")}
-                      value={formatBytes(peer.rx_bytes)}
-                    />
-                    <PeerMetric
-                      label={t("边缘 → 源站")}
-                      value={formatBytes(peer.tx_bytes)}
+                    <PeerMetrics
+                      items={[
+                        {
+                          label: t("源站 → 边缘"),
+                          value: formatBytes(peer.rx_bytes),
+                        },
+                        {
+                          label: t("边缘 → 源站"),
+                          value: formatBytes(peer.tx_bytes),
+                        },
+                      ]}
                     />
                   </TableCell>
                   <TableCell className="text-xs">
@@ -375,11 +378,27 @@ function TunnelPeers({
   );
 }
 
-function PeerMetric({ label, value }: { label: string; value: string }) {
+function PeerMetrics({
+  items,
+  footer,
+}: {
+  items: Array<{ label: string; value: string }>;
+  footer?: string;
+}) {
   return (
-    <div className="flex items-baseline justify-between gap-3">
-      <span className="text-muted-foreground">{label}</span>
-      <span className="font-medium">{value}</span>
+    <div
+      data-slot="peer-metrics"
+      className="inline-grid grid-cols-[max-content_max-content] items-baseline gap-x-3 gap-y-1"
+    >
+      {items.map((item) => (
+        <Fragment key={item.label}>
+          <span className="text-muted-foreground">{item.label}</span>
+          <span className="text-right font-medium">{item.value}</span>
+        </Fragment>
+      ))}
+      {footer ? (
+        <span className="col-span-2 text-muted-foreground">{footer}</span>
+      ) : null}
     </div>
   );
 }

@@ -1358,6 +1358,10 @@ func parseLogSearchQuery(request *http.Request, now time.Time) (logstore.LogQuer
 	if cacheStatus != "" && !validCacheStatus(cacheStatus) {
 		return logstore.LogQuery{}, errors.New("cache_status is not supported")
 	}
+	requestID := strings.TrimSpace(values.Get("request_id"))
+	if requestID != "" && !validLogTraceID(requestID) {
+		return logstore.LogQuery{}, errors.New("request_id must be a visible ASCII value no longer than 256 characters")
+	}
 	siteID := strings.TrimSpace(values.Get("site_id"))
 	nodeID := strings.TrimSpace(values.Get("node_id"))
 	path := strings.TrimSpace(values.Get("path"))
@@ -1368,10 +1372,22 @@ func parseLogSearchQuery(request *http.Request, now time.Time) (logstore.LogQuer
 		return logstore.LogQuery{}, errors.New("path search must not exceed 512 characters")
 	}
 	return logstore.LogQuery{
-		From: from, To: to, SiteID: siteID, NodeID: nodeID, Method: method,
+		From: from, To: to, RequestID: requestID, SiteID: siteID, NodeID: nodeID, Method: method,
 		StatusMin: statusMin, StatusMax: statusMax, Path: path, ClientIP: clientIP,
 		CacheStatus: cacheStatus, Offset: offset, Limit: logSearchPageSize,
 	}, nil
+}
+
+func validLogTraceID(value string) bool {
+	if value == "" || len(value) > 256 {
+		return false
+	}
+	for _, character := range value {
+		if character < '!' || character > '~' {
+			return false
+		}
+	}
+	return true
 }
 
 func parseLogStatusFilter(value string) (uint16, uint16, error) {

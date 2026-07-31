@@ -40,6 +40,7 @@ interface LogFilters {
   node_id: string;
   method: string;
   status: string;
+  request_id: string;
   path: string;
   client_ip: string;
   cache_status: string;
@@ -50,6 +51,7 @@ const defaults: LogFilters = {
   node_id: "",
   method: "",
   status: "",
+  request_id: "",
   path: "",
   client_ip: "",
   cache_status: "",
@@ -199,7 +201,22 @@ export function LogsPage() {
                   ]}
                 />
               </div>
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,2fr)_minmax(12rem,1fr)_auto]">
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(12rem,1fr)_minmax(0,2fr)_minmax(12rem,1fr)_auto]">
+                <div className="grid gap-1.5">
+                  <Label htmlFor="log-request-id">{t("请求 ID")}</Label>
+                  <Input
+                    id="log-request-id"
+                    maxLength={256}
+                    placeholder="req_01..."
+                    value={draft.request_id}
+                    onChange={(event) =>
+                      setDraft({
+                        ...draft,
+                        request_id: event.target.value,
+                      })
+                    }
+                  />
+                </div>
                 <div className="grid gap-1.5">
                   <Label htmlFor="log-path">{t("路径包含")}</Label>
                   <Input
@@ -448,6 +465,7 @@ function logSearchURL(
     "node_id",
     "method",
     "status",
+    "request_id",
     "path",
     "client_ip",
     "cache_status",

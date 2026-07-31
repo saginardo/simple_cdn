@@ -62,13 +62,13 @@ func TestLogSearchRouteRequiresAdmin(t *testing.T) {
 }
 
 func TestLogDetailReturnsEntry(t *testing.T) {
-	entry := domain.AccessLogEvent{ID: "request-1", Method: "GET", Path: "/long/path", UserAgent: "test-agent"}
+	entry := domain.AccessLogEvent{ID: "request-1", ClientRequestID: "client-1", UpstreamRequestID: "origin-1", Method: "GET", Path: "/long/path", UserAgent: "test-agent", RequestCompletion: "OK"}
 	logs := &searchLogStore{page: logstore.LogPage{Events: []domain.AccessLogEvent{entry}}}
 	request := httptest.NewRequest(http.MethodGet, "/api/logs/request-1", nil)
 	request.SetPathValue("id", "request-1")
 	response := httptest.NewRecorder()
 	(&Server{Logs: logs}).getLog(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"user_agent":"test-agent"`) {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"user_agent":"test-agent"`) || !strings.Contains(response.Body.String(), `"upstream_request_id":"origin-1"`) || !strings.Contains(response.Body.String(), `"request_completion":"OK"`) {
 		t.Fatalf("unexpected detail response: status=%d body=%s", response.Code, response.Body.String())
 	}
 }
@@ -83,7 +83,7 @@ func TestLogSearchParsesFiltersAndReturnsPage(t *testing.T) {
 	values := url.Values{
 		"from": {from.Format(time.RFC3339)}, "to": {to.Format(time.RFC3339)},
 		"site_id": {"site"}, "node_id": {"node"}, "method": {"get"}, "status": {"4xx"},
-		"path": {"/API"}, "client_ip": {"2001:0db8::1"}, "cache_status": {"miss"}, "offset": {"100"},
+		"request_id": {"trace.id:123"}, "path": {"/API"}, "client_ip": {"2001:0db8::1"}, "cache_status": {"miss"}, "offset": {"100"},
 	}
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/api/logs?"+values.Encode(), nil)
@@ -91,7 +91,7 @@ func TestLogSearchParsesFiltersAndReturnsPage(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("unexpected response status: %d, body: %s", response.Code, response.Body.String())
 	}
-	if store.query.From != from || store.query.To != to || store.query.SiteID != "site" || store.query.NodeID != "node" || store.query.Method != "GET" || store.query.StatusMin != 400 || store.query.StatusMax != 499 || store.query.Path != "/API" || store.query.ClientIP != "2001:db8::1" || store.query.CacheStatus != "MISS" || store.query.Offset != 100 || store.query.Limit != logSearchPageSize {
+	if store.query.From != from || store.query.To != to || store.query.RequestID != "trace.id:123" || store.query.SiteID != "site" || store.query.NodeID != "node" || store.query.Method != "GET" || store.query.StatusMin != 400 || store.query.StatusMax != 499 || store.query.Path != "/API" || store.query.ClientIP != "2001:db8::1" || store.query.CacheStatus != "MISS" || store.query.Offset != 100 || store.query.Limit != logSearchPageSize {
 		t.Fatalf("unexpected query: %#v", store.query)
 	}
 	var payload logSearchResponse
@@ -124,6 +124,7 @@ func TestLogSearchRejectsInvalidFilters(t *testing.T) {
 		"invalid offset": "offset=-1",
 		"invalid method": "method=GET%20POST",
 		"invalid cache":  "cache_status=UNKNOWN",
+		"invalid trace":  "request_id=bad%20id",
 	}
 	for name, query := range tests {
 		t.Run(name, func(t *testing.T) {

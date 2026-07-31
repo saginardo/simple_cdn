@@ -38,7 +38,7 @@ func TestGetReturnsExtendedRequestDetails(t *testing.T) {
 		if !strings.Contains(query, "WHERE request_id = {request_id:String}") || request.URL.Query().Get("param_request_id") != "request-1" {
 			t.Fatalf("unexpected detail query: %s", request.URL.RawQuery)
 		}
-		_, _ = io.WriteString(response, `{"request_id":"request-1","timestamp":"2026-07-18 10:20:30.123","node_id":"node-1","site_id":"site-1","client_ip":"203.0.113.5","host":"cdn.example.test","scheme":"https","protocol":"HTTP/2.0","method":"GET","path":"/asset.js","status":404,"request_bytes":512,"bytes":2048,"duration_ms":37,"upstream":"192.0.2.10:443","upstream_status":"404","upstream_connect_time":"0.004","upstream_header_time":"0.020","upstream_response_time":"0.036","cache_status":"MISS","user_agent":"test-agent","referer":"https://example.test/","request_content_type":"application/json","response_content_type":"text/javascript","request_accept":"*/*","request_range":"bytes=0-1023"}`+"\n")
+		_, _ = io.WriteString(response, `{"request_id":"request-1","client_request_id":"client-1","upstream_request_id":"origin-1","timestamp":"2026-07-18 10:20:30.123","node_id":"node-1","site_id":"site-1","client_ip":"203.0.113.5","host":"cdn.example.test","scheme":"https","protocol":"HTTP/2.0","method":"GET","path":"/asset.js","status":404,"request_bytes":512,"bytes":2048,"duration_ms":37,"request_completion":"OK","upstream":"192.0.2.10:443","upstream_status":"404","upstream_connect_time":"0.004","upstream_header_time":"0.020","upstream_response_time":"0.036","upstream_bytes_sent":"640","upstream_bytes_received":"2304","cache_status":"MISS","user_agent":"test-agent","referer":"https://example.test/","request_content_type":"application/json","response_content_type":"text/javascript","request_accept":"*/*","request_range":"bytes=0-1023"}`+"\n")
 	}))
 	defer server.Close()
 
@@ -51,6 +51,9 @@ func TestGetReturnsExtendedRequestDetails(t *testing.T) {
 	}
 	if event.UpstreamConnectTime != "0.004" || event.UpstreamHeaderTime != "0.020" || event.UpstreamResponseTime != "0.036" {
 		t.Fatalf("unexpected timing details: %#v", event)
+	}
+	if event.ClientRequestID != "client-1" || event.UpstreamRequestID != "origin-1" || event.RequestCompletion != "OK" || event.UpstreamBytesSent != "640" || event.UpstreamBytesReceived != "2304" {
+		t.Fatalf("unexpected trace details: %#v", event)
 	}
 }
 
@@ -70,6 +73,8 @@ func TestSearchAppliesFiltersAndReportsMoreRows(t *testing.T) {
 		query := request.URL.Query().Get("query")
 		for _, expected := range []string{
 			"PREWHERE timestamp >= {from:DateTime64(3)} AND timestamp < {to:DateTime64(3)}",
+			"request_id = {request_id:String}", "client_request_id = {request_id:String}",
+			"upstream_request_id = {request_id:String}", "splitByRegexp('[,:]', upstream_request_id)",
 			"site_id = {site_id:String}", "node_id = {node_id:String}", "method = {method:String}",
 			"status >= {status_min:UInt16}", "status <= {status_max:UInt16}",
 			"positionCaseInsensitive(path, {path:String}) > 0", "client_ip = {client_ip:String}",
@@ -82,7 +87,8 @@ func TestSearchAppliesFiltersAndReportsMoreRows(t *testing.T) {
 		parameters := request.URL.Query()
 		expectedParameters := map[string]string{
 			"param_from": "2026-07-15 01:02:03.004", "param_to": "2026-07-15 02:02:03.004",
-			"param_site_id": "site", "param_node_id": "node", "param_method": "GET",
+			"param_request_id": "trace-1",
+			"param_site_id":    "site", "param_node_id": "node", "param_method": "GET",
 			"param_status_min": "400", "param_status_max": "499", "param_path": "/api",
 			"param_client_ip": "203.0.113.5", "param_cache_status": "MISS",
 		}
@@ -98,7 +104,7 @@ func TestSearchAppliesFiltersAndReportsMoreRows(t *testing.T) {
 	defer server.Close()
 
 	page, err := (ClickHouse{Endpoint: server.URL}).Search(context.Background(), LogQuery{
-		From: from, To: to, SiteID: "site", NodeID: "node", Method: "GET",
+		From: from, To: to, RequestID: "trace-1", SiteID: "site", NodeID: "node", Method: "GET",
 		StatusMin: 400, StatusMax: 499, Path: "/api", ClientIP: "203.0.113.5",
 		CacheStatus: "MISS", Offset: 100, Limit: 2,
 	})
@@ -162,6 +168,9 @@ func TestEnsureSchemaCreatesOriginTimingAggregate(t *testing.T) {
 	for _, expected := range []string{
 		"cdn_origin_minute", "cdn_access_to_origin_minute", "upstream_connect_time",
 		"connect_samples UInt64", "sum(length(connect_values))", "sum(arraySum(connect_values))",
+		"client_request_id String", "upstream_request_id String",
+		"request_completion LowCardinality(String) DEFAULT 'UNKNOWN'",
+		"upstream_bytes_sent String", "upstream_bytes_received String",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("origin timing schema is missing %q:\n%s", expected, joined)
@@ -277,7 +286,9 @@ func TestAppendUsesClickHouseDateTimeFormat(t *testing.T) {
 	defer server.Close()
 	err := (ClickHouse{Endpoint: server.URL}).Append(context.Background(), []domain.AccessLogEvent{{
 		ID: "request-1", Timestamp: time.Date(2026, 1, 2, 3, 4, 5, 123000000, time.UTC), SiteID: "site", NodeID: "node",
-		RequestBytes: 512, UserAgent: "test-agent", ContentType: "application/json", Range: "bytes=0-10",
+		ClientRequestID: "client-1", UpstreamRequestID: "origin-1", RequestCompletion: "OK",
+		RequestBytes: 512, UpstreamBytesSent: "640", UpstreamBytesReceived: "2304",
+		UserAgent: "test-agent", ContentType: "application/json", Range: "bytes=0-10",
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -285,9 +296,27 @@ func TestAppendUsesClickHouseDateTimeFormat(t *testing.T) {
 	if !strings.Contains(body, `"timestamp":"2026-01-02 03:04:05.123"`) {
 		t.Fatalf("unexpected insert body: %s", body)
 	}
-	for _, expected := range []string{`"request_id":"request-1"`, `"request_bytes":512`, `"user_agent":"test-agent"`, `"request_content_type":"application/json"`, `"request_range":"bytes=0-10"`} {
+	for _, expected := range []string{`"request_id":"request-1"`, `"client_request_id":"client-1"`, `"upstream_request_id":"origin-1"`, `"request_completion":"OK"`, `"request_bytes":512`, `"upstream_bytes_sent":"640"`, `"upstream_bytes_received":"2304"`, `"user_agent":"test-agent"`, `"request_content_type":"application/json"`, `"request_range":"bytes=0-10"`} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("insert body is missing %s: %s", expected, body)
 		}
+	}
+}
+
+func TestAppendMarksLegacyCompletionAsUnknown(t *testing.T) {
+	var body string
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		contents, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body = string(contents)
+	}))
+	defer server.Close()
+	if err := (ClickHouse{Endpoint: server.URL}).Append(context.Background(), []domain.AccessLogEvent{{ID: "legacy"}}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, `"request_completion":"UNKNOWN"`) {
+		t.Fatalf("legacy insert body does not mark completion unknown: %s", body)
 	}
 }

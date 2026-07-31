@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"simple_cdn/internal/domain"
+	"simple_cdn/internal/nginx"
 	"simple_cdn/internal/store"
 )
 
@@ -21,10 +22,15 @@ func (s *Server) reconcileEdgeRuntimeCapabilities(nodeID string, capabilities []
 	if err != nil {
 		return err
 	}
-	if !http3StateNeedsRebuild(state, http3Wanted) && !originPoolStateNeedsRebuild(state, capabilities) && !originHTTP2StateNeedsRebuild(state, capabilities) && !runtimeOptimizationStateNeedsRebuild(state) {
+	if !http3StateNeedsRebuild(state, http3Wanted) && !originPoolStateNeedsRebuild(state, capabilities) && !originHTTP2StateNeedsRebuild(state, capabilities) && !requestTracingStateNeedsRebuild(state, capabilities) && !runtimeOptimizationStateNeedsRebuild(state) {
 		return nil
 	}
 	return s.Publisher.PublishNode(nodeID)
+}
+
+func requestTracingStateNeedsRebuild(state domain.DesiredState, capabilities []string) bool {
+	hasHTTPOrigin := strings.Contains(state.NginxConfig, "proxy_pass ") || strings.Contains(state.NginxConfig, "grpc_pass ")
+	return hasHTTPOrigin && slices.Contains(capabilities, domain.EdgeCapabilityRequestTracing) && !nginx.HasRequestTracing(state.NginxConfig)
 }
 
 func runtimeOptimizationStateNeedsRebuild(state domain.DesiredState) bool {

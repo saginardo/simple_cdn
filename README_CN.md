@@ -22,7 +22,7 @@
 - Cloudflare DNS-only A 记录对账：节点可达性和站点级 HTTPS/SNI/证书健康检查都带滞回。连续 3 次探测失败时移除节点，连续 5 次成功时恢复；若所有节点均异常，则有意保持 DNS 不变。
 - 经过身份验证的运行时设置：支持 60-300 秒 DNS TTL、按站点发布的 TTL 覆盖、加密保存 Cloudflare 与 SMTP 设置，以及加密保存 Restic S3/R2 备份凭据和计划。数据库覆盖优先于环境变量回退值，修改后无需重启控制器。
 - 通过 Certbot Cloudflare 插件执行 DNS-01 证书签发；证书私钥在 SQLite 中保持加密，仅通过 mTLS 下发。
-- ClickHouse 原始请求日志保留 7 天，分钟聚合保留 30 天。命名 TCP 拨测目标只在 SQLite 中保存最新评分、连续失败次数和节点调度状态；每轮拨测历史通过有界异步队列进入 ClickHouse，保留 7 天，并提供多目标 1 小时至 7 天图表。控制面不可用时，边缘访问日志在本地排队。
+- ClickHouse 原始请求日志保留 7 天，分钟聚合保留 30 天。边缘为 HTTP、WebSocket 和 gRPC 主备回源统一生成并回传 `X-Request-ID`，保留客户端 ID、源站响应 ID、传输完成状态与回源字节，控制台可按任一 ID 检索；详见 [docs/REQUEST_TRACING.md](docs/REQUEST_TRACING.md)。命名 TCP 拨测目标只在 SQLite 中保存最新评分、连续失败次数和节点调度状态；每轮拨测历史通过有界异步队列进入 ClickHouse，保留 7 天，并提供多目标 1 小时至 7 天图表。控制面不可用时，边缘访问日志在本地排队。
 - SMTP 告警，以及面向 SQLite、ClickHouse、控制面 TLS、内部 CA 和证书材料的加密 Restic S3 兼容每日备份，包含有界重试、状态上报、离线恢复演练和分阶段在线恢复流程。
 
 ## 明确边界

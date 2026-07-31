@@ -258,6 +258,7 @@ func New(config Config) (*Agent, error) {
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityMachineStatus)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityMachineStatusStream)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityNginxFragments)
+	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityRequestTracing)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityControlManifest)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityOriginConnection)
 	wireGuardAvailable, wireGuardPerformanceAvailable := config.WireGuardManager.Available()

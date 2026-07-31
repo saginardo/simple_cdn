@@ -576,6 +576,8 @@ function monitoringHistory(range: string) {
 const accessLogs = [
   {
     id: "request-404",
+    client_request_id: "client-request-404",
+    upstream_request_id: "origin-request-404",
     timestamp: now.toISOString(),
     node_id: "node-1",
     site_id: "site-1",
@@ -589,9 +591,12 @@ const accessLogs = [
     request_bytes: 2048,
     bytes: 8192,
     duration_ms: 37,
+    request_completion: "OK",
     upstream: "192.0.2.10:443",
     upstream_status: "404",
     upstream_response_time: "0.036",
+    upstream_bytes_sent: "2304",
+    upstream_bytes_received: "9216",
     cache_status: "MISS",
     user_agent: "Mozilla/5.0 (Playwright request detail test)",
     referer: "https://cdn.example.com/releases",
@@ -602,6 +607,8 @@ const accessLogs = [
   },
   {
     id: "request-502",
+    client_request_id: "",
+    upstream_request_id: "origin-request-502",
     timestamp: series[22].time,
     node_id: "node-1",
     site_id: "site-1",
@@ -615,9 +622,12 @@ const accessLogs = [
     request_bytes: 512,
     bytes: 128,
     duration_ms: 1001,
+    request_completion: "INTERRUPTED",
     upstream: "192.0.2.10:443",
     upstream_status: "502",
     upstream_response_time: "1.000",
+    upstream_bytes_sent: "640",
+    upstream_bytes_received: "256",
     cache_status: "MISS",
     user_agent: "curl/8.10.1",
     referer: "",
@@ -2064,6 +2074,17 @@ test("log rows truncate long paths, color errors, and open request details", asy
   await mockAPI(page);
   await page.goto("/#/logs");
 
+  await page.getByLabel("请求 ID").fill(accessLogs[0].client_request_id);
+  const traceSearch = page.waitForRequest((request) => {
+    const url = new URL(request.url());
+    return (
+      url.pathname === "/api/logs" &&
+      url.searchParams.get("request_id") === accessLogs[0].client_request_id
+    );
+  });
+  await page.getByRole("button", { name: "搜索" }).click();
+  await traceSearch;
+
   const notFoundRow = page.getByRole("row", {
     name: new RegExp(`查看请求 GET ${accessLogs[0].path}`),
   });
@@ -2104,6 +2125,23 @@ test("log rows truncate long paths, color errors, and open request details", asy
   await expect(page.getByText("响应大小", { exact: true })).toBeVisible();
   await expect(page.getByText("Range", { exact: true })).toBeVisible();
   await expect(page.getByText("bytes=0-4095", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "请求追踪", level: 2 }),
+  ).toBeVisible();
+  await expect(page.getByText(accessLogs[0].client_request_id)).toBeVisible();
+  await expect(page.getByText(accessLogs[0].upstream_request_id)).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "复制边缘请求 ID" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "复制客户端请求 ID" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "复制源站请求 ID" }),
+  ).toBeVisible();
+  await expect(page.getByText("边缘传输已完成", { exact: true })).toBeVisible();
+  await expect(page.getByText("回源发送大小", { exact: true })).toBeVisible();
+  await expect(page.getByText("2.3 KiB", { exact: true })).toBeVisible();
 });
 
 test("node machine status updates from the realtime event stream", async ({
@@ -2504,6 +2542,7 @@ test("WireGuard workspace shows tunnel health and performance on desktop and mob
   await uninstallCommand.getByRole("button", { name: "关闭" }).first().click();
 
   await page.getByRole("link", { name: "查看隧道" }).click();
+  await page.setViewportSize({ width: 1920, height: 900 });
   await expect(page).toHaveURL(
     new RegExp(`/#/wireguard/${freshTunnel.id.replaceAll("-", "\\-")}$`),
   );
@@ -2544,6 +2583,18 @@ test("WireGuard workspace shows tunnel health and performance on desktop and mob
   await expect(hongKongPeer).toContainText("2 Mbps");
   await expect(hongKongPeer.getByText("7", { exact: true })).toBeVisible();
   await expect(hongKongPeer).toContainText("313.3 MiB");
+  const peerMetrics = hongKongPeer.locator('[data-slot="peer-metrics"]');
+  await expect(peerMetrics).toHaveCount(2);
+  const metricGaps = await peerMetrics.evaluateAll((metrics) =>
+    metrics.map((metric) => {
+      const label = metric.children.item(0)?.getBoundingClientRect();
+      const value = metric.children.item(1)?.getBoundingClientRect();
+      return label && value
+        ? value.left - label.right
+        : Number.POSITIVE_INFINITY;
+    }),
+  );
+  expect(Math.max(...metricGaps)).toBeLessThanOrEqual(16);
   const singaporePeer = page
     .getByRole("row")
     .filter({ hasText: "edge-singapore" });

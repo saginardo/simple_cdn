@@ -14,13 +14,16 @@ func TestRenderIncludesCacheAndFailoverPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"proxy_cache_path /opt/cdn-edge/cache levels=1:2 keys_zone=cdn_cache:16m inactive=7d max_size=1g use_temp_path=off", `map $uri $cdn_static_cache_zone { default off; ~*\.(?:css|js|mjs|map|wasm|woff|woff2|ttf|otf|eot|jpg|jpeg|png|apng|gif|webp|avif|svg|ico|bmp|tif|tiff|webmanifest)$ cdn_cache; }`, `map "$http_authorization:$http_cookie" $cdn_private_cache_bypass { default 1; ":" 0; }`, "proxy_cache $cdn_static_cache_zone", "proxy_cache_bypass $cdn_private_cache_bypass;", "proxy_no_cache $cdn_private_cache_bypass;", "listen 443 ssl default_server;", "ssl_reject_handshake on;", "client_max_body_size 128m;", "keepalive_timeout 120s;", "keepalive_requests 1000;", "keepalive 30;", "proxy_connect_timeout 10s;", "recursive_error_pages on;", "ssl_certificate /opt/cdn-edge/config/certs/site-1.crt", "access_log /opt/cdn-edge/logs/access.json cdn_json", `"request_id":"$request_id"`, `"upstream_connect_time":"$upstream_connect_time"`, `"upstream_header_time":"$upstream_header_time"`, `"user_agent":"$http_user_agent"`, "proxy_cache_lock on", "proxy_cache_background_update on", "proxy_cache_use_stale error timeout", "upstream origin_site-1_primary", "upstream origin_site-1_backup", "proxy_ssl_name origin.example.test", "proxy_ssl_name backup.example.test", "proxy_set_header Host backup.example.test", "proxy_set_header Upgrade \"\";", "proxy_set_header Connection \"\";", "location @cdn_http_site-1", "location @cdn_stream_site-1", "location @cdn_backup_site-1", "location @cdn_stream_backup_site-1", "site-1:7:$scheme$host$request_uri", "location = /__cdn_health", `return 200 "site=site-1\n";`} {
+	for _, expected := range []string{"proxy_cache_path /opt/cdn-edge/cache levels=1:2 keys_zone=cdn_cache:16m inactive=7d max_size=1g use_temp_path=off", `map $uri $cdn_static_cache_zone { default off; ~*\.(?:css|js|mjs|map|wasm|woff|woff2|ttf|otf|eot|jpg|jpeg|png|apng|gif|webp|avif|svg|ico|bmp|tif|tiff|webmanifest)$ cdn_cache; }`, `map "$http_authorization:$http_cookie" $cdn_private_cache_bypass { default 1; ":" 0; }`, "proxy_cache $cdn_static_cache_zone", "proxy_cache_bypass $cdn_private_cache_bypass;", "proxy_no_cache $cdn_private_cache_bypass;", "listen 443 ssl default_server;", "ssl_reject_handshake on;", "client_max_body_size 128m;", "keepalive_timeout 120s;", "keepalive_requests 1000;", "keepalive 30;", "proxy_connect_timeout 10s;", "recursive_error_pages on;", "ssl_certificate /opt/cdn-edge/config/certs/site-1.crt", "access_log /opt/cdn-edge/logs/access.json cdn_json", requestTracingMarker, `"request_id":"$request_id"`, `"client_request_id":"$http_x_request_id"`, `"upstream_request_id":"$upstream_http_x_request_id"`, `"request_completion":"$request_completion"`, `"upstream_bytes_sent":"$upstream_bytes_sent"`, `"upstream_bytes_received":"$upstream_bytes_received"`, `"upstream_connect_time":"$upstream_connect_time"`, `"upstream_header_time":"$upstream_header_time"`, `"user_agent":"$http_user_agent"`, "add_header X-Request-ID $request_id always;", "proxy_hide_header X-Request-ID;", "grpc_hide_header X-Request-ID;", "proxy_set_header X-Request-ID $request_id;", "proxy_cache_lock on", "proxy_cache_background_update on", "proxy_cache_use_stale error timeout", "upstream origin_site-1_primary", "upstream origin_site-1_backup", "proxy_ssl_name origin.example.test", "proxy_ssl_name backup.example.test", "proxy_set_header Host backup.example.test", "proxy_set_header Upgrade \"\";", "proxy_set_header Connection \"\";", "location @cdn_http_site-1", "location @cdn_stream_site-1", "location @cdn_backup_site-1", "location @cdn_stream_backup_site-1", "site-1:7:$scheme$host$request_uri", "location = /__cdn_health", `return 200 "site=site-1\n";`} {
 		if !strings.Contains(configuration, expected) {
 			t.Fatalf("missing %q from config:\n%s", expected, configuration)
 		}
 	}
 	if !HasSiteHealth(configuration, "site-1") || HasSiteHealth(configuration, "other-site") {
 		t.Fatalf("site health capability detection is incorrect:\n%s", configuration)
+	}
+	if !HasRequestTracing(configuration) {
+		t.Fatalf("rendered configuration is missing the request tracing marker:\n%s", configuration)
 	}
 	if got := strings.Count(configuration, "proxy_set_header Connection \"\";"); got != 2 {
 		t.Fatalf("expected Connection header to be cleared in both regular proxy locations, got %d:\n%s", got, configuration)
@@ -52,6 +55,42 @@ func TestRenderIncludesCacheAndFailoverPolicy(t *testing.T) {
 	}
 	if strings.Contains(configuration, "max_size=50g") {
 		t.Fatalf("configuration still uses the retired 50g default:\n%s", configuration)
+	}
+}
+
+func TestRenderPropagatesCanonicalRequestIDAcrossEveryOriginBranch(t *testing.T) {
+	backup := domain.Origin{URL: "http://backup.example.test:8080", HTTPVersion: domain.OriginHTTPVersionH2C, Enabled: true}
+	httpConfiguration, err := RenderWithRuntimeOptions([]domain.Site{{
+		ID: "trace-http", Name: "trace-http", Domains: []string{"trace-http.example.test"},
+		PrimaryOrigin: domain.Origin{URL: "http://origin.example.test:8080", HTTPVersion: domain.OriginHTTPVersionH2C, Enabled: true},
+		BackupOrigin:  &backup, Enabled: true,
+	}}, nil, nil, RenderRuntimeOptions{DefaultCacheSizeGB: domain.DefaultCacheMaxSizeGB, OriginHTTP2Capable: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(httpConfiguration, "proxy_set_header X-Request-ID $request_id;"); got != 6 {
+		t.Fatalf("HTTP request ID propagation count = %d, want normal/stream/websocket primary and backup:\n%s", got, httpConfiguration)
+	}
+	if got := strings.Count(httpConfiguration, "add_header X-Request-ID $request_id always;"); got != 2 {
+		t.Fatalf("client request ID response header count = %d, want HTTP redirect and HTTPS response:\n%s", got, httpConfiguration)
+	}
+	for _, expected := range []string{"proxy_hide_header X-Request-ID;", "grpc_hide_header X-Request-ID;"} {
+		if !strings.Contains(httpConfiguration, expected) {
+			t.Fatalf("HTTP tracing configuration is missing %q:\n%s", expected, httpConfiguration)
+		}
+	}
+
+	grpcBackup := domain.Origin{URL: "grpc://backup.example.test:9000", Enabled: true}
+	grpcConfiguration, err := Render([]domain.Site{{
+		ID: "trace-grpc", Name: "trace-grpc", Domains: []string{"trace-grpc.example.test"},
+		PrimaryOrigin: domain.Origin{URL: "grpc://origin.example.test:9000", Enabled: true},
+		BackupOrigin:  &grpcBackup, Enabled: true,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(grpcConfiguration, "grpc_set_header X-Request-ID $request_id;"); got != 2 {
+		t.Fatalf("gRPC request ID propagation count = %d, want primary and backup:\n%s", got, grpcConfiguration)
 	}
 }
 

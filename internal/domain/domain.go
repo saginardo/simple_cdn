@@ -117,6 +117,7 @@ const (
 	EdgeCapabilityMachineStatus          = "machine_status_v1"
 	EdgeCapabilityMachineStatusStream    = "machine_status_stream_v1"
 	EdgeCapabilityNginxFragments         = "nginx_fragments_v1"
+	EdgeCapabilityRequestTracing         = "request_tracing_v1"
 	EdgeCapabilityNginxCapacity          = "nginx_capacity_v1"
 	EdgeCapabilityHTTP3                  = "http3_v1"
 	EdgeCapabilityOriginConnection       = "origin_connection_v1"
@@ -341,30 +342,35 @@ type TLSBundle struct {
 }
 
 type AccessLogEvent struct {
-	ID                   string    `json:"id"`
-	Timestamp            time.Time `json:"timestamp"`
-	NodeID               string    `json:"node_id"`
-	SiteID               string    `json:"site_id"`
-	ClientIP             string    `json:"client_ip"`
-	Host                 string    `json:"host"`
-	Scheme               string    `json:"scheme"`
-	Protocol             string    `json:"protocol"`
-	Method               string    `json:"method"`
-	Path                 string    `json:"path"`
-	Status               int       `json:"status"`
-	RequestBytes         int64     `json:"request_bytes"`
-	Bytes                int64     `json:"bytes"`
-	DurationMS           int64     `json:"duration_ms"`
-	Upstream             string    `json:"upstream"`
-	UpstreamStatus       string    `json:"upstream_status"`
-	UpstreamConnectTime  string    `json:"upstream_connect_time"`
-	UpstreamHeaderTime   string    `json:"upstream_header_time"`
-	UpstreamResponseTime string    `json:"upstream_response_time"`
-	CacheStatus          string    `json:"cache_status"`
-	UserAgent            string    `json:"user_agent"`
-	Referer              string    `json:"referer"`
-	ContentType          string    `json:"content_type"`
-	ResponseContentType  string    `json:"response_content_type"`
-	Accept               string    `json:"accept"`
-	Range                string    `json:"range"`
+	ID                    string    `json:"id"`
+	ClientRequestID       string    `json:"client_request_id"`
+	UpstreamRequestID     string    `json:"upstream_request_id"`
+	Timestamp             time.Time `json:"timestamp"`
+	NodeID                string    `json:"node_id"`
+	SiteID                string    `json:"site_id"`
+	ClientIP              string    `json:"client_ip"`
+	Host                  string    `json:"host"`
+	Scheme                string    `json:"scheme"`
+	Protocol              string    `json:"protocol"`
+	Method                string    `json:"method"`
+	Path                  string    `json:"path"`
+	Status                int       `json:"status"`
+	RequestBytes          int64     `json:"request_bytes"`
+	Bytes                 int64     `json:"bytes"`
+	DurationMS            int64     `json:"duration_ms"`
+	RequestCompletion     string    `json:"request_completion"`
+	Upstream              string    `json:"upstream"`
+	UpstreamStatus        string    `json:"upstream_status"`
+	UpstreamConnectTime   string    `json:"upstream_connect_time"`
+	UpstreamHeaderTime    string    `json:"upstream_header_time"`
+	UpstreamResponseTime  string    `json:"upstream_response_time"`
+	UpstreamBytesSent     string    `json:"upstream_bytes_sent"`
+	UpstreamBytesReceived string    `json:"upstream_bytes_received"`
+	CacheStatus           string    `json:"cache_status"`
+	UserAgent             string    `json:"user_agent"`
+	Referer               string    `json:"referer"`
+	ContentType           string    `json:"content_type"`
+	ResponseContentType   string    `json:"response_content_type"`
+	Accept                string    `json:"accept"`
+	Range                 string    `json:"range"`
 }
