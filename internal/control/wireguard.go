@@ -236,7 +236,10 @@ func (s *Server) wireGuardUninstallCommand(response http.ResponseWriter, request
 		return
 	}
 	scriptURL := strings.TrimRight(s.ControlURL, "/") + "/install-origin-wireguard.sh"
-	command := fmt.Sprintf("curl -fsSL %q | sudo bash -s -- --tunnel-id %q --uninstall", scriptURL, tunnel.ID)
+	command := fmt.Sprintf(
+		"curl -fsSL %q | sudo bash -s -- --tunnel-id %q --tunnel-name %s --origin-address %q --uninstall",
+		scriptURL, tunnel.ID, shellSingleQuote(tunnel.Name), tunnel.OriginAddress,
+	)
 	writeJSON(response, http.StatusOK, map[string]string{"uninstall_command": command})
 }
 

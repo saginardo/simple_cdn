@@ -200,7 +200,7 @@ For a fresh node, a failure after enrollment can consume its one-time token even
 
 ## Uninstall and backup boundary
 
-The control-plane **卸载节点** workflow stops the managed Agent and Nginx, removes the three project-owned systemd links, restores the pre-install sysctl baseline, and deletes `/opt/cdn-edge` plus known legacy project paths. A layout version 2 uninstall does not reinstall Debian Nginx or recreate `/etc/nginx`; install an operator-selected web server separately if the retired host needs one. The layout version 1 compatibility path preserves an external Debian Nginx installation and removes only the old project includes.
+The control-plane **卸载节点** command is bound to the selected node's name, UUID, and public IPv4. Before contacting the control plane or changing the host, the script reads from `/dev/tty` and requires the exact `UNINSTALL <node UUID>` phrase. A missing terminal, empty input, or mismatch exits without consuming the workflow token or changing services and files. After confirmation, the workflow stops the managed Agent and Nginx, removes the three project-owned systemd links, restores the pre-install sysctl baseline, and deletes `/opt/cdn-edge` plus known legacy project paths. A layout version 2 uninstall does not reinstall Debian Nginx or recreate `/etc/nginx`; install an operator-selected web server separately if the retired host needs one. The layout version 1 compatibility path preserves an external Debian Nginx installation and removes only the old project includes.
 
 Back up these non-recreatable paths:
 

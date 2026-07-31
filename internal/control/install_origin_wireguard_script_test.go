@@ -15,6 +15,46 @@ func TestInstallOriginWireGuardScriptSyntax(t *testing.T) {
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("bash -n: %v\n%s", err, output)
 	}
+	if !strings.Contains(installOriginWireGuardScript, `read -r confirmation </dev/tty`) {
+		t.Fatal("origin tunnel uninstall confirmation must read from /dev/tty")
+	}
+}
+
+func TestInstallOriginWireGuardScriptRequiresMatchingUninstallConfirmation(t *testing.T) {
+	harness := newOriginWireGuardUninstallHarness(t)
+	output, err := harness.run(t, "UNINSTALL wrong-tunnel")
+	if err == nil || !strings.Contains(output, "confirmation did not match; nothing was removed") {
+		t.Fatalf("mismatched confirmation result = %v\n%s", err, output)
+	}
+	for _, path := range harness.managedPaths {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("mismatched confirmation changed %s: %v", path, err)
+		}
+	}
+	if log := harness.read(t, harness.commandLog); log != "" {
+		t.Fatalf("mismatched confirmation ran system commands:\n%s", log)
+	}
+
+	output, err = harness.run(t, "UNINSTALL "+originWireGuardTestTunnelID)
+	if err != nil {
+		t.Fatalf("confirmed uninstall failed: %v\n%s", err, output)
+	}
+	for _, path := range harness.managedPaths {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("confirmed uninstall left %s: %v", path, err)
+		}
+	}
+	log := harness.read(t, harness.commandLog)
+	for _, expected := range []string{
+		"systemctl disable --now simple-cdn-origin-iperf-scwg1234567812.service",
+		"wg-quick down scwg1234567812",
+		"nft delete table inet scwg_1234567812",
+		"systemctl daemon-reload",
+	} {
+		if !strings.Contains(log, expected) {
+			t.Fatalf("confirmed uninstall command log is missing %q:\n%s", expected, log)
+		}
+	}
 }
 
 func TestInstallOriginWireGuardScriptUpdatesActiveInterfaceWithoutRestart(t *testing.T) {
@@ -190,9 +230,94 @@ type originWireGuardInstallHarness struct {
 	configFile    string
 }
 
+const originWireGuardTestTunnelID = "12345678-1234-4234-8234-123456789abc"
+
+type originWireGuardUninstallHarness struct {
+	root         string
+	script       string
+	commandLog   string
+	managedPaths []string
+}
+
+func newOriginWireGuardUninstallHarness(t *testing.T) originWireGuardUninstallHarness {
+	t.Helper()
+	const interfaceName = "scwg1234567812"
+	root := t.TempDir()
+	stateRoot := filepath.Join(root, "state")
+	configRoot := filepath.Join(root, "wireguard")
+	binRoot := filepath.Join(root, "bin")
+	for _, directory := range []string{stateRoot, configRoot, binRoot} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commandLog := filepath.Join(root, "commands.log")
+	if err := os.WriteFile(commandLog, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"systemctl", "wg-quick", "nft"} {
+		writeOriginInstallCommand(t, binRoot, name, commandLog, "exit 0")
+	}
+	managedPaths := []string{
+		filepath.Join(stateRoot, "simple-cdn-origin-iperf-"+interfaceName+".service"),
+		filepath.Join(configRoot, interfaceName+".conf"),
+		filepath.Join(configRoot, interfaceName+".nft"),
+		filepath.Join(stateRoot, originWireGuardTestTunnelID+".key"),
+		filepath.Join(stateRoot, originWireGuardTestTunnelID+".json"),
+	}
+	for _, path := range managedPaths {
+		if err := os.WriteFile(path, []byte("managed\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	script := installOriginWireGuardScript
+	script = replaceOriginInstallScriptOnce(t, script, `if [[ $EUID -ne 0 ]]; then`, `if false; then`)
+	script = replaceOriginInstallScriptOnce(t, script, `STATE_ROOT="/var/lib/simple-cdn-origin-wireguard"`, fmt.Sprintf("STATE_ROOT=%q", stateRoot))
+	script = replaceOriginInstallScriptOnce(t, script, `CONFIG_ROOT="/etc/wireguard"`, fmt.Sprintf("CONFIG_ROOT=%q", configRoot))
+	script = replaceOriginInstallScriptOnce(t, script,
+		`service_file="/etc/systemd/system/simple-cdn-origin-iperf-$interface.service"`,
+		`service_file="$STATE_ROOT/simple-cdn-origin-iperf-$interface.service"`)
+	script = replaceOriginInstallScriptOnce(t, script,
+		`IFS= read -r confirmation </dev/tty`,
+		`IFS= read -r confirmation <<<"$SIMPLE_CDN_TEST_CONFIRMATION"`)
+	scriptPath := filepath.Join(root, "install-origin-wireguard.sh")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return originWireGuardUninstallHarness{
+		root: root, script: scriptPath, commandLog: commandLog, managedPaths: managedPaths,
+	}
+}
+
+func (h originWireGuardUninstallHarness) run(t *testing.T, confirmation string) (string, error) {
+	t.Helper()
+	command := exec.Command("bash", h.script,
+		"--tunnel-id", originWireGuardTestTunnelID,
+		"--tunnel-name", "origin test tunnel",
+		"--origin-address", "10.253.41.1",
+		"--uninstall",
+	)
+	command.Env = append(os.Environ(),
+		"PATH="+filepath.Join(h.root, "bin")+":/usr/bin:/usr/sbin:/bin",
+		"SIMPLE_CDN_TEST_CONFIRMATION="+confirmation,
+	)
+	output, err := command.CombinedOutput()
+	return string(output), err
+}
+
+func (h originWireGuardUninstallHarness) read(t *testing.T, path string) string {
+	t.Helper()
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(contents)
+}
+
 func newOriginWireGuardInstallHarness(t *testing.T, failSync bool) originWireGuardInstallHarness {
 	t.Helper()
-	const tunnelID = "12345678-1234-4234-8234-123456789abc"
+	const tunnelID = originWireGuardTestTunnelID
 	const interfaceName = "scwg1234567812"
 	root := t.TempDir()
 	stateRoot := filepath.Join(root, "state")

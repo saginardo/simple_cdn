@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,52 @@ import (
 	"simple_cdn/internal/domain"
 	"simple_cdn/internal/store"
 )
+
+func TestWireGuardUninstallCommandBindsTargetIdentity(t *testing.T) {
+	database, err := store.Open(t.TempDir() + "/control.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	node, err := database.CreateNode("uninstall-edge", "203.0.113.92")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetNodeCapabilities(node.ID, []string{domain.EdgeCapabilityWireGuard}); err != nil {
+		t.Fatal(err)
+	}
+	tunnel, err := database.CreateWireGuardTunnel(domain.WireGuardTunnel{
+		Name: "origin's tunnel", EndpointHost: "198.51.100.92", AddressCIDR: "10.253.92.0/24",
+	}, []string{node.ID}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{Store: database, ControlURL: "https://control.example.test"}
+	request := httptest.NewRequest(http.MethodPost, "/api/wireguard/tunnels/"+tunnel.ID+"/uninstall-command", nil)
+	request.SetPathValue("id", tunnel.ID)
+	response := httptest.NewRecorder()
+	server.wireGuardUninstallCommand(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("uninstall command response = %d %s", response.Code, response.Body.String())
+	}
+	var result struct {
+		Command string `json:"uninstall_command"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"https://control.example.test/install-origin-wireguard.sh",
+		`--tunnel-id "` + tunnel.ID + `"`,
+		`--tunnel-name 'origin'"'"'s tunnel'`,
+		`--origin-address "` + tunnel.OriginAddress + `"`,
+		"--uninstall",
+	} {
+		if !strings.Contains(result.Command, expected) {
+			t.Fatalf("uninstall command does not contain %q: %q", expected, result.Command)
+		}
+	}
+}
 
 func TestCreateWireGuardTunnelRejectsEndpointResolvingToSelectedEdge(t *testing.T) {
 	database, err := store.Open(t.TempDir() + "/control.db")

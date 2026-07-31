@@ -138,7 +138,10 @@ func (s *Server) createNodeUninstallCommand(response http.ResponseWriter, reques
 		return
 	}
 	scriptURL := strings.TrimRight(s.ControlURL, "/") + "/uninstall-edge.sh"
-	command := fmt.Sprintf("curl -fsSL %q | sudo bash -s -- --control-url %q --token %q", scriptURL, s.ControlURL, token)
+	command := fmt.Sprintf(
+		"curl -fsSL %q | sudo bash -s -- --control-url %q --token %q --node-id %q --node-name %s --node-ipv4 %q",
+		scriptURL, s.ControlURL, token, status.Node.ID, shellSingleQuote(status.Node.Name), status.Node.PublicIPv4,
+	)
 	s.audit(request, adminID(request.Context()), "create_uninstall_token", "node", nodeID, "expires "+expiresAt.Format(time.RFC3339))
 	s.writeNodeUninstallStatus(response, http.StatusCreated, nodeID, command)
 }

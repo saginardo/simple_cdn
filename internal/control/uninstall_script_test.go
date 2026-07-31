@@ -14,6 +14,22 @@ func TestUninstallEdgeScriptSyntax(t *testing.T) {
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("bash -n: %v\n%s", err, output)
 	}
+	if !strings.Contains(uninstallEdgeScript, `read -r confirmation </dev/tty`) {
+		t.Fatal("edge uninstall confirmation must read from /dev/tty")
+	}
+}
+
+func TestUninstallEdgeScriptRejectsMismatchedConfirmationBeforeChanges(t *testing.T) {
+	result := runUninstallEdgeScriptWithConfirmation(t, "2", "", "UNINSTALL wrong-node")
+	if result.err == nil || !strings.Contains(result.output, "confirmation did not match; nothing was removed") {
+		t.Fatalf("mismatched confirmation result = %v\n%s", result.err, result.output)
+	}
+	result.requirePath(t, "opt/cdn-edge")
+	for _, forbidden := range []string{"uninstall/start", "systemctl ", "nft "} {
+		if strings.Contains(result.log, forbidden) {
+			t.Fatalf("mismatched confirmation executed %q:\n%s", forbidden, result.log)
+		}
+	}
 }
 
 func TestUninstallEdgeScriptRemovesManagedNginxLayout(t *testing.T) {
@@ -144,6 +160,13 @@ type uninstallResult struct {
 
 func runUninstallEdgeScript(t *testing.T, layout, failure string) uninstallResult {
 	t.Helper()
+	return runUninstallEdgeScriptWithConfirmation(t, layout, failure, "UNINSTALL "+edgeUninstallTestNodeID)
+}
+
+const edgeUninstallTestNodeID = "11111111-1111-4111-8111-111111111111"
+
+func runUninstallEdgeScriptWithConfirmation(t *testing.T, layout, failure, confirmation string) uninstallResult {
+	t.Helper()
 	root := t.TempDir()
 	for _, directory := range []string{
 		"run", "tmp", "mock-bin", "etc/nginx/conf.d", "etc/nginx/modules-enabled",
@@ -239,11 +262,24 @@ esac
 			t.Fatal(err)
 		}
 	}
-	command := exec.Command("bash", "-s", "--", "--control-url", "https://control.example.test", "--token", "test-token")
-	command.Stdin = strings.NewReader(uninstallEdgeScript)
+	testScript := uninstallEdgeScript
+	confirmationRead := `IFS= read -r confirmation </dev/tty`
+	if strings.Count(testScript, confirmationRead) != 1 {
+		t.Fatalf("edge uninstall confirmation read count = %d", strings.Count(testScript, confirmationRead))
+	}
+	testScript = strings.Replace(testScript, confirmationRead, `IFS= read -r confirmation <<<"$SIMPLE_CDN_TEST_CONFIRMATION"`, 1)
+	command := exec.Command("bash", "-s", "--",
+		"--control-url", "https://control.example.test",
+		"--token", "test-token",
+		"--node-id", edgeUninstallTestNodeID,
+		"--node-name", "edge test node",
+		"--node-ipv4", "203.0.113.50",
+	)
+	command.Stdin = strings.NewReader(testScript)
 	command.Env = []string{
 		"PATH=" + filepath.Join(root, "mock-bin") + ":/usr/bin:/bin",
 		"MOCK_LOG=" + logPath, "MOCK_FAILURE=" + failure, "SIMPLE_CDN_UNINSTALL_ROOT=" + root,
+		"SIMPLE_CDN_TEST_CONFIRMATION=" + confirmation,
 	}
 	output, err := command.CombinedOutput()
 	logContents, readErr := os.ReadFile(logPath)

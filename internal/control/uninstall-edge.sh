@@ -4,12 +4,18 @@ umask 077
 
 CONTROL_URL=""
 TOKEN=""
+NODE_ID=""
+NODE_NAME=""
+NODE_IPV4=""
 ROOT_PREFIX="${SIMPLE_CDN_UNINSTALL_ROOT:-${CDN_PLATFORM_UNINSTALL_ROOT:-}}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --control-url) CONTROL_URL="$2"; shift 2 ;;
     --token) TOKEN="$2"; shift 2 ;;
+    --node-id) NODE_ID="$2"; shift 2 ;;
+    --node-name) NODE_NAME="$2"; shift 2 ;;
+    --node-ipv4) NODE_IPV4="$2"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -24,11 +30,32 @@ elif [[ $EUID -ne 0 ]]; then
   echo "edge uninstall must run as root" >&2
   exit 2
 fi
-if [[ "$CONTROL_URL" != https://* || "$CONTROL_URL" == *[[:space:]]* || -z "$TOKEN" || "$TOKEN" == *[[:space:]]* ]]; then
-  echo "usage: uninstall-edge.sh --control-url HTTPS_URL --token TOKEN" >&2
+if [[ "$CONTROL_URL" != https://* || "$CONTROL_URL" == *[[:space:]]* || -z "$TOKEN" || "$TOKEN" == *[[:space:]]* ]] ||
+  [[ ! "$NODE_ID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] ||
+  [[ -z "$NODE_NAME" || -z "$NODE_IPV4" || "$NODE_IPV4" == *[[:space:]]* ]]; then
+  echo "usage: uninstall-edge.sh --control-url HTTPS_URL --token TOKEN --node-id UUID --node-name NAME --node-ipv4 ADDRESS" >&2
   exit 2
 fi
 CONTROL_URL="${CONTROL_URL%/}"
+
+confirm_uninstall() {
+  local expected="UNINSTALL $NODE_ID" confirmation
+  printf '\nDANGER: this command permanently removes the managed edge installation.\n' >&2
+  printf 'Target edge node: %q\n' "$NODE_NAME" >&2
+  printf 'Target node ID: %s\n' "$NODE_ID" >&2
+  printf 'Target public IPv4: %s\n' "$NODE_IPV4" >&2
+  printf 'Type exactly "%s" to continue:\n> ' "$expected" >&2
+  if ! IFS= read -r confirmation </dev/tty; then
+    echo "interactive confirmation requires a controlling terminal; nothing was removed" >&2
+    exit 2
+  fi
+  if [[ "$confirmation" != "$expected" ]]; then
+    echo "confirmation did not match; nothing was removed" >&2
+    exit 1
+  fi
+}
+
+confirm_uninstall
 
 root_path() {
   printf '%s%s' "$ROOT_PREFIX" "$1"

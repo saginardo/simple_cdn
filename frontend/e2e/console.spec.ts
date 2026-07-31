@@ -2412,7 +2412,7 @@ test("WireGuard workspace shows tunnel health and performance on desktop and mob
     },
     [`/api/wireguard/tunnels/${freshTunnel.id}/uninstall-command`]: {
       uninstall_command:
-        "curl -fsSL https://control.example.com/install-origin-wireguard.sh | sudo bash -s -- --tunnel-id test --uninstall",
+        "curl -fsSL https://control.example.com/install-origin-wireguard.sh | sudo bash -s -- --tunnel-id test --tunnel-name 'source tunnel' --origin-address 10.253.0.1 --uninstall",
     },
     "/api/wireguard/performance-tests": wireGuardPerformanceTests,
   });

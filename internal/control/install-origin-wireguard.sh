@@ -5,6 +5,8 @@ umask 077
 CONTROL_URL=""
 TOKEN=""
 TUNNEL_ID=""
+TUNNEL_NAME=""
+ORIGIN_ADDRESS=""
 UNINSTALL=0
 STATE_ROOT="/var/lib/simple-cdn-origin-wireguard"
 CONFIG_ROOT="/etc/wireguard"
@@ -14,6 +16,8 @@ while [[ $# -gt 0 ]]; do
     --control-url) CONTROL_URL="$2"; shift 2 ;;
     --token) TOKEN="$2"; shift 2 ;;
     --tunnel-id) TUNNEL_ID="$2"; shift 2 ;;
+    --tunnel-name) TUNNEL_NAME="$2"; shift 2 ;;
+    --origin-address) ORIGIN_ADDRESS="$2"; shift 2 ;;
     --uninstall) UNINSTALL=1; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -23,7 +27,7 @@ if [[ $EUID -ne 0 ]]; then
   echo "WireGuard origin setup must run as root" >&2
   exit 2
 fi
-if [[ ! "$TUNNEL_ID" =~ ^[0-9a-fA-F-]{36}$ ]]; then
+if [[ ! "$TUNNEL_ID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
   echo "--tunnel-id must be a UUID" >&2
   exit 2
 fi
@@ -49,6 +53,25 @@ uninstall_tunnel() {
 }
 
 if [[ $UNINSTALL == 1 ]]; then
+  if [[ -z "$TUNNEL_NAME" || -z "$ORIGIN_ADDRESS" || "$ORIGIN_ADDRESS" == *[[:space:]]* ]]; then
+    echo "usage: install-origin-wireguard.sh --tunnel-id UUID --tunnel-name NAME --origin-address ADDRESS --uninstall" >&2
+    exit 2
+  fi
+  expected="UNINSTALL $TUNNEL_ID"
+  printf '\nDANGER: this command permanently removes the managed origin tunnel.\n' >&2
+  printf 'Target tunnel: %q\n' "$TUNNEL_NAME" >&2
+  printf 'Target tunnel ID: %s\n' "$TUNNEL_ID" >&2
+  printf 'Target origin address: %s\n' "$ORIGIN_ADDRESS" >&2
+  printf 'Target interface: %s\n' "$interface" >&2
+  printf 'Type exactly "%s" to continue:\n> ' "$expected" >&2
+  if ! IFS= read -r confirmation </dev/tty; then
+    echo "interactive confirmation requires a controlling terminal; nothing was removed" >&2
+    exit 2
+  fi
+  if [[ "$confirmation" != "$expected" ]]; then
+    echo "confirmation did not match; nothing was removed" >&2
+    exit 1
+  fi
   uninstall_tunnel
   exit 0
 fi

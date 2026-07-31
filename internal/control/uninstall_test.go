@@ -211,6 +211,15 @@ func TestNodeUninstallCommandCallbacksAndRecordDeletion(t *testing.T) {
 	if !strings.Contains(commandStatus.UninstallCommand, "https://control.example.test/uninstall-edge.sh") || !strings.Contains(commandStatus.UninstallCommand, "sudo bash -s") {
 		t.Fatalf("uninstall command = %q", commandStatus.UninstallCommand)
 	}
+	for _, expected := range []string{
+		`--node-id "` + node.ID + `"`,
+		`--node-name 'edge-remove'`,
+		`--node-ipv4 "203.0.113.50"`,
+	} {
+		if !strings.Contains(commandStatus.UninstallCommand, expected) {
+			t.Fatalf("uninstall command does not contain %q: %q", expected, commandStatus.UninstallCommand)
+		}
+	}
 	match := regexp.MustCompile(`--token "([^"]+)"`).FindStringSubmatch(commandStatus.UninstallCommand)
 	if len(match) != 2 {
 		t.Fatalf("token missing from command %q", commandStatus.UninstallCommand)
