@@ -354,6 +354,9 @@ export interface WireGuardPeer {
   latest_handshake_at?: string;
   rx_bytes: number;
   tx_bytes: number;
+  rx_bytes_per_second?: number;
+  tx_bytes_per_second?: number;
+  transfer_sample_seconds?: number;
   last_reported_at?: string;
   last_error?: string;
 }
@@ -401,9 +404,16 @@ export interface WireGuardOriginService {
   sites: WireGuardOriginServiceReference[];
 }
 
+export interface WireGuardPeerRuntime {
+  node_id: string;
+  established_connections?: number;
+  collected_at?: string;
+}
+
 export interface WireGuardTunnelDetail {
   tunnel: WireGuardTunnel;
   origin_services: WireGuardOriginService[];
+  peer_runtime?: WireGuardPeerRuntime[];
 }
 
 export interface WireGuardTCPMeasurement {
@@ -538,7 +548,8 @@ export interface PublishStatus {
 export interface OverviewPoint {
   time: string;
   requests: number;
-  bytes: number;
+  downstream_bytes: number;
+  upstream_bytes: number;
   error_requests: number;
 }
 
@@ -552,7 +563,8 @@ export interface OverviewSite {
   name: string;
   domains: string[];
   requests: number;
-  bytes: number;
+  downstream_bytes: number;
+  upstream_bytes: number;
   error_requests: number;
   status_codes: OverviewStatusCode[];
   series: OverviewPoint[];
@@ -562,7 +574,12 @@ export interface Overview {
   from: string;
   to: string;
   bucket_seconds: number;
-  totals: { requests: number; bytes: number; error_requests: number };
+  totals: {
+    requests: number;
+    downstream_bytes: number;
+    upstream_bytes: number;
+    error_requests: number;
+  };
   series: OverviewPoint[];
   status_codes: OverviewStatusCode[];
   sites: OverviewSite[];

@@ -79,6 +79,31 @@ func TestOriginConnectionMigrationAddsPoolState(t *testing.T) {
 	}
 }
 
+func TestWireGuardTransferRateMigrationAddsSampleColumns(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	for _, column := range []string{"rx_bytes_per_second", "tx_bytes_per_second", "transfer_sample_seconds"} {
+		if _, err := database.db.Exec(`ALTER TABLE wireguard_tunnel_nodes DROP COLUMN ` + column); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := database.db.Exec(`DELETE FROM schema_migrations WHERE version >= 26`); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, column := range []string{"rx_bytes_per_second", "tx_bytes_per_second", "transfer_sample_seconds"} {
+		found, err := columnExists(database.db, "wireguard_tunnel_nodes", column)
+		if err != nil || !found {
+			t.Fatalf("%s column = %v, %v", column, found, err)
+		}
+	}
+}
+
 func TestSiteHTTP3MigrationDefaultsExistingSitesOff(t *testing.T) {
 	database, err := Open(filepath.Join(t.TempDir(), "control.db"))
 	if err != nil {

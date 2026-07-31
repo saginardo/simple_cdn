@@ -2,10 +2,11 @@ import { useQuery } from "@tanstack/react-query";
 import {
   Activity,
   ArrowDown,
+  ArrowDownToLine,
   ArrowRight,
   ArrowUp,
+  ArrowUpFromLine,
   ArrowUpDown,
-  DatabaseZap,
   RefreshCw,
   TriangleAlert,
 } from "lucide-react";
@@ -66,8 +67,9 @@ import {
   usePersistentState,
 } from "@/hooks/use-persistent-state";
 import { getLocale, t, useI18n } from "@/lib/i18n";
-type Metric = "requests" | "bytes" | "error_requests";
-type SiteSortKey = "name" | "requests" | "bytes";
+type Metric =
+  "requests" | "downstream_bytes" | "upstream_bytes" | "error_requests";
+type SiteSortKey = "name" | "requests" | "downstream_bytes" | "upstream_bytes";
 type SortDirection = "asc" | "desc";
 interface SiteSort {
   key: SiteSortKey;
@@ -86,9 +88,14 @@ const metricConfig: Record<
     color: "var(--chart-1)",
     format: formatCompact,
   },
-  bytes: {
-    label: "传输量",
+  downstream_bytes: {
+    label: "下行流量",
     color: "var(--chart-2)",
+    format: formatBytes,
+  },
+  upstream_bytes: {
+    label: "上行流量",
+    color: "var(--chart-3)",
     format: formatBytes,
   },
   error_requests: {
@@ -101,7 +108,12 @@ export function OverviewPage() {
   useI18n();
   const [metric, setMetric] = usePersistentEnum<Metric>(
     "simple-cdn.overview.metric",
-    ["requests", "bytes", "error_requests"] as const,
+    [
+      "requests",
+      "downstream_bytes",
+      "upstream_bytes",
+      "error_requests",
+    ] as const,
     "requests",
   );
   const [siteSort, setSiteSort] = usePersistentState<SiteSort>(
@@ -114,8 +126,9 @@ export function OverviewPage() {
       if (!value || typeof value !== "object") return false;
       const candidate = value as Partial<SiteSort>;
       return (
-        ["name", "requests", "bytes"].includes(candidate.key ?? "") &&
-        ["asc", "desc"].includes(candidate.direction ?? "")
+        ["name", "requests", "downstream_bytes", "upstream_bytes"].includes(
+          candidate.key ?? "",
+        ) && ["asc", "desc"].includes(candidate.direction ?? "")
       );
     },
   );
@@ -142,12 +155,20 @@ export function OverviewPage() {
       tone: "info" as const,
     },
     {
-      id: "bytes",
-      icon: DatabaseZap,
-      label: t("传输量"),
-      value: formatBytes(totals?.bytes),
-      meta: t("边缘下行流量"),
+      id: "downstream-bytes",
+      icon: ArrowDownToLine,
+      label: t("下行流量"),
+      value: formatBytes(totals?.downstream_bytes),
+      meta: t("客户端响应正文"),
       tone: "success" as const,
+    },
+    {
+      id: "upstream-bytes",
+      icon: ArrowUpFromLine,
+      label: t("上行流量"),
+      value: formatBytes(totals?.upstream_bytes),
+      meta: t("客户端请求总字节"),
+      tone: "info" as const,
     },
     {
       id: "errors",
@@ -220,7 +241,7 @@ export function OverviewPage() {
           <>
             <section aria-label={t("关键指标")}>
               <Card data-slot="metric-band" className="py-0">
-                <CardContent className="grid gap-0 px-0 sm:grid-cols-2 xl:grid-cols-4">
+                <CardContent className="grid gap-0 px-0 sm:grid-cols-2 xl:grid-cols-5">
                   {metricItems.map((item, index) => (
                     <MetricBandItem
                       key={item.id}
@@ -248,7 +269,12 @@ export function OverviewPage() {
                   >
                     <TabsList className="w-full sm:w-auto">
                       <TabsTrigger value="requests">{t("请求")}</TabsTrigger>
-                      <TabsTrigger value="bytes">{t("流量")}</TabsTrigger>
+                      <TabsTrigger value="downstream_bytes">
+                        {t("下行")}
+                      </TabsTrigger>
+                      <TabsTrigger value="upstream_bytes">
+                        {t("上行")}
+                      </TabsTrigger>
                       <TabsTrigger value="error_requests">
                         {t("错误")}
                       </TabsTrigger>
@@ -335,8 +361,14 @@ export function OverviewPage() {
                             onSort={handleSiteSort}
                           />
                           <SortableSiteTableHead
-                            label={t("传输量")}
-                            sortKey="bytes"
+                            label={t("下行流量")}
+                            sortKey="downstream_bytes"
+                            sort={siteSort}
+                            onSort={handleSiteSort}
+                          />
+                          <SortableSiteTableHead
+                            label={t("上行流量")}
+                            sortKey="upstream_bytes"
                             sort={siteSort}
                             onSort={handleSiteSort}
                           />
@@ -359,7 +391,10 @@ export function OverviewPage() {
                               {formatNumber(site.requests)}
                             </TableCell>
                             <TableCell className="tabular-nums">
-                              {formatBytes(site.bytes)}
+                              {formatBytes(site.downstream_bytes)}
+                            </TableCell>
+                            <TableCell className="tabular-nums">
+                              {formatBytes(site.upstream_bytes)}
                             </TableCell>
                             <TableCell className="tabular-nums">
                               {formatPercent(
@@ -600,7 +635,8 @@ const metricBandDividers = [
   "",
   "border-t sm:border-t-0 sm:border-l",
   "border-t xl:border-t-0 xl:border-l",
-  "border-t sm:border-l xl:border-t-0",
+  "border-t sm:border-l xl:border-t-0 xl:border-l",
+  "border-t xl:border-t-0 xl:border-l",
 ] as const;
 
 function MetricBandItem({

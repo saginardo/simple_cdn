@@ -13,23 +13,26 @@ import (
 const overviewWindow = 24 * time.Hour
 
 type overviewTotals struct {
-	Requests      uint64 `json:"requests"`
-	Bytes         int64  `json:"bytes"`
-	ErrorRequests uint64 `json:"error_requests"`
+	Requests        uint64 `json:"requests"`
+	DownstreamBytes int64  `json:"downstream_bytes"`
+	UpstreamBytes   int64  `json:"upstream_bytes"`
+	ErrorRequests   uint64 `json:"error_requests"`
 }
 
 type overviewSeriesPoint struct {
-	Time          time.Time `json:"time"`
-	Requests      uint64    `json:"requests"`
-	Bytes         int64     `json:"bytes"`
-	ErrorRequests uint64    `json:"error_requests"`
+	Time            time.Time `json:"time"`
+	Requests        uint64    `json:"requests"`
+	DownstreamBytes int64     `json:"downstream_bytes"`
+	UpstreamBytes   int64     `json:"upstream_bytes"`
+	ErrorRequests   uint64    `json:"error_requests"`
 }
 
 type overviewSitePoint struct {
-	Time          time.Time `json:"time"`
-	Requests      uint64    `json:"requests"`
-	Bytes         int64     `json:"bytes"`
-	ErrorRequests uint64    `json:"error_requests"`
+	Time            time.Time `json:"time"`
+	Requests        uint64    `json:"requests"`
+	DownstreamBytes int64     `json:"downstream_bytes"`
+	UpstreamBytes   int64     `json:"upstream_bytes"`
+	ErrorRequests   uint64    `json:"error_requests"`
 }
 
 type overviewStatusCode struct {
@@ -38,14 +41,15 @@ type overviewStatusCode struct {
 }
 
 type overviewSite struct {
-	ID            string               `json:"id"`
-	Name          string               `json:"name"`
-	Domains       []string             `json:"domains"`
-	Requests      uint64               `json:"requests"`
-	Bytes         int64                `json:"bytes"`
-	ErrorRequests uint64               `json:"error_requests"`
-	StatusCodes   []overviewStatusCode `json:"status_codes"`
-	Series        []overviewSitePoint  `json:"series"`
+	ID              string               `json:"id"`
+	Name            string               `json:"name"`
+	Domains         []string             `json:"domains"`
+	Requests        uint64               `json:"requests"`
+	DownstreamBytes int64                `json:"downstream_bytes"`
+	UpstreamBytes   int64                `json:"upstream_bytes"`
+	ErrorRequests   uint64               `json:"error_requests"`
+	StatusCodes     []overviewStatusCode `json:"status_codes"`
+	Series          []overviewSitePoint  `json:"series"`
 }
 
 type overviewPayload struct {
@@ -105,22 +109,26 @@ func buildOverviewPayload(from, to time.Time, configuredSites []domain.Site, buc
 	for _, bucket := range buckets {
 		if index, ok := timeIndexes[bucket.Hour.UTC().Truncate(time.Hour).Unix()]; ok {
 			payload.Totals.Requests += bucket.Requests
-			payload.Totals.Bytes += bucket.Bytes
+			payload.Totals.DownstreamBytes += bucket.DownstreamBytes
+			payload.Totals.UpstreamBytes += bucket.UpstreamBytes
 			statusCounts[bucket.Status] += bucket.Requests
 			isError := bucket.Status >= 400
 			if isError {
 				payload.Totals.ErrorRequests += bucket.Requests
 			}
 			payload.Series[index].Requests += bucket.Requests
-			payload.Series[index].Bytes += bucket.Bytes
+			payload.Series[index].DownstreamBytes += bucket.DownstreamBytes
+			payload.Series[index].UpstreamBytes += bucket.UpstreamBytes
 			if isError {
 				payload.Series[index].ErrorRequests += bucket.Requests
 			}
 			if siteIndex, exists := siteIndexes[bucket.SiteID]; exists {
 				payload.Sites[siteIndex].Requests += bucket.Requests
-				payload.Sites[siteIndex].Bytes += bucket.Bytes
+				payload.Sites[siteIndex].DownstreamBytes += bucket.DownstreamBytes
+				payload.Sites[siteIndex].UpstreamBytes += bucket.UpstreamBytes
 				payload.Sites[siteIndex].Series[index].Requests += bucket.Requests
-				payload.Sites[siteIndex].Series[index].Bytes += bucket.Bytes
+				payload.Sites[siteIndex].Series[index].DownstreamBytes += bucket.DownstreamBytes
+				payload.Sites[siteIndex].Series[index].UpstreamBytes += bucket.UpstreamBytes
 				siteStatusCounts[bucket.SiteID][bucket.Status] += bucket.Requests
 				if isError {
 					payload.Sites[siteIndex].ErrorRequests += bucket.Requests

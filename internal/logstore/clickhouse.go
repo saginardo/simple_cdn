@@ -68,11 +68,12 @@ type MinuteMetric struct {
 }
 
 type OverviewBucket struct {
-	Hour     time.Time `json:"hour"`
-	SiteID   string    `json:"site_id"`
-	Status   uint16    `json:"status"`
-	Requests uint64    `json:"requests"`
-	Bytes    int64     `json:"bytes"`
+	Hour            time.Time `json:"hour"`
+	SiteID          string    `json:"site_id"`
+	Status          uint16    `json:"status"`
+	Requests        uint64    `json:"requests"`
+	DownstreamBytes int64     `json:"downstream_bytes"`
+	UpstreamBytes   int64     `json:"upstream_bytes"`
 }
 
 type NodeCacheBucket struct {
@@ -365,7 +366,11 @@ func (c ClickHouse) Metrics(ctx context.Context, siteID string, since time.Time)
 }
 
 func (c ClickHouse) Overview(ctx context.Context, from, to time.Time) ([]OverviewBucket, error) {
-	query := `SELECT toStartOfHour(timestamp) AS hour, site_id, status, count() AS requests, sum(bytes) AS bytes FROM ` + identifier(c.database()) + `.cdn_access_logs WHERE timestamp >= {from:DateTime} AND timestamp < {to:DateTime} GROUP BY hour, site_id, status ORDER BY hour, site_id, status FORMAT JSONEachRow`
+	query := `SELECT toStartOfHour(timestamp) AS hour, site_id, status, count() AS requests,
+		sum(bytes) AS downstream_bytes, sum(request_bytes) AS upstream_bytes
+		FROM ` + identifier(c.database()) + `.cdn_access_logs
+		WHERE timestamp >= {from:DateTime} AND timestamp < {to:DateTime}
+		GROUP BY hour, site_id, status ORDER BY hour, site_id, status FORMAT JSONEachRow`
 	parameters := url.Values{
 		"param_from": {from.UTC().Format("2006-01-02 15:04:05")},
 		"param_to":   {to.UTC().Format("2006-01-02 15:04:05")},
@@ -642,11 +647,12 @@ func (m *MinuteMetric) UnmarshalJSON(contents []byte) error {
 
 func (b *OverviewBucket) UnmarshalJSON(contents []byte) error {
 	var row struct {
-		Hour     string          `json:"hour"`
-		SiteID   string          `json:"site_id"`
-		Status   uint16          `json:"status"`
-		Requests json.RawMessage `json:"requests"`
-		Bytes    json.RawMessage `json:"bytes"`
+		Hour            string          `json:"hour"`
+		SiteID          string          `json:"site_id"`
+		Status          uint16          `json:"status"`
+		Requests        json.RawMessage `json:"requests"`
+		DownstreamBytes json.RawMessage `json:"downstream_bytes"`
+		UpstreamBytes   json.RawMessage `json:"upstream_bytes"`
 	}
 	if err := json.Unmarshal(contents, &row); err != nil {
 		return err
@@ -659,11 +665,18 @@ func (b *OverviewBucket) UnmarshalJSON(contents []byte) error {
 	if err != nil {
 		return fmt.Errorf("decode overview requests: %w", err)
 	}
-	bytes, err := parseJSONInt64(row.Bytes)
+	downstreamBytes, err := parseJSONInt64(row.DownstreamBytes)
 	if err != nil {
-		return fmt.Errorf("decode overview bytes: %w", err)
+		return fmt.Errorf("decode overview downstream bytes: %w", err)
 	}
-	*b = OverviewBucket{Hour: hour, SiteID: row.SiteID, Status: row.Status, Requests: requests, Bytes: bytes}
+	upstreamBytes, err := parseJSONInt64(row.UpstreamBytes)
+	if err != nil {
+		return fmt.Errorf("decode overview upstream bytes: %w", err)
+	}
+	*b = OverviewBucket{
+		Hour: hour, SiteID: row.SiteID, Status: row.Status, Requests: requests,
+		DownstreamBytes: downstreamBytes, UpstreamBytes: upstreamBytes,
+	}
 	return nil
 }
 

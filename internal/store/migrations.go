@@ -42,6 +42,23 @@ var schemaMigrations = []schemaMigration{
 	{Version: 23, Name: "site-proxy-buffering-controls", Apply: migrateSiteProxyBufferingControls},
 	{Version: 24, Name: "wireguard-tunnels-and-performance", Apply: migrateWireGuard},
 	{Version: 25, Name: "wireguard-egress-limits", Apply: migrateWireGuardEgressLimits},
+	{Version: 26, Name: "wireguard-transfer-rates", Apply: migrateWireGuardTransferRates},
+}
+
+func migrateWireGuardTransferRates(tx *sql.Tx) error {
+	for _, column := range []struct {
+		name       string
+		definition string
+	}{
+		{"rx_bytes_per_second", "rx_bytes_per_second REAL"},
+		{"tx_bytes_per_second", "tx_bytes_per_second REAL"},
+		{"transfer_sample_seconds", "transfer_sample_seconds REAL"},
+	} {
+		if err := addColumnIfMissing(tx, "wireguard_tunnel_nodes", column.name, column.definition); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func migrateWireGuardEgressLimits(tx *sql.Tx) error {
@@ -80,6 +97,9 @@ func migrateWireGuard(tx *sql.Tx) error {
 		latest_handshake_at TEXT,
 		rx_bytes INTEGER NOT NULL DEFAULT 0,
 		tx_bytes INTEGER NOT NULL DEFAULT 0,
+		rx_bytes_per_second REAL,
+		tx_bytes_per_second REAL,
+		transfer_sample_seconds REAL,
 		last_reported_at TEXT,
 		last_error TEXT NOT NULL DEFAULT '',
 		PRIMARY KEY(tunnel_id, node_id),

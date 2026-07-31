@@ -379,7 +379,8 @@ func scanWireGuardTunnel(row scanner) (domain.WireGuardTunnel, error) {
 func (s *Store) listWireGuardPeers(tunnelID string) ([]domain.WireGuardPeer, error) {
 	rows, err := s.db.Query(`SELECT peers.node_id, nodes.name, nodes.public_ipv4, peers.address, peers.edge_egress_limit_mbps,
 		peers.public_key, peers.applied_revision,
-		peers.latest_handshake_at, peers.rx_bytes, peers.tx_bytes, peers.last_reported_at, peers.last_error
+		peers.latest_handshake_at, peers.rx_bytes, peers.tx_bytes, peers.rx_bytes_per_second, peers.tx_bytes_per_second,
+		peers.transfer_sample_seconds, peers.last_reported_at, peers.last_error
 		FROM wireguard_tunnel_nodes peers JOIN nodes ON nodes.id=peers.node_id
 		WHERE peers.tunnel_id=? ORDER BY nodes.name`, tunnelID)
 	if err != nil {
@@ -390,10 +391,17 @@ func (s *Store) listWireGuardPeers(tunnelID string) ([]domain.WireGuardPeer, err
 	for rows.Next() {
 		var peer domain.WireGuardPeer
 		var handshake, reported sql.NullString
+		var rxBytesPerSecond, txBytesPerSecond, transferSampleSeconds sql.NullFloat64
 		if err := rows.Scan(&peer.NodeID, &peer.NodeName, &peer.NodePublicIPv4, &peer.Address, &peer.EdgeEgressLimitMbps,
 			&peer.PublicKey, &peer.AppliedRevision,
-			&handshake, &peer.RXBytes, &peer.TXBytes, &reported, &peer.LastError); err != nil {
+			&handshake, &peer.RXBytes, &peer.TXBytes, &rxBytesPerSecond, &txBytesPerSecond,
+			&transferSampleSeconds, &reported, &peer.LastError); err != nil {
 			return nil, err
+		}
+		if rxBytesPerSecond.Valid && txBytesPerSecond.Valid && transferSampleSeconds.Valid {
+			peer.RXBytesPerSecond = &rxBytesPerSecond.Float64
+			peer.TXBytesPerSecond = &txBytesPerSecond.Float64
+			peer.TransferSampleSecs = &transferSampleSeconds.Float64
 		}
 		if handshake.Valid {
 			value, parseErr := parseTime(handshake.String)
@@ -477,6 +485,8 @@ func (s *Store) WireGuardEdgeConfigs(nodeID string) ([]domain.WireGuardEdgeConfi
 	return configs, rows.Err()
 }
 
+const wireGuardTransferMaxSampleInterval = 30 * time.Second
+
 func (s *Store) UpdateWireGuardPeerReports(nodeID string, reports []domain.WireGuardPeerReport) error {
 	if len(reports) > domain.MaxWireGuardPeersPerTunnel {
 		return errors.New("too many WireGuard peer reports")
@@ -486,18 +496,24 @@ func (s *Store) UpdateWireGuardPeerReports(nodeID string, reports []domain.WireG
 		return err
 	}
 	defer tx.Rollback()
-	when := stamp(now())
+	reportedAt := now()
+	when := stamp(reportedAt)
 	seen := make(map[string]bool, len(reports))
 	for _, report := range reports {
 		if !domain.ValidWireGuardPeerReport(report) || seen[report.TunnelID] {
 			return errors.New("invalid or duplicate WireGuard peer report")
 		}
 		seen[report.TunnelID] = true
-		var currentKey string
+		var currentKey, previousError string
 		var currentRevision int64
-		if err := tx.QueryRow(`SELECT peers.public_key, tunnels.revision FROM wireguard_tunnel_nodes peers
+		var previousRXBytes, previousTXBytes int64
+		var previousReportedAt sql.NullString
+		if err := tx.QueryRow(`SELECT peers.public_key, tunnels.revision, peers.rx_bytes, peers.tx_bytes,
+			peers.last_reported_at, peers.last_error FROM wireguard_tunnel_nodes peers
 			JOIN wireguard_tunnels tunnels ON tunnels.id=peers.tunnel_id
-			WHERE peers.tunnel_id=? AND peers.node_id=?`, report.TunnelID, nodeID).Scan(&currentKey, &currentRevision); errors.Is(err, sql.ErrNoRows) {
+			WHERE peers.tunnel_id=? AND peers.node_id=?`, report.TunnelID, nodeID).Scan(
+			&currentKey, &currentRevision, &previousRXBytes, &previousTXBytes, &previousReportedAt, &previousError,
+		); errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		} else if err != nil {
 			return err
@@ -514,9 +530,24 @@ func (s *Store) UpdateWireGuardPeerReports(nodeID string, reports []domain.WireG
 		if report.LatestHandshake != nil {
 			handshake = stamp(*report.LatestHandshake)
 		}
+		var rxBytesPerSecond, txBytesPerSecond, transferSampleSeconds any
+		if currentKey == report.PublicKey && previousError == "" && report.Error == "" && previousReportedAt.Valid {
+			previousAt, err := parseTime(previousReportedAt.String)
+			if err != nil {
+				return err
+			}
+			sampleSeconds := reportedAt.Sub(previousAt).Seconds()
+			if sampleSeconds > 0 && sampleSeconds <= wireGuardTransferMaxSampleInterval.Seconds() &&
+				report.RXBytes >= previousRXBytes && report.TXBytes >= previousTXBytes {
+				rxBytesPerSecond = float64(report.RXBytes-previousRXBytes) / sampleSeconds
+				txBytesPerSecond = float64(report.TXBytes-previousTXBytes) / sampleSeconds
+				transferSampleSeconds = sampleSeconds
+			}
+		}
 		if _, err := tx.Exec(`UPDATE wireguard_tunnel_nodes SET public_key=?, applied_revision=?, latest_handshake_at=?, rx_bytes=?,
-			tx_bytes=?, last_reported_at=?, last_error=? WHERE tunnel_id=? AND node_id=?`, report.PublicKey, report.Revision,
-			handshake, report.RXBytes, report.TXBytes, when, report.Error, report.TunnelID, nodeID); err != nil {
+			tx_bytes=?, rx_bytes_per_second=?, tx_bytes_per_second=?, transfer_sample_seconds=?, last_reported_at=?, last_error=?
+			WHERE tunnel_id=? AND node_id=?`, report.PublicKey, report.Revision, handshake, report.RXBytes, report.TXBytes,
+			rxBytesPerSecond, txBytesPerSecond, transferSampleSeconds, when, report.Error, report.TunnelID, nodeID); err != nil {
 			return err
 		}
 	}

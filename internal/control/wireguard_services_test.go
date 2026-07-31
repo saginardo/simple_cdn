@@ -65,7 +65,7 @@ func TestWireGuardTunnelDetailAggregatesOriginServices(t *testing.T) {
 	tlsSite, err := database.CreateSite(domain.Site{
 		Name: "Secure", Domains: []string{"secure.example.test"}, Nodes: []string{nodes[0].ID},
 		PrimaryOrigin: domain.Origin{
-			URL: "https://secure-origin.example.test:8443", HTTPVersion: domain.OriginHTTPVersionHTTP2,
+			URL: "https://secure-origin.example.test:9443", HTTPVersion: domain.OriginHTTPVersionHTTP2,
 			WireGuardTunnelID: tunnel.ID, Enabled: true,
 		}, Enabled: true,
 	}, "zone")
@@ -85,17 +85,21 @@ func TestWireGuardTunnelDetailAggregatesOriginServices(t *testing.T) {
 	server := &Server{Store: database}
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	address8443 := tunnel.OriginAddress + ":8443"
+	address9443 := tunnel.OriginAddress + ":9443"
+	h2cAConnections, httpsAConnections, h2cBConnections, staleConnections := int64(4), int64(2), int64(3), int64(7)
 	freshA := controlTestMachineStatus(now.Add(-time.Second))
 	freshA.OriginProbes = []domain.OriginProbeStatus{
 		{
 			PoolID: "h2c-a", Address: address8443, Scheme: "http", HTTPVersion: domain.OriginHTTPVersionH2C,
-			References: []domain.OriginPoolReference{{SiteID: h2cSite.ID, Role: "primary"}, {SiteID: backupSite.ID, Role: "backup"}},
-			Healthy:    true, CircuitState: domain.OriginCircuitClosed, CheckedAt: freshA.CollectedAt,
+			EstablishedConnections: &h2cAConnections,
+			References:             []domain.OriginPoolReference{{SiteID: h2cSite.ID, Role: "primary"}, {SiteID: backupSite.ID, Role: "backup"}},
+			Healthy:                true, CircuitState: domain.OriginCircuitClosed, CheckedAt: freshA.CollectedAt,
 		},
 		{
-			PoolID: "https-a", Address: address8443, Scheme: "https", HTTPVersion: domain.OriginHTTPVersionHTTP2,
-			References: []domain.OriginPoolReference{{SiteID: tlsSite.ID, Role: "primary"}},
-			Healthy:    true, CircuitState: domain.OriginCircuitClosed, CheckedAt: freshA.CollectedAt,
+			PoolID: "https-a", Address: address9443, Scheme: "https", HTTPVersion: domain.OriginHTTPVersionHTTP2,
+			EstablishedConnections: &httpsAConnections,
+			References:             []domain.OriginPoolReference{{SiteID: tlsSite.ID, Role: "primary"}},
+			Healthy:                true, CircuitState: domain.OriginCircuitClosed, CheckedAt: freshA.CollectedAt,
 		},
 	}
 	server.recordNodeMachineStatus(nodes[0].ID, freshA)
@@ -103,16 +107,18 @@ func TestWireGuardTunnelDetailAggregatesOriginServices(t *testing.T) {
 	freshB := controlTestMachineStatus(now.Add(-2 * time.Second))
 	freshB.OriginProbes = []domain.OriginProbeStatus{{
 		PoolID: "h2c-b", Address: address8443, Scheme: "http", HTTPVersion: domain.OriginHTTPVersionH2C,
-		References: []domain.OriginPoolReference{{SiteID: h2cSite.ID, Role: "primary"}, {SiteID: backupSite.ID, Role: "backup"}},
-		Healthy:    false, CircuitState: domain.OriginCircuitOpen, CheckedAt: freshB.CollectedAt,
+		EstablishedConnections: &h2cBConnections,
+		References:             []domain.OriginPoolReference{{SiteID: h2cSite.ID, Role: "primary"}, {SiteID: backupSite.ID, Role: "backup"}},
+		Healthy:                false, CircuitState: domain.OriginCircuitOpen, CheckedAt: freshB.CollectedAt,
 	}}
 	server.recordNodeMachineStatus(nodes[1].ID, freshB)
 
 	stale := controlTestMachineStatus(now.Add(-time.Minute))
 	stale.OriginProbes = []domain.OriginProbeStatus{{
 		PoolID: "grpc-stale", Address: tunnel.OriginAddress + ":50051", Scheme: "grpc",
-		References: []domain.OriginPoolReference{{SiteID: grpcSite.ID, Role: "primary"}},
-		Healthy:    true, CircuitState: domain.OriginCircuitClosed, CheckedAt: stale.CollectedAt,
+		EstablishedConnections: &staleConnections,
+		References:             []domain.OriginPoolReference{{SiteID: grpcSite.ID, Role: "primary"}},
+		Healthy:                true, CircuitState: domain.OriginCircuitClosed, CheckedAt: stale.CollectedAt,
 	}}
 	server.recordNodeMachineStatus(nodes[2].ID, stale)
 
@@ -143,7 +149,7 @@ func TestWireGuardTunnelDetailAggregatesOriginServices(t *testing.T) {
 		t.Fatalf("H2C last report = %v", h2c.LastReportedAt)
 	}
 
-	https := findWireGuardOriginService(t, result.OriginServices, 8443, "https", domain.OriginHTTPVersionHTTP2)
+	https := findWireGuardOriginService(t, result.OriginServices, 9443, "https", domain.OriginHTTPVersionHTTP2)
 	if https.Status != wireGuardOriginServiceHealthy || https.ReachableNodes != 1 || https.ObservedNodes != 1 || https.TotalNodes != 1 {
 		t.Fatalf("HTTPS service = %#v", https)
 	}
@@ -155,6 +161,34 @@ func TestWireGuardTunnelDetailAggregatesOriginServices(t *testing.T) {
 	if grpc.LastReportedAt == nil || !grpc.LastReportedAt.Equal(stale.CollectedAt) {
 		t.Fatalf("gRPC last report = %v", grpc.LastReportedAt)
 	}
+	if len(result.PeerRuntime) != 3 {
+		t.Fatalf("peer runtime = %#v", result.PeerRuntime)
+	}
+	runtimeA := findWireGuardPeerRuntime(t, result.PeerRuntime, nodes[0].ID)
+	if runtimeA.EstablishedConnections == nil || *runtimeA.EstablishedConnections != 6 ||
+		runtimeA.CollectedAt == nil || !runtimeA.CollectedAt.Equal(freshA.CollectedAt) {
+		t.Fatalf("edge A runtime = %#v", runtimeA)
+	}
+	runtimeB := findWireGuardPeerRuntime(t, result.PeerRuntime, nodes[1].ID)
+	if runtimeB.EstablishedConnections == nil || *runtimeB.EstablishedConnections != 3 ||
+		runtimeB.CollectedAt == nil || !runtimeB.CollectedAt.Equal(freshB.CollectedAt) {
+		t.Fatalf("edge B runtime = %#v", runtimeB)
+	}
+	staleRuntime := findWireGuardPeerRuntime(t, result.PeerRuntime, nodes[2].ID)
+	if staleRuntime.EstablishedConnections != nil || staleRuntime.CollectedAt != nil {
+		t.Fatalf("stale runtime = %#v", staleRuntime)
+	}
+}
+
+func findWireGuardPeerRuntime(t *testing.T, runtime []wireGuardPeerRuntime, nodeID string) wireGuardPeerRuntime {
+	t.Helper()
+	for _, peer := range runtime {
+		if peer.NodeID == nodeID {
+			return peer
+		}
+	}
+	t.Fatalf("peer runtime %s not found in %#v", nodeID, runtime)
+	return wireGuardPeerRuntime{}
 }
 
 func TestWireGuardTunnelDetailReturnsNotFound(t *testing.T) {

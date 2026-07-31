@@ -174,20 +174,22 @@ func TestOverviewDecodesHourlyStatusRows(t *testing.T) {
 	to := from.Add(24 * time.Hour)
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		query := request.URL.Query().Get("query")
-		if !strings.Contains(query, "toStartOfHour(timestamp)") || !strings.Contains(query, "GROUP BY hour, site_id, status") {
+		if !strings.Contains(query, "toStartOfHour(timestamp)") || !strings.Contains(query, "GROUP BY hour, site_id, status") ||
+			!strings.Contains(query, "sum(bytes) AS downstream_bytes") || !strings.Contains(query, "sum(request_bytes) AS upstream_bytes") {
 			t.Fatalf("unexpected query: %s", query)
 		}
 		if request.URL.Query().Get("param_from") != "2026-01-02 03:04:05" || request.URL.Query().Get("param_to") != "2026-01-03 03:04:05" {
 			t.Fatalf("unexpected time parameters: %s", request.URL.RawQuery)
 		}
-		_, _ = io.WriteString(response, "{\"hour\":\"2026-01-02T04:00:00Z\",\"site_id\":\"site\",\"status\":404,\"requests\":\"7\",\"bytes\":\"700\"}\n")
+		_, _ = io.WriteString(response, "{\"hour\":\"2026-01-02T04:00:00Z\",\"site_id\":\"site\",\"status\":404,\"requests\":\"7\",\"downstream_bytes\":\"700\",\"upstream_bytes\":\"210\"}\n")
 	}))
 	defer server.Close()
 	buckets, err := (ClickHouse{Endpoint: server.URL}).Overview(context.Background(), from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(buckets) != 1 || buckets[0].SiteID != "site" || buckets[0].Status != 404 || buckets[0].Requests != 7 || buckets[0].Bytes != 700 {
+	if len(buckets) != 1 || buckets[0].SiteID != "site" || buckets[0].Status != 404 || buckets[0].Requests != 7 ||
+		buckets[0].DownstreamBytes != 700 || buckets[0].UpstreamBytes != 210 {
 		t.Fatalf("unexpected overview buckets: %#v", buckets)
 	}
 }

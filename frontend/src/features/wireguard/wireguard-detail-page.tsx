@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/table";
 import { api } from "@/lib/api";
 import {
+  formatBitRate,
   formatBytes,
   formatDateTime,
   formatNumber,
@@ -32,6 +33,7 @@ import type {
   WireGuardOriginService,
   WireGuardOriginServiceStatus,
   WireGuardPeer,
+  WireGuardPeerRuntime,
   WireGuardTunnel,
   WireGuardTunnelDetail,
 } from "@/lib/types";
@@ -89,7 +91,10 @@ export function WireGuardDetailPage() {
           <>
             <TunnelFacts tunnel={tunnel} />
             <OriginServices services={detail.data.origin_services} />
-            <TunnelPeers tunnel={tunnel} />
+            <TunnelPeers
+              tunnel={tunnel}
+              runtime={detail.data.peer_runtime ?? []}
+            />
           </>
         ) : null}
       </PageBody>
@@ -226,70 +231,156 @@ function OriginServices({ services }: { services: WireGuardOriginService[] }) {
   );
 }
 
-function TunnelPeers({ tunnel }: { tunnel: WireGuardTunnel }) {
+function TunnelPeers({
+  tunnel,
+  runtime,
+}: {
+  tunnel: WireGuardTunnel;
+  runtime: WireGuardPeerRuntime[];
+}) {
+  const now = Date.now();
+  const runtimeByNode = new Map(runtime.map((item) => [item.node_id, item]));
+  const onlinePeers = tunnel.peers.filter(
+    (peer) => peerLinkState(peer, tunnel, now).online,
+  ).length;
   return (
     <section className="space-y-3" aria-labelledby="wireguard-peers">
-      <h2 id="wireguard-peers" className="text-base font-semibold">
-        {t("边缘 Peer")}
-      </h2>
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 id="wireguard-peers" className="text-base font-semibold">
+          {t("边缘 Peer")}
+        </h2>
+        <span className="text-xs tabular-nums text-muted-foreground">
+          {t("{value0} / {value1} 在线", {
+            value0: onlinePeers,
+            value1: tunnel.peers.length,
+          })}
+        </span>
+      </div>
       <Panel>
-        <Table className="min-w-[950px]">
+        <Table className="min-w-[1320px]">
           <TableHeader>
             <TableRow>
               <TableHead className="pl-5">{t("节点")}</TableHead>
+              <TableHead>{t("链路状态")}</TableHead>
               <TableHead>{t("隧道 IP")}</TableHead>
-              <TableHead>{t("修订")}</TableHead>
-              <TableHead>{t("公钥")}</TableHead>
+              <TableHead>{t("当前速度")}</TableHead>
+              <TableHead
+                className="text-right"
+                title={t(
+                  "Nginx 当前持有的 ESTABLISHED TCP 连接，包含空闲复用连接",
+                )}
+              >
+                {t("回源连接数")}
+              </TableHead>
+              <TableHead>{t("累计流量")}</TableHead>
               <TableHead>{t("边缘出口上限")}</TableHead>
-              <TableHead>{t("接收 / 发送")}</TableHead>
               <TableHead className="pr-5">{t("最近握手")}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {tunnel.peers.map((peer) => (
-              <TableRow key={peer.node_id}>
-                <TableCell className="pl-5">
-                  <div className="font-medium">{peer.node_name}</div>
-                  <div className="font-mono text-xs text-muted-foreground">
-                    {peer.node_public_ipv4}
-                  </div>
-                </TableCell>
-                <TableCell className="font-mono">{peer.address}</TableCell>
-                <TableCell>
-                  <StatusBadge
-                    status={
-                      peerApplied(peer, tunnel)
-                        ? "ready"
-                        : peer.last_error
-                          ? "failed"
-                          : "pending"
-                    }
-                    label={`r${peer.applied_revision}`}
-                  />
-                  {peer.last_error ? (
-                    <p className="mt-1 max-w-64 text-xs text-destructive">
-                      {peer.last_error}
-                    </p>
-                  ) : null}
-                </TableCell>
-                <TableCell className="font-mono text-xs">
-                  {shortHash(peer.public_key)}
-                </TableCell>
-                <TableCell className="text-xs">
-                  {formatEgressLimit(peer.edge_egress_limit_mbps)}
-                </TableCell>
-                <TableCell className="text-xs">
-                  {formatBytes(peer.rx_bytes)} / {formatBytes(peer.tx_bytes)}
-                </TableCell>
-                <TableCell className="pr-5">
-                  {formatDateTime(peer.latest_handshake_at)}
-                </TableCell>
-              </TableRow>
-            ))}
+            {tunnel.peers.map((peer) => {
+              const state = peerLinkState(peer, tunnel, now);
+              const sampled = state.online && hasPeerTransferSample(peer);
+              const peerRuntime = runtimeByNode.get(peer.node_id);
+              return (
+                <TableRow key={peer.node_id}>
+                  <TableCell className="pl-5">
+                    <div className="font-medium">{peer.node_name}</div>
+                    <div className="font-mono text-xs text-muted-foreground">
+                      {peer.node_public_ipv4}
+                    </div>
+                  </TableCell>
+                  <TableCell className="max-w-64 align-top">
+                    <StatusBadge status={state.status} label={state.label} />
+                    <div className="mt-1 text-xs tabular-nums text-muted-foreground">
+                      r{peer.applied_revision} / r{tunnel.revision}
+                    </div>
+                    {peer.last_error ? (
+                      <p className="mt-1 max-w-64 whitespace-normal text-xs text-destructive">
+                        {peer.last_error}
+                      </p>
+                    ) : null}
+                  </TableCell>
+                  <TableCell>
+                    <div className="font-mono text-xs font-medium">
+                      {peer.address}
+                    </div>
+                    <div className="mt-1 font-mono text-xs text-muted-foreground">
+                      {shortHash(peer.public_key)}
+                    </div>
+                  </TableCell>
+                  <TableCell className="min-w-52 text-xs tabular-nums">
+                    {sampled ? (
+                      <div className="space-y-1">
+                        <PeerMetric
+                          label={t("源站 → 边缘")}
+                          value={formatBitRate(peer.rx_bytes_per_second)}
+                        />
+                        <PeerMetric
+                          label={t("边缘 → 源站")}
+                          value={formatBitRate(peer.tx_bytes_per_second)}
+                        />
+                        <div className="text-muted-foreground">
+                          {t("近 {value0} 秒", {
+                            value0: Math.round(
+                              peer.transfer_sample_seconds ?? 0,
+                            ),
+                          })}
+                        </div>
+                      </div>
+                    ) : (
+                      <span className="text-muted-foreground">
+                        {state.online ? t("重新采样") : "--"}
+                      </span>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-right align-top text-xs tabular-nums">
+                    <div className="font-medium">
+                      {peerRuntime?.established_connections == null
+                        ? "--"
+                        : formatNumber(peerRuntime.established_connections)}
+                    </div>
+                    <div className="mt-1 text-muted-foreground">
+                      {t("TCP ESTABLISHED")}
+                    </div>
+                  </TableCell>
+                  <TableCell className="min-w-48 text-xs tabular-nums">
+                    <PeerMetric
+                      label={t("源站 → 边缘")}
+                      value={formatBytes(peer.rx_bytes)}
+                    />
+                    <PeerMetric
+                      label={t("边缘 → 源站")}
+                      value={formatBytes(peer.tx_bytes)}
+                    />
+                  </TableCell>
+                  <TableCell className="text-xs">
+                    {formatEgressLimit(peer.edge_egress_limit_mbps)}
+                  </TableCell>
+                  <TableCell className="min-w-48 pr-5 align-top text-xs">
+                    <div>{formatDateTime(peer.latest_handshake_at)}</div>
+                    <div className="mt-1 text-muted-foreground">
+                      {t("上报于 {value0}", {
+                        value0: formatDateTime(peer.last_reported_at),
+                      })}
+                    </div>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
           </TableBody>
         </Table>
       </Panel>
     </section>
+  );
+}
+
+function PeerMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-baseline justify-between gap-3">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="font-medium">{value}</span>
+    </div>
   );
 }
 
@@ -341,6 +432,95 @@ function peerApplied(peer: WireGuardPeer, tunnel: WireGuardTunnel) {
     !peer.last_error &&
     peer.applied_revision === tunnel.revision,
   );
+}
+
+const peerReportFreshnessMS = 30_000;
+const peerHandshakeFreshnessMS = 180_000;
+
+function peerLinkState(
+  peer: WireGuardPeer,
+  tunnel: WireGuardTunnel,
+  at: number,
+) {
+  if (peer.last_error) {
+    return {
+      status: "failed",
+      label: t("配置异常"),
+      online: false,
+    };
+  }
+  if (!peerApplied(peer, tunnel)) {
+    return {
+      status: "pending",
+      label: t("等待应用"),
+      online: false,
+    };
+  }
+  const reportAge = ageMilliseconds(peer.last_reported_at, at);
+  if (reportAge == null) {
+    return {
+      status: "pending",
+      label: t("等待上报"),
+      online: false,
+    };
+  }
+  if (reportAge > peerReportFreshnessMS) {
+    return {
+      status: "pending",
+      label: t("上报延迟"),
+      online: false,
+    };
+  }
+  const handshakeAge = ageMilliseconds(peer.latest_handshake_at, at);
+  if (handshakeAge == null) {
+    return {
+      status: "pending",
+      label: t("等待握手"),
+      online: false,
+    };
+  }
+  if (handshakeAge > peerHandshakeFreshnessMS) {
+    return {
+      status: "failed",
+      label: t("握手过期"),
+      online: false,
+    };
+  }
+  if (!hasPeerTransferSample(peer)) {
+    return {
+      status: "active",
+      label: t("在线 · 重新采样"),
+      online: true,
+    };
+  }
+  const active =
+    (peer.rx_bytes_per_second ?? 0) > 0 || (peer.tx_bytes_per_second ?? 0) > 0;
+  return {
+    status: "active",
+    label: active ? t("在线 · 有流量") : t("在线 · 空闲"),
+    online: true,
+  };
+}
+
+function hasPeerTransferSample(peer: WireGuardPeer) {
+  return Boolean(
+    peer.transfer_sample_seconds != null &&
+    Number.isFinite(peer.transfer_sample_seconds) &&
+    peer.transfer_sample_seconds > 0 &&
+    peer.rx_bytes_per_second != null &&
+    Number.isFinite(peer.rx_bytes_per_second) &&
+    peer.rx_bytes_per_second >= 0 &&
+    peer.tx_bytes_per_second != null &&
+    Number.isFinite(peer.tx_bytes_per_second) &&
+    peer.tx_bytes_per_second >= 0,
+  );
+}
+
+function ageMilliseconds(value: string | undefined, at: number) {
+  if (!value) return null;
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return null;
+  return Math.max(0, at - timestamp);
 }
 
 function formatEgressLimit(value: number) {

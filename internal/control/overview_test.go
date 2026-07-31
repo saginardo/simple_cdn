@@ -20,7 +20,10 @@ type overviewLogStore struct {
 }
 
 func (s overviewLogStore) Overview(_ context.Context, _, to time.Time) ([]logstore.OverviewBucket, error) {
-	return []logstore.OverviewBucket{{Hour: to.Add(-time.Hour).Truncate(time.Hour), SiteID: s.siteID, Status: 404, Requests: 4, Bytes: 400}}, nil
+	return []logstore.OverviewBucket{{
+		Hour: to.Add(-time.Hour).Truncate(time.Hour), SiteID: s.siteID, Status: 404, Requests: 4,
+		DownstreamBytes: 400, UpstreamBytes: 120,
+	}}, nil
 }
 
 func TestOverviewRouteRequiresAdmin(t *testing.T) {
@@ -57,7 +60,10 @@ func TestOverviewHandlerReturnsConfiguredSitesAndLogData(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.Totals.Requests != 4 || payload.Totals.ErrorRequests != 4 || len(payload.Sites) != 1 || payload.Sites[0].ID != site.ID || payload.Sites[0].Requests != 4 || payload.Sites[0].Bytes != 400 || payload.Sites[0].ErrorRequests != 4 {
+	if payload.Totals.Requests != 4 || payload.Totals.DownstreamBytes != 400 || payload.Totals.UpstreamBytes != 120 ||
+		payload.Totals.ErrorRequests != 4 || len(payload.Sites) != 1 || payload.Sites[0].ID != site.ID ||
+		payload.Sites[0].Requests != 4 || payload.Sites[0].DownstreamBytes != 400 || payload.Sites[0].UpstreamBytes != 120 ||
+		payload.Sites[0].ErrorRequests != 4 {
 		t.Fatalf("unexpected overview payload: %#v", payload)
 	}
 	if len(payload.Sites[0].StatusCodes) != 1 || payload.Sites[0].StatusCodes[0].Code != 404 || payload.Sites[0].StatusCodes[0].Requests != 4 {
@@ -73,29 +79,31 @@ func TestBuildOverviewPayloadAggregatesAndZeroFills(t *testing.T) {
 		{ID: "busy", Name: "Busy", Domains: []string{"busy.example.test"}},
 	}
 	buckets := []logstore.OverviewBucket{
-		{Hour: time.Date(2026, 7, 13, 13, 0, 0, 0, time.UTC), SiteID: "busy", Status: 200, Requests: 90, Bytes: 9000},
-		{Hour: time.Date(2026, 7, 13, 13, 0, 0, 0, time.UTC), SiteID: "busy", Status: 404, Requests: 8, Bytes: 800},
-		{Hour: time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC), SiteID: "busy", Status: 500, Requests: 2, Bytes: 200},
+		{Hour: time.Date(2026, 7, 13, 13, 0, 0, 0, time.UTC), SiteID: "busy", Status: 200, Requests: 90, DownstreamBytes: 9000, UpstreamBytes: 900},
+		{Hour: time.Date(2026, 7, 13, 13, 0, 0, 0, time.UTC), SiteID: "busy", Status: 404, Requests: 8, DownstreamBytes: 800, UpstreamBytes: 80},
+		{Hour: time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC), SiteID: "busy", Status: 500, Requests: 2, DownstreamBytes: 200, UpstreamBytes: 20},
 	}
 
 	payload := buildOverviewPayload(from, to, sites, buckets)
 	if payload.BucketSeconds != 3600 || len(payload.Series) != 25 {
 		t.Fatalf("unexpected bucket metadata: seconds=%d points=%d", payload.BucketSeconds, len(payload.Series))
 	}
-	if payload.Totals.Requests != 100 || payload.Totals.Bytes != 10000 || payload.Totals.ErrorRequests != 10 {
+	if payload.Totals.Requests != 100 || payload.Totals.DownstreamBytes != 10000 || payload.Totals.UpstreamBytes != 1000 || payload.Totals.ErrorRequests != 10 {
 		t.Fatalf("unexpected totals: %#v", payload.Totals)
 	}
 	if len(payload.StatusCodes) != 3 || payload.StatusCodes[0].Code != 200 || payload.StatusCodes[1].Code != 404 || payload.StatusCodes[2].Code != 500 {
 		t.Fatalf("unexpected status sorting: %#v", payload.StatusCodes)
 	}
-	if len(payload.Sites) != 2 || payload.Sites[0].ID != "busy" || payload.Sites[0].Requests != 100 || payload.Sites[0].Bytes != 10000 || payload.Sites[0].ErrorRequests != 10 || payload.Sites[1].ID != "quiet" {
+	if len(payload.Sites) != 2 || payload.Sites[0].ID != "busy" || payload.Sites[0].Requests != 100 ||
+		payload.Sites[0].DownstreamBytes != 10000 || payload.Sites[0].UpstreamBytes != 1000 ||
+		payload.Sites[0].ErrorRequests != 10 || payload.Sites[1].ID != "quiet" {
 		t.Fatalf("unexpected site sorting: %#v", payload.Sites)
 	}
 	if len(payload.Sites[0].StatusCodes) != 3 || payload.Sites[0].StatusCodes[0].Code != 200 || payload.Sites[0].StatusCodes[1].Code != 404 || payload.Sites[0].StatusCodes[2].Code != 500 {
 		t.Fatalf("unexpected site status sorting: %#v", payload.Sites[0].StatusCodes)
 	}
 	busyFirstPoint := payload.Sites[0].Series[1]
-	if busyFirstPoint.Requests != 98 || busyFirstPoint.Bytes != 9800 || busyFirstPoint.ErrorRequests != 8 {
+	if busyFirstPoint.Requests != 98 || busyFirstPoint.DownstreamBytes != 9800 || busyFirstPoint.UpstreamBytes != 980 || busyFirstPoint.ErrorRequests != 8 {
 		t.Fatalf("unexpected site hourly point: %#v", busyFirstPoint)
 	}
 	if len(payload.Sites[1].Series) != 25 || payload.Sites[1].Series[0].Requests != 0 {

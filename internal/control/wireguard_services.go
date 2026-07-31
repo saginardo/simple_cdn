@@ -26,6 +26,13 @@ const (
 type wireGuardTunnelDetailResponse struct {
 	Tunnel         domain.WireGuardTunnel   `json:"tunnel"`
 	OriginServices []wireGuardOriginService `json:"origin_services"`
+	PeerRuntime    []wireGuardPeerRuntime   `json:"peer_runtime"`
+}
+
+type wireGuardPeerRuntime struct {
+	NodeID                 string     `json:"node_id"`
+	EstablishedConnections *int64     `json:"established_connections,omitempty"`
+	CollectedAt            *time.Time `json:"collected_at,omitempty"`
 }
 
 type wireGuardOriginService struct {
@@ -66,22 +73,28 @@ func (s *Server) getWireGuardTunnel(response http.ResponseWriter, request *http.
 		writeStoreError(response, err)
 		return
 	}
-	services, err := s.wireGuardOriginServices(tunnel, time.Now().UTC())
+	nodes, err := s.Store.ListNodes()
+	if err != nil {
+		writeStoreError(response, err)
+		return
+	}
+	at := time.Now().UTC()
+	services, err := s.wireGuardOriginServices(tunnel, nodes, at)
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(response, http.StatusOK, wireGuardTunnelDetailResponse{
-		Tunnel: tunnel, OriginServices: services,
+		Tunnel: tunnel, OriginServices: services, PeerRuntime: s.wireGuardPeerRuntime(tunnel, nodes, at),
 	})
 }
 
-func (s *Server) wireGuardOriginServices(tunnel domain.WireGuardTunnel, at time.Time) ([]wireGuardOriginService, error) {
+func (s *Server) wireGuardOriginServices(
+	tunnel domain.WireGuardTunnel,
+	nodes []domain.Node,
+	at time.Time,
+) ([]wireGuardOriginService, error) {
 	sites, err := s.Store.WireGuardTunnelReferences(tunnel.ID)
-	if err != nil {
-		return nil, err
-	}
-	nodes, err := s.Store.ListNodes()
 	if err != nil {
 		return nil, err
 	}
@@ -214,6 +227,57 @@ func (s *Server) wireGuardOriginServices(tunnel domain.WireGuardTunnel, at time.
 		return left.HTTPVersion < right.HTTPVersion
 	})
 	return services, nil
+}
+
+func (s *Server) wireGuardPeerRuntime(
+	tunnel domain.WireGuardTunnel,
+	nodes []domain.Node,
+	at time.Time,
+) []wireGuardPeerRuntime {
+	nodesByID := make(map[string]domain.Node, len(nodes))
+	for _, node := range nodes {
+		nodesByID[node.ID] = node
+	}
+	runtime := make([]wireGuardPeerRuntime, 0, len(tunnel.Peers))
+	for _, peer := range tunnel.Peers {
+		entry := wireGuardPeerRuntime{NodeID: peer.NodeID}
+		node, found := nodesByID[peer.NodeID]
+		if !found {
+			runtime = append(runtime, entry)
+			continue
+		}
+		machine := s.nodeMachineStatus(node, at)
+		if machine.Report == nil || machine.Stale {
+			runtime = append(runtime, entry)
+			continue
+		}
+		seenPools := make(map[string]struct{})
+		var total int64
+		matched, available := false, true
+		for _, probe := range machine.Report.OriginProbes {
+			host, _, err := net.SplitHostPort(probe.Address)
+			if err != nil || !wireGuardServiceHostsEqual(host, tunnel.OriginAddress) {
+				continue
+			}
+			if _, seen := seenPools[probe.PoolID]; seen {
+				continue
+			}
+			seenPools[probe.PoolID] = struct{}{}
+			matched = true
+			if probe.EstablishedConnections == nil {
+				available = false
+				continue
+			}
+			total += *probe.EstablishedConnections
+		}
+		if matched && available {
+			collectedAt := machine.Report.CollectedAt.UTC()
+			entry.EstablishedConnections = &total
+			entry.CollectedAt = &collectedAt
+		}
+		runtime = append(runtime, entry)
+	}
+	return runtime
 }
 
 func wireGuardServiceKey(origin domain.Origin) (wireGuardOriginServiceKey, error) {

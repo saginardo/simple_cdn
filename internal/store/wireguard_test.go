@@ -3,12 +3,110 @@ package store
 import (
 	"encoding/base64"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 	"time"
 
 	"simple_cdn/internal/domain"
 )
+
+func TestWireGuardPeerTransferRatesResetAndResample(t *testing.T) {
+	database, err := Open(t.TempDir() + "/control.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	node, err := database.CreateNode("rate-edge", "203.0.113.39")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tunnel, err := database.CreateWireGuardTunnel(domain.WireGuardTunnel{
+		Name: "rate-origin", EndpointHost: "198.51.100.39", AddressCIDR: "10.253.39.0/24",
+	}, []string{node.ID}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := wireGuardTestKey(7)
+	report := domain.WireGuardPeerReport{
+		TunnelID: tunnel.ID, Revision: tunnel.Revision, InterfaceName: domain.WireGuardInterfaceName(tunnel.ID),
+		PublicKey: key, RXBytes: 1_000, TXBytes: 2_000,
+	}
+	if err := database.UpdateWireGuardPeerReports(node.ID, []domain.WireGuardPeerReport{report}); err != nil {
+		t.Fatal(err)
+	}
+	current, err := database.GetWireGuardTunnel(tunnel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if peer := current.Peers[0]; peer.RXBytesPerSecond != nil || peer.TXBytesPerSecond != nil || peer.TransferSampleSecs != nil {
+		t.Fatalf("first transfer sample = %#v", peer)
+	}
+	report.Revision = current.Revision
+
+	setWireGuardPeerReportedAt(t, database, tunnel.ID, node.ID, time.Now().UTC().Add(-10*time.Second))
+	report.RXBytes = 21_000
+	report.TXBytes = 42_000
+	if err := database.UpdateWireGuardPeerReports(node.ID, []domain.WireGuardPeerReport{report}); err != nil {
+		t.Fatal(err)
+	}
+	current, err = database.GetWireGuardTunnel(tunnel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertWireGuardTransferSample(t, current.Peers[0], 20_000, 40_000)
+
+	setWireGuardPeerReportedAt(t, database, tunnel.ID, node.ID, time.Now().UTC().Add(-10*time.Second))
+	report.RXBytes = 500
+	report.TXBytes = 1_000
+	if err := database.UpdateWireGuardPeerReports(node.ID, []domain.WireGuardPeerReport{report}); err != nil {
+		t.Fatal(err)
+	}
+	current, err = database.GetWireGuardTunnel(tunnel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if peer := current.Peers[0]; peer.RXBytes != 500 || peer.TXBytes != 1_000 || peer.RXBytesPerSecond != nil ||
+		peer.TXBytesPerSecond != nil || peer.TransferSampleSecs != nil {
+		t.Fatalf("reset transfer sample = %#v", peer)
+	}
+
+	setWireGuardPeerReportedAt(t, database, tunnel.ID, node.ID, time.Now().UTC().Add(-10*time.Second))
+	report.RXBytes = 5_500
+	report.TXBytes = 11_000
+	if err := database.UpdateWireGuardPeerReports(node.ID, []domain.WireGuardPeerReport{report}); err != nil {
+		t.Fatal(err)
+	}
+	current, err = database.GetWireGuardTunnel(tunnel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertWireGuardTransferSample(t, current.Peers[0], 5_000, 10_000)
+}
+
+func setWireGuardPeerReportedAt(t *testing.T, database *Store, tunnelID, nodeID string, value time.Time) {
+	t.Helper()
+	if _, err := database.db.Exec(`UPDATE wireguard_tunnel_nodes SET last_reported_at=? WHERE tunnel_id=? AND node_id=?`,
+		stamp(value), tunnelID, nodeID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertWireGuardTransferSample(t *testing.T, peer domain.WireGuardPeer, rxDelta, txDelta float64) {
+	t.Helper()
+	if peer.RXBytesPerSecond == nil || peer.TXBytesPerSecond == nil || peer.TransferSampleSecs == nil {
+		t.Fatalf("missing transfer sample = %#v", peer)
+	}
+	if *peer.TransferSampleSecs < 9 || *peer.TransferSampleSecs > 11 {
+		t.Fatalf("sample seconds = %f", *peer.TransferSampleSecs)
+	}
+	if delta := math.Abs((*peer.RXBytesPerSecond)*(*peer.TransferSampleSecs) - rxDelta); delta > 0.01 {
+		t.Fatalf("RX sampled bytes differ by %f", delta)
+	}
+	if delta := math.Abs((*peer.TXBytesPerSecond)*(*peer.TransferSampleSecs) - txDelta); delta > 0.01 {
+		t.Fatalf("TX sampled bytes differ by %f", delta)
+	}
+}
 
 func TestWireGuardTunnelEnrollmentSiteReferencesAndPerformance(t *testing.T) {
 	database, err := Open(t.TempDir() + "/control.db")

@@ -4,7 +4,8 @@ const now = new Date();
 const series = Array.from({ length: 24 }, (_, index) => ({
   time: new Date(now.getTime() - (23 - index) * 60 * 60 * 1000).toISOString(),
   requests: 900 + index * 57 + (index % 4) * 160,
-  bytes: 72_000_000 + index * 4_200_000,
+  downstream_bytes: 72_000_000 + index * 4_200_000,
+  upstream_bytes: 2_400_000 + index * 125_000,
   error_requests: 12 + (index % 5) * 6,
 }));
 
@@ -12,7 +13,12 @@ const overview = {
   from: series[0].time,
   to: now.toISOString(),
   bucket_seconds: 3600,
-  totals: { requests: 38241, bytes: 3_948_238_121, error_requests: 612 },
+  totals: {
+    requests: 38241,
+    downstream_bytes: 3_948_238_121,
+    upstream_bytes: 124_823_121,
+    error_requests: 612,
+  },
   series,
   status_codes: [
     { code: 200, requests: 34120 },
@@ -26,7 +32,8 @@ const overview = {
       name: "静态资源主站",
       domains: ["cdn.example.com", "static.example.com"],
       requests: 28130,
-      bytes: 3_122_000_000,
+      downstream_bytes: 3_122_000_000,
+      upstream_bytes: 42_000_000,
       error_requests: 342,
       status_codes: [
         { code: 200, requests: 27100 },
@@ -39,7 +46,8 @@ const overview = {
       name: "API 加速",
       domains: ["api.example.com"],
       requests: 10111,
-      bytes: 826_238_121,
+      downstream_bytes: 826_238_121,
+      upstream_bytes: 82_823_121,
       error_requests: 270,
       status_codes: [
         { code: 200, requests: 9330 },
@@ -48,7 +56,8 @@ const overview = {
       series: series.map((point) => ({
         ...point,
         requests: Math.round(point.requests / 3),
-        bytes: Math.round(point.bytes / 4),
+        downstream_bytes: Math.round(point.downstream_bytes / 4),
+        upstream_bytes: Math.round(point.upstream_bytes / 2),
       })),
     },
   ],
@@ -148,6 +157,13 @@ const wireGuardTunnel = {
     ).toISOString(),
     rx_bytes: 328_491_827 + index * 88_321_112,
     tx_bytes: 192_841_239 + index * 72_193_842,
+    ...(index === 0
+      ? {
+          rx_bytes_per_second: 1_500_000,
+          tx_bytes_per_second: 250_000,
+          transfer_sample_seconds: 10,
+        }
+      : {}),
     last_reported_at: now.toISOString(),
   })),
   created_at: series[20].time,
@@ -219,6 +235,12 @@ const wireGuardOriginServices = [
     ],
   },
 ];
+
+const wireGuardPeerRuntime = wireGuardNodes.map((node, index) => ({
+  node_id: node.id,
+  established_connections: index === 0 ? 7 : 2,
+  collected_at: now.toISOString(),
+}));
 
 const wireGuardPerformanceTests = [
   {
@@ -1018,11 +1040,24 @@ test("desktop overview renders shadcn chart and aligned navigation", async ({
   await expect(metricBand).toBeVisible();
   await expect(
     metricBand.locator('[data-slot="metric-band-item"]'),
-  ).toHaveCount(4);
+  ).toHaveCount(5);
+  await expect(metricBand.getByText("下行流量", { exact: true })).toBeVisible();
+  await expect(metricBand.getByText("上行流量", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("columnheader", { name: "下行流量" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("columnheader", { name: "上行流量" }),
+  ).toBeVisible();
   const chart = page.locator('[data-slot="chart"] svg').first();
   await expect(chart).toBeVisible();
   expect((await chart.boundingBox())?.height).toBeGreaterThan(200);
   await expect(chart.locator("path.recharts-line-curve")).toHaveCount(1);
+  await page.getByRole("tab", { name: "上行" }).click();
+  await expect(page.getByRole("tab", { name: "上行" })).toHaveAttribute(
+    "data-state",
+    "active",
+  );
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= window.innerWidth + 1,
@@ -1034,6 +1069,15 @@ test("desktop overview renders shadcn chart and aligned navigation", async ({
     path: testInfo.outputPath("overview-desktop.png"),
     fullPage: true,
   });
+
+  await page.getByRole("link", { name: "查看 静态资源主站 分析" }).click();
+  await expect(
+    page.getByRole("heading", { name: "静态资源主站", level: 1 }),
+  ).toBeVisible();
+  await expect(page.getByText("下行流量", { exact: true })).toBeVisible();
+  await expect(page.getByText("上行流量", { exact: true })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "下行" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "上行" })).toBeVisible();
 });
 
 test("mobile overview keeps metric controls within the viewport", async ({
@@ -1099,21 +1143,24 @@ test("overview site traffic sorts by the selected column", async ({ page }) => {
       id: "site-alpha",
       name: "Alpha",
       requests: 10,
-      bytes: 300,
+      downstream_bytes: 300,
+      upstream_bytes: 30,
     },
     {
       ...overview.sites[0],
       id: "site-bravo",
       name: "Bravo",
       requests: 30,
-      bytes: 100,
+      downstream_bytes: 100,
+      upstream_bytes: 300,
     },
     {
       ...overview.sites[0],
       id: "site-charlie",
       name: "Charlie",
       requests: 20,
-      bytes: 200,
+      downstream_bytes: 200,
+      upstream_bytes: 200,
     },
   ];
   await mockAPI(page, { "/api/overview": { ...overview, sites } });
@@ -1135,14 +1182,23 @@ test("overview site traffic sorts by the selected column", async ({ page }) => {
   await page.getByRole("button", { name: "按站点降序排序" }).click();
   await expect(firstRow).toContainText("Charlie");
 
-  await page.getByRole("button", { name: "按传输量降序排序" }).click();
+  await page.getByRole("button", { name: "按下行流量降序排序" }).click();
   await expect(
-    page.getByRole("columnheader", { name: "传输量" }),
+    page.getByRole("columnheader", { name: "下行流量" }),
   ).toHaveAttribute("aria-sort", "descending");
   await expect(firstRow).toContainText("Alpha");
 
-  await page.getByRole("button", { name: "按传输量升序排序" }).click();
+  await page.getByRole("button", { name: "按下行流量升序排序" }).click();
   await expect(firstRow).toContainText("Bravo");
+
+  await page.getByRole("button", { name: "按上行流量降序排序" }).click();
+  await expect(
+    page.getByRole("columnheader", { name: "上行流量" }),
+  ).toHaveAttribute("aria-sort", "descending");
+  await expect(firstRow).toContainText("Bravo");
+
+  await page.getByRole("button", { name: "按上行流量升序排序" }).click();
+  await expect(firstRow).toContainText("Alpha");
 });
 
 test("sites list shows only the publish status", async ({ page }) => {
@@ -2400,6 +2456,7 @@ test("WireGuard workspace shows tunnel health and performance on desktop and mob
       latest_handshake_at: new Date(
         Date.now() - (index + 1) * 30_000,
       ).toISOString(),
+      last_reported_at: new Date().toISOString(),
     })),
   };
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -2409,6 +2466,7 @@ test("WireGuard workspace shows tunnel health and performance on desktop and mob
     [`/api/wireguard/tunnels/${freshTunnel.id}`]: {
       tunnel: freshTunnel,
       origin_services: wireGuardOriginServices,
+      peer_runtime: wireGuardPeerRuntime,
     },
     [`/api/wireguard/tunnels/${freshTunnel.id}/uninstall-command`]: {
       uninstall_command:
@@ -2477,6 +2535,20 @@ test("WireGuard workspace shows tunnel health and performance on desktop and mob
   await expect(unknownService).toContainText("-- / 2");
   await expect(page.getByText("10.253.0.2", { exact: true })).toBeVisible();
   await expect(page.getByText("10.253.0.3", { exact: true })).toBeVisible();
+  await expect(page.getByText("2 / 2 在线", { exact: true })).toBeVisible();
+  const hongKongPeer = page
+    .getByRole("row")
+    .filter({ hasText: "edge-hong-kong" });
+  await expect(hongKongPeer).toContainText("在线 · 有流量");
+  await expect(hongKongPeer).toContainText("12 Mbps");
+  await expect(hongKongPeer).toContainText("2 Mbps");
+  await expect(hongKongPeer.getByText("7", { exact: true })).toBeVisible();
+  await expect(hongKongPeer).toContainText("313.3 MiB");
+  const singaporePeer = page
+    .getByRole("row")
+    .filter({ hasText: "edge-singapore" });
+  await expect(singaporePeer).toContainText("在线 · 重新采样");
+  await expect(singaporePeer.getByText("2", { exact: true })).toBeVisible();
   await expect(page.getByText("120 Mbps", { exact: true })).toBeVisible();
   await expect(page.getByText("50 Mbps", { exact: true })).toBeVisible();
   await page.screenshot({

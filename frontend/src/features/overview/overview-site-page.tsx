@@ -30,13 +30,19 @@ import { usePersistentEnum } from "@/hooks/use-persistent-state";
 import { formatBytes, formatNumber, formatPercent } from "@/lib/format";
 import type { Overview } from "@/lib/types";
 import { t, useI18n } from "@/lib/i18n";
-type Metric = "requests" | "bytes" | "error_requests";
+type Metric =
+  "requests" | "downstream_bytes" | "upstream_bytes" | "error_requests";
 export function OverviewSitePage() {
   useI18n();
   const { siteId = "" } = useParams();
   const [metric, setMetric] = usePersistentEnum<Metric>(
     "simple-cdn.overview.site.metric",
-    ["requests", "bytes", "error_requests"] as const,
+    [
+      "requests",
+      "downstream_bytes",
+      "upstream_bytes",
+      "error_requests",
+    ] as const,
     "requests",
   );
   const query = useQuery({
@@ -82,12 +88,19 @@ export function OverviewSitePage() {
         ) : null}
         {site ? (
           <>
-            <section className="grid gap-3 sm:grid-cols-3">
+            <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               <Summary
                 label={t("请求数")}
                 value={formatNumber(site.requests)}
               />
-              <Summary label={t("传输量")} value={formatBytes(site.bytes)} />
+              <Summary
+                label={t("下行流量")}
+                value={formatBytes(site.downstream_bytes)}
+              />
+              <Summary
+                label={t("上行流量")}
+                value={formatBytes(site.upstream_bytes)}
+              />
               <Summary
                 label={t("错误率")}
                 value={formatPercent(
@@ -97,18 +110,24 @@ export function OverviewSitePage() {
               />
             </section>
             <Card>
-              <CardHeader className="flex-row items-start justify-between gap-4">
+              <CardHeader className="flex-col items-start justify-between gap-4 sm:flex-row">
                 <div>
                   <CardTitle>{t("站点趋势")}</CardTitle>
                   <CardDescription>{t("按小时聚合")}</CardDescription>
                 </div>
                 <Tabs
+                  className="w-full sm:w-auto"
                   value={metric}
                   onValueChange={(value) => setMetric(value as Metric)}
                 >
-                  <TabsList>
+                  <TabsList className="w-full sm:w-auto">
                     <TabsTrigger value="requests">{t("请求")}</TabsTrigger>
-                    <TabsTrigger value="bytes">{t("流量")}</TabsTrigger>
+                    <TabsTrigger value="downstream_bytes">
+                      {t("下行")}
+                    </TabsTrigger>
+                    <TabsTrigger value="upstream_bytes">
+                      {t("上行")}
+                    </TabsTrigger>
                     <TabsTrigger value="error_requests">
                       {t("错误")}
                     </TabsTrigger>

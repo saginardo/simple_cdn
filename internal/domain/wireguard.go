@@ -55,6 +55,9 @@ type WireGuardPeer struct {
 	LatestHandshakeAt   *time.Time `json:"latest_handshake_at,omitempty"`
 	RXBytes             int64      `json:"rx_bytes"`
 	TXBytes             int64      `json:"tx_bytes"`
+	RXBytesPerSecond    *float64   `json:"rx_bytes_per_second,omitempty"`
+	TXBytesPerSecond    *float64   `json:"tx_bytes_per_second,omitempty"`
+	TransferSampleSecs  *float64   `json:"transfer_sample_seconds,omitempty"`
 	LastReportedAt      *time.Time `json:"last_reported_at,omitempty"`
 	LastError           string     `json:"last_error,omitempty"`
 }

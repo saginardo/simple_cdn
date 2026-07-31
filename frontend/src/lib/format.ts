@@ -39,6 +39,22 @@ export function formatBytes(value: number | null | undefined) {
     maximumFractionDigits: index ? 1 : 0,
   })} ${units[index]}`;
 }
+export function formatBitRate(value: number | null | undefined) {
+  const bytesPerSecond = Number(value ?? 0);
+  const bitsPerSecond = Number.isFinite(bytesPerSecond)
+    ? Math.max(0, bytesPerSecond * 8)
+    : 0;
+  const units = ["bps", "Kbps", "Mbps", "Gbps", "Tbps"];
+  const index = bitsPerSecond
+    ? Math.min(
+        Math.floor(Math.log(bitsPerSecond) / Math.log(1000)),
+        units.length - 1,
+      )
+    : 0;
+  return `${(bitsPerSecond / 1000 ** index).toLocaleString(getLocale(), {
+    maximumFractionDigits: index ? 1 : 0,
+  })} ${units[index]}`;
+}
 export function formatPercent(
   value: number | null | undefined,
   fractionDigits = 1,
