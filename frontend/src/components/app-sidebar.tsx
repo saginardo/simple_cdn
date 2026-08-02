@@ -45,7 +45,7 @@ const groups = [
     items: [
       { label: "节点", to: "/nodes", icon: Server },
       { label: "站点", to: "/sites", icon: Waypoints },
-      { label: "静态资源", to: "/static-assets", icon: Files },
+      { label: "资源", to: "/static-assets", icon: Files },
       { label: "监测", to: "/monitoring", icon: Activity },
       { label: "调度", to: "/scheduling", icon: Route },
       {

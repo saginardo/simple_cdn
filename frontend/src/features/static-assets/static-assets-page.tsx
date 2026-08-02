@@ -128,7 +128,7 @@ export function StaticAssetsPage() {
   return (
     <>
       <PageHeader
-        title={t("静态资源")}
+        title={t("资源")}
         description={t("内容寻址资源与站点精确路径分发")}
         actions={
           <Button onClick={() => setUploadOpen(true)}>

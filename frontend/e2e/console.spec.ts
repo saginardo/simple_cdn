@@ -2184,7 +2184,7 @@ test("static assets expose exact site URL assignments on desktop and mobile", as
   await page.goto("/#/static-assets");
 
   await expect(
-    page.getByRole("heading", { name: "静态资源", level: 1 }),
+    page.getByRole("heading", { name: "资源", level: 1 }),
   ).toBeVisible();
   await expect(page.getByText("应用图标", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "1 个路径" }).click();
@@ -2245,13 +2245,13 @@ test("static assets workspace localizes in English", async ({ page }) => {
   await page.goto("/#/static-assets");
 
   await expect(
-    page.getByRole("heading", { name: "静态资源", level: 1 }),
+    page.getByRole("heading", { name: "资源", level: 1 }),
   ).toBeVisible();
   await page.getByRole("button", { name: "切换语言" }).click();
   await page.getByRole("menuitemradio", { name: "English" }).click();
   await expect(page.locator("html")).toHaveAttribute("lang", "en");
   await expect(
-    page.getByRole("heading", { name: "Static resources", level: 1 }),
+    page.getByRole("heading", { name: "Resources", level: 1 }),
   ).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Upload resource" }),
@@ -3083,7 +3083,7 @@ test("all primary workspaces and the new-site editor mount without runtime error
     ["wireguard", "隧道"],
     ["nodes", "节点"],
     ["sites", "站点"],
-    ["static-assets", "静态资源"],
+    ["static-assets", "资源"],
     ["certificates", "证书"],
     ["sites/new", "添加站点"],
     ["settings", "设置"],
