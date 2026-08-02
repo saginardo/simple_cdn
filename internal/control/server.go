@@ -70,6 +70,7 @@ type Server struct {
 	NginxBundleSHA256         string
 	NginxBundlePath           string
 	NginxVersion              string
+	StaticAssetDirectory      string
 	InitializationTokenPath   string
 	SetupAllowCIDRs           []*net.IPNet
 	TrustedProxyCIDRs         []*net.IPNet
@@ -86,6 +87,7 @@ type Server struct {
 	edgeSecurityRevision      string
 	edgeSecurityExpiresAt     time.Time
 	edgeSecurityRevisionSet   bool
+	staticAssetMu             sync.Mutex
 }
 
 func (s *Server) Handler() http.Handler {
@@ -145,11 +147,22 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/security/policies", s.requireAdmin(s.createSecurityPolicy))
 	mux.HandleFunc("PUT /api/security/policies/{id}", s.requireAdmin(s.updateSecurityPolicy))
 	mux.HandleFunc("DELETE /api/security/policies/{id}", s.requireAdmin(s.deleteSecurityPolicy))
+	mux.HandleFunc("POST /api/security/policies/{id}/move", s.requireAdmin(s.moveSecurityPolicy))
+	mux.HandleFunc("POST /api/security/pow-policies", s.requireAdmin(s.createPOWPolicy))
+	mux.HandleFunc("PUT /api/security/pow-policies/{id}", s.requireAdmin(s.updatePOWPolicy))
+	mux.HandleFunc("DELETE /api/security/pow-policies/{id}", s.requireAdmin(s.deletePOWPolicy))
 	mux.HandleFunc("POST /api/security/rate-limit-policies", s.requireAdmin(s.createRateLimitPolicy))
 	mux.HandleFunc("PUT /api/security/rate-limit-policies/{id}", s.requireAdmin(s.updateRateLimitPolicy))
 	mux.HandleFunc("DELETE /api/security/rate-limit-policies/{id}", s.requireAdmin(s.deleteRateLimitPolicy))
 	mux.HandleFunc("POST /api/security/deploy", s.requireAdmin(s.deploySecurityPolicies))
 	mux.HandleFunc("DELETE /api/security/bans/{ip}", s.requireAdmin(s.deleteSecurityBan))
+	mux.HandleFunc("GET /api/static-assets", s.requireAdmin(s.listStaticAssets))
+	mux.HandleFunc("POST /api/static-assets", s.requireAdmin(s.uploadStaticAsset))
+	mux.HandleFunc("PUT /api/static-assets/{id}", s.requireAdmin(s.updateStaticAsset))
+	mux.HandleFunc("DELETE /api/static-assets/{id}", s.requireAdmin(s.deleteStaticAsset))
+	mux.HandleFunc("POST /api/static-assets/{id}/bindings", s.requireAdmin(s.createStaticAssetBinding))
+	mux.HandleFunc("PUT /api/static-assets/{id}/bindings/{bindingID}", s.requireAdmin(s.updateStaticAssetBinding))
+	mux.HandleFunc("DELETE /api/static-assets/{id}/bindings/{bindingID}", s.requireAdmin(s.deleteStaticAssetBinding))
 	mux.HandleFunc("GET /api/nodes", s.requireAdmin(s.listNodes))
 	mux.HandleFunc("POST /api/nodes", s.requireAdmin(s.createNode))
 	mux.HandleFunc("POST /api/nodes/upgrade-all", s.requireAdmin(s.startAllNodeUpgrades))
@@ -199,6 +212,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/edge/v1/enroll", s.enroll)
 	mux.HandleFunc("POST /api/edge/v1/renew", s.requireEdge(s.renew))
 	mux.HandleFunc("GET /api/edge/v1/desired-state", s.requireEdge(s.desiredState))
+	mux.HandleFunc("GET /api/edge/v1/static-assets/{sha256}", s.requireEdge(s.edgeStaticAsset))
 	mux.HandleFunc("POST /api/edge/v1/heartbeat", s.requireEdge(s.heartbeat))
 	mux.HandleFunc("POST /api/edge/v1/machine-status", s.requireEdge(s.edgeMachineStatus))
 	mux.HandleFunc("GET /api/edge/v1/monitoring-targets", s.requireEdge(s.edgeMonitoringTargets))

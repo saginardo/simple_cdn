@@ -49,6 +49,7 @@ type Config struct {
 	NginxVersion                 string
 	NginxSHA256                  string
 	OriginPoolConfigDirectory    string
+	StaticAssetDirectory         string
 	CertificateDir               string
 	ClientKeyPath                string
 	ClientCertPath               string
@@ -167,6 +168,13 @@ func New(config Config) (*Agent, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve origin pool configuration directory: %w", err)
 	}
+	if config.StaticAssetDirectory == "" {
+		config.StaticAssetDirectory = nginx.DefaultStaticAssetDirectory
+	}
+	config.StaticAssetDirectory, err = filepath.Abs(filepath.Clean(config.StaticAssetDirectory))
+	if err != nil {
+		return nil, fmt.Errorf("resolve static asset directory: %w", err)
+	}
 	if config.CertificateDir == "" {
 		config.CertificateDir = "/opt/cdn-edge/config/certs"
 	}
@@ -261,6 +269,7 @@ func New(config Config) (*Agent, error) {
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityRequestTracing)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityControlManifest)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityOriginConnection)
+	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityStaticAssets)
 	wireGuardAvailable, wireGuardPerformanceAvailable := config.WireGuardManager.Available()
 	if wireGuardAvailable {
 		config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityWireGuard)
@@ -274,6 +283,13 @@ func New(config Config) (*Agent, error) {
 	}
 	if config.NginxVersion != "" && config.NginxSHA256 != "" {
 		config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityNginxBundle)
+	}
+	for _, capability := range config.Capabilities {
+		if capability == domain.EdgeCapabilityRateLimit {
+			config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityWAFChain)
+			config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityPOWChallenge)
+			break
+		}
 	}
 	configureMonitoring(&config)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityTCPMonitoring)
@@ -876,6 +892,9 @@ func (a *Agent) applyLocked(state domain.DesiredState) error {
 	if err != nil {
 		return a.applyFailed(state.Version, "invalid_desired_state", err, nil)
 	}
+	if err := a.syncStaticAssets(state.StaticAssets); err != nil {
+		return a.applyFailed(state.Version, "static_asset_sync_failed", err, nil)
+	}
 	configurationBackups := make(map[string]fileBackup)
 	for _, path := range []string{a.Config.NginxConfigPath, a.Config.NginxStreamConfigPath, a.Config.NginxMainConfigPath, a.Config.NginxEventsConfigPath} {
 		backup, backupErr := readBackup(path)
@@ -1032,6 +1051,7 @@ func (a *Agent) applyLocked(state domain.DesiredState) error {
 		return a.applyFailed(state.Version, "applied_version_write_failed", err, nil)
 	}
 	poolCleanupErr := originStage.Commit()
+	staticAssetCleanupErr := a.cleanupStaticAssets(state.StaticAssets)
 	fragmentsActivated = true
 	if a.cacheUsage != nil {
 		a.cacheUsage.SetTotalBytes(state.CacheMaxBytes)
@@ -1043,6 +1063,9 @@ func (a *Agent) applyLocked(state domain.DesiredState) error {
 	}
 	if poolCleanupErr != nil {
 		detail += "; origin pool cleanup warning: " + poolCleanupErr.Error()
+	}
+	if staticAssetCleanupErr != nil {
+		detail += "; static resource cleanup warning: " + staticAssetCleanupErr.Error()
 	}
 	a.setApplyReport(&domain.ApplyReport{Version: state.Version, Status: domain.ApplySucceeded, Detail: detail})
 	return nil

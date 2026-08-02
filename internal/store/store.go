@@ -172,6 +172,7 @@ CREATE TABLE IF NOT EXISTS node_states (
 	public_ports_json TEXT NOT NULL DEFAULT '[]',
 	public_udp_ports_json TEXT NOT NULL DEFAULT '[]',
 	origin_pools_json TEXT NOT NULL DEFAULT '[]',
+	static_assets_json TEXT NOT NULL DEFAULT '[]',
 	cache_max_bytes INTEGER NOT NULL DEFAULT 1073741824,
   certificate_ciphertext BLOB,
   private_key_ciphertext BLOB,
@@ -366,12 +367,49 @@ CREATE TABLE IF NOT EXISTS node_uninstall_jobs (
 	  id TEXT PRIMARY KEY,
 	  name TEXT NOT NULL UNIQUE,
 	  enabled INTEGER NOT NULL DEFAULT 1,
+	  site_ids_json TEXT NOT NULL DEFAULT '[]',
+	  conditions_json TEXT NOT NULL DEFAULT '[]',
 	  pattern TEXT NOT NULL,
 	  action TEXT NOT NULL,
 	  ban_duration_seconds INTEGER NOT NULL DEFAULT 0,
+	  response_status INTEGER NOT NULL DEFAULT 403,
 	  priority INTEGER NOT NULL,
 	  created_at TEXT NOT NULL,
 	  updated_at TEXT NOT NULL
+	);
+	CREATE TABLE IF NOT EXISTS pow_policies (
+	  id TEXT PRIMARY KEY,
+	  name TEXT NOT NULL UNIQUE,
+	  enabled INTEGER NOT NULL DEFAULT 1,
+	  site_ids_json TEXT NOT NULL,
+	  path_pattern TEXT NOT NULL,
+	  difficulty_bits INTEGER NOT NULL,
+	  challenge_ttl_seconds INTEGER NOT NULL,
+	  pass_ttl_seconds INTEGER NOT NULL,
+	  priority INTEGER NOT NULL,
+	  secret_ciphertext BLOB NOT NULL,
+	  created_at TEXT NOT NULL,
+	  updated_at TEXT NOT NULL
+	);
+	CREATE TABLE IF NOT EXISTS static_assets (
+	  id TEXT PRIMARY KEY,
+	  name TEXT NOT NULL,
+	  original_name TEXT NOT NULL,
+	  sha256 TEXT NOT NULL UNIQUE,
+	  size_bytes INTEGER NOT NULL,
+	  content_type TEXT NOT NULL,
+	  created_at TEXT NOT NULL,
+	  updated_at TEXT NOT NULL
+	);
+	CREATE TABLE IF NOT EXISTS static_asset_bindings (
+	  id TEXT PRIMARY KEY,
+	  asset_id TEXT NOT NULL REFERENCES static_assets(id) ON DELETE CASCADE,
+	  site_id TEXT NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+	  url_path TEXT NOT NULL,
+	  cache_control TEXT NOT NULL,
+	  created_at TEXT NOT NULL,
+	  updated_at TEXT NOT NULL,
+	  UNIQUE(site_id, url_path)
 	);
 	CREATE TABLE IF NOT EXISTS rate_limit_policies (
 	  id TEXT PRIMARY KEY,
@@ -405,9 +443,14 @@ CREATE TABLE IF NOT EXISTS node_uninstall_jobs (
 	  policy_id TEXT REFERENCES security_policies(id) ON DELETE SET NULL,
 	  rate_limit_policy_id TEXT REFERENCES rate_limit_policies(id) ON DELETE SET NULL,
 	  policy_name TEXT NOT NULL,
+	  site_id TEXT NOT NULL DEFAULT '',
 	  client_ip TEXT NOT NULL,
 	  host TEXT NOT NULL DEFAULT '',
 	  path TEXT NOT NULL,
+	  raw_uri TEXT NOT NULL DEFAULT '',
+	  query_string TEXT NOT NULL DEFAULT '',
+	  user_agent TEXT NOT NULL DEFAULT '',
+	  matched_field TEXT NOT NULL DEFAULT '',
 	  method TEXT NOT NULL DEFAULT '',
 	  action TEXT NOT NULL,
 	  observed_at TEXT NOT NULL,
@@ -421,6 +464,9 @@ CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
 	CREATE INDEX IF NOT EXISTS idx_site_node_health_node ON site_node_health(node_id);
 	CREATE INDEX IF NOT EXISTS idx_node_upgrade_tasks_node ON node_upgrade_tasks(node_id, created_at DESC);
 	CREATE INDEX IF NOT EXISTS idx_security_policies_priority ON security_policies(priority, created_at);
+	CREATE INDEX IF NOT EXISTS idx_pow_policies_priority ON pow_policies(priority, created_at);
+	CREATE INDEX IF NOT EXISTS idx_static_asset_bindings_asset ON static_asset_bindings(asset_id, site_id);
+	CREATE INDEX IF NOT EXISTS idx_static_asset_bindings_site ON static_asset_bindings(site_id, url_path);
 	CREATE INDEX IF NOT EXISTS idx_security_bans_expires ON security_bans(expires_at);
 	CREATE INDEX IF NOT EXISTS idx_security_events_created ON security_events(created_at DESC);
 	CREATE INDEX IF NOT EXISTS idx_monitoring_probe_target ON monitoring_probe_results(target_id, checked_at DESC);
@@ -437,27 +483,55 @@ func seedBuiltinSecurityPoliciesTx(tx *sql.Tx) error {
 	policies := []struct {
 		id         string
 		name       string
-		pattern    string
+		condition  domain.SecurityCondition
 		action     domain.SecurityPolicyAction
 		banSeconds int
 		priority   int
 	}{
 		{
 			id: domain.DefaultSecurityPolicyID, name: "敏感文件扫描",
-			pattern: domain.DefaultSecurityPolicyPattern, action: domain.SecurityActionBan,
+			condition:  domain.SecurityCondition{Field: domain.SecurityFieldPath, Operator: domain.SecurityOperatorRegex, Value: domain.DefaultSecurityPolicyPattern},
+			action:     domain.SecurityActionBan,
 			banSeconds: 21600, priority: 100,
 		},
 		{
 			id: domain.DefaultPHPSecurityPolicyID, name: "PHP 恶意文件探测",
-			pattern: domain.DefaultPHPSecurityPolicyPattern, action: domain.SecurityActionBlock,
-			priority: 200,
+			condition: domain.SecurityCondition{Field: domain.SecurityFieldPath, Operator: domain.SecurityOperatorRegex, Value: domain.DefaultPHPSecurityPolicyPattern},
+			action:    domain.SecurityActionBlock,
+			priority:  200,
+		},
+		{
+			id: domain.DefaultPathTraversalPolicyID, name: "路径穿越探测",
+			condition: domain.SecurityCondition{Field: domain.SecurityFieldRawURI, Operator: domain.SecurityOperatorRegex, Value: domain.DefaultPathTraversalPolicyPattern},
+			action:    domain.SecurityActionBlock, priority: 300,
+		},
+		{
+			id: domain.DefaultSQLInjectionPolicyID, name: "SQL 注入探测",
+			condition: domain.SecurityCondition{Field: domain.SecurityFieldQuery, Operator: domain.SecurityOperatorRegex, Value: domain.DefaultSQLInjectionPolicyPattern},
+			action:    domain.SecurityActionBlock, priority: 400,
+		},
+		{
+			id: domain.DefaultXSSPolicyID, name: "跨站脚本探测",
+			condition: domain.SecurityCondition{Field: domain.SecurityFieldQuery, Operator: domain.SecurityOperatorRegex, Value: domain.DefaultXSSPolicyPattern},
+			action:    domain.SecurityActionBlock, priority: 500,
+		},
+		{
+			id: domain.DefaultScannerUAPolicyID, name: "扫描器 User-Agent",
+			condition: domain.SecurityCondition{Field: domain.SecurityFieldUserAgent, Operator: domain.SecurityOperatorRegex, Value: domain.DefaultScannerUAPolicyPattern},
+			action:    domain.SecurityActionBlock, priority: 600,
 		},
 	}
 	for _, policy := range policies {
+		conditions, err := json.Marshal([]domain.SecurityCondition{policy.condition})
+		if err != nil {
+			return fmt.Errorf("encode built-in security policy %q: %w", policy.name, err)
+		}
 		if _, err := tx.Exec(`INSERT INTO security_policies(
-			id, name, enabled, pattern, action, ban_duration_seconds, priority, created_at, updated_at)
-			VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING`, policy.id,
-			policy.name, policy.pattern, policy.action, policy.banSeconds, policy.priority, seededAt, seededAt); err != nil {
+			id, name, enabled, site_ids_json, conditions_json, pattern, action, ban_duration_seconds,
+			response_status, priority, created_at, updated_at)
+			VALUES (?, ?, 1, '[]', ?, ?, ?, ?, 403, ?, ?, ?) ON CONFLICT(id) DO NOTHING`, policy.id,
+			policy.name, string(conditions), policy.condition.Value, policy.action, policy.banSeconds,
+			policy.priority, seededAt, seededAt); err != nil {
 			return fmt.Errorf("seed built-in security policy %q: %w", policy.name, err)
 		}
 	}
@@ -2022,11 +2096,30 @@ func saveNodeStatesTx(tx *sql.Tx, updates []NodeStateUpdate, updatedAt string) e
 		if err != nil {
 			return err
 		}
+		staticAssets, err := json.Marshal(update.State.StaticAssets)
+		if err != nil {
+			return err
+		}
 		fragments, err := json.Marshal(update.State.NginxFragments)
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(`INSERT INTO node_states(node_id, version, nginx_config, nginx_stream_config, nginx_main_config, nginx_events_config, nginx_fragments_json, public_ports_json, public_udp_ports_json, origin_pools_json, cache_max_bytes, certificate_ciphertext, private_key_ciphertext, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?) ON CONFLICT(node_id) DO UPDATE SET version=excluded.version, nginx_config=excluded.nginx_config, nginx_stream_config=excluded.nginx_stream_config, nginx_main_config=excluded.nginx_main_config, nginx_events_config=excluded.nginx_events_config, nginx_fragments_json=excluded.nginx_fragments_json, public_ports_json=excluded.public_ports_json, public_udp_ports_json=excluded.public_udp_ports_json, origin_pools_json=excluded.origin_pools_json, cache_max_bytes=excluded.cache_max_bytes, certificate_ciphertext=excluded.certificate_ciphertext, private_key_ciphertext=NULL, updated_at=excluded.updated_at`, update.NodeID, update.State.Version, update.State.NginxConfig, update.State.NginxStreamConfig, update.State.NginxMainConfig, update.State.NginxEventsConfig, string(fragments), string(ports), string(udpPorts), string(originPools), update.State.CacheMaxBytes, update.CertificatesCiphertext, updatedAt); err != nil {
+		if _, err := tx.Exec(`INSERT INTO node_states(node_id, version, nginx_config, nginx_stream_config,
+			nginx_main_config, nginx_events_config, nginx_fragments_json, public_ports_json,
+			public_udp_ports_json, origin_pools_json, static_assets_json, cache_max_bytes,
+			certificate_ciphertext, private_key_ciphertext, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+			ON CONFLICT(node_id) DO UPDATE SET version=excluded.version,
+			nginx_config=excluded.nginx_config, nginx_stream_config=excluded.nginx_stream_config,
+			nginx_main_config=excluded.nginx_main_config, nginx_events_config=excluded.nginx_events_config,
+			nginx_fragments_json=excluded.nginx_fragments_json, public_ports_json=excluded.public_ports_json,
+			public_udp_ports_json=excluded.public_udp_ports_json, origin_pools_json=excluded.origin_pools_json,
+			static_assets_json=excluded.static_assets_json, cache_max_bytes=excluded.cache_max_bytes,
+			certificate_ciphertext=excluded.certificate_ciphertext, private_key_ciphertext=NULL,
+			updated_at=excluded.updated_at`, update.NodeID, update.State.Version, update.State.NginxConfig,
+			update.State.NginxStreamConfig, update.State.NginxMainConfig, update.State.NginxEventsConfig,
+			string(fragments), string(ports), string(udpPorts), string(originPools), string(staticAssets),
+			update.State.CacheMaxBytes, update.CertificatesCiphertext, updatedAt); err != nil {
 			return err
 		}
 	}
@@ -2036,8 +2129,13 @@ func saveNodeStatesTx(tx *sql.Tx, updates []NodeStateUpdate, updatedAt string) e
 func (s *Store) NodeState(nodeID string) (domain.DesiredState, []byte, error) {
 	var state domain.DesiredState
 	var certificates []byte
-	var fragments, ports, udpPorts, originPools string
-	err := s.db.QueryRow(`SELECT version, nginx_config, nginx_stream_config, nginx_main_config, nginx_events_config, nginx_fragments_json, public_ports_json, public_udp_ports_json, origin_pools_json, cache_max_bytes, certificate_ciphertext FROM node_states WHERE node_id = ?`, nodeID).Scan(&state.Version, &state.NginxConfig, &state.NginxStreamConfig, &state.NginxMainConfig, &state.NginxEventsConfig, &fragments, &ports, &udpPorts, &originPools, &state.CacheMaxBytes, &certificates)
+	var fragments, ports, udpPorts, originPools, staticAssets string
+	err := s.db.QueryRow(`SELECT version, nginx_config, nginx_stream_config, nginx_main_config,
+		nginx_events_config, nginx_fragments_json, public_ports_json, public_udp_ports_json,
+		origin_pools_json, static_assets_json, cache_max_bytes, certificate_ciphertext
+		FROM node_states WHERE node_id = ?`, nodeID).Scan(&state.Version, &state.NginxConfig,
+		&state.NginxStreamConfig, &state.NginxMainConfig, &state.NginxEventsConfig, &fragments,
+		&ports, &udpPorts, &originPools, &staticAssets, &state.CacheMaxBytes, &certificates)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.DesiredState{}, nil, ErrNotFound
 	}
@@ -2052,6 +2150,9 @@ func (s *Store) NodeState(nodeID string) (domain.DesiredState, []byte, error) {
 	}
 	if err := json.Unmarshal([]byte(originPools), &state.OriginPools); err != nil {
 		return domain.DesiredState{}, nil, fmt.Errorf("decode desired origin pools: %w", err)
+	}
+	if err := json.Unmarshal([]byte(staticAssets), &state.StaticAssets); err != nil {
+		return domain.DesiredState{}, nil, fmt.Errorf("decode desired static assets: %w", err)
 	}
 	if err := json.Unmarshal([]byte(fragments), &state.NginxFragments); err != nil {
 		return domain.DesiredState{}, nil, fmt.Errorf("decode desired Nginx fragments: %w", err)

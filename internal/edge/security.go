@@ -111,10 +111,15 @@ type securityLogEvent struct {
 	PolicyID   string                      `json:"policy_id"`
 	Action     domain.SecurityPolicyAction `json:"action"`
 	BanSeconds int                         `json:"ban_seconds"`
+	SiteID     string                      `json:"site_id"`
 	ClientIP   string                      `json:"client_ip"`
 	Host       string                      `json:"host"`
 	Method     string                      `json:"method"`
 	Path       string                      `json:"path"`
+	RawURI     string                      `json:"raw_uri"`
+	Query      string                      `json:"query"`
+	UserAgent  string                      `json:"user_agent"`
+	Matched    domain.SecurityMatchField   `json:"matched_field"`
 }
 
 type localSecurityBan struct {
@@ -356,16 +361,16 @@ func decodeSecurityLog(line []byte) (domain.SecurityEvent, error) {
 		return domain.SecurityEvent{}, errors.New("invalid security policy ID")
 	}
 	address, err := netip.ParseAddr(strings.TrimSpace(raw.ClientIP))
-	if err != nil || !address.Is4() || !address.IsGlobalUnicast() || address.IsPrivate() {
-		return domain.SecurityEvent{}, errors.New("security event client IP is not public IPv4")
+	if err != nil || !address.IsGlobalUnicast() || address.IsPrivate() {
+		return domain.SecurityEvent{}, errors.New("security event client IP is not public")
 	}
-	if raw.Action != domain.SecurityActionBlock && raw.Action != domain.SecurityActionBan {
+	if raw.Action != domain.SecurityActionLog && raw.Action != domain.SecurityActionBlock && raw.Action != domain.SecurityActionBan {
 		return domain.SecurityEvent{}, errors.New("invalid security action")
 	}
-	if raw.Action == domain.SecurityActionBan && !domain.ValidSecurityBanDuration(raw.BanSeconds) {
+	if raw.Action == domain.SecurityActionBan && (!address.Is4() || !domain.ValidSecurityBanDuration(raw.BanSeconds)) {
 		return domain.SecurityEvent{}, errors.New("invalid security ban duration")
 	}
-	if raw.Action == domain.SecurityActionBlock {
+	if raw.Action != domain.SecurityActionBan {
 		raw.BanSeconds = 0
 	}
 	observedAt, err := time.Parse(time.RFC3339, raw.Timestamp)
@@ -373,14 +378,30 @@ func decodeSecurityLog(line []byte) (domain.SecurityEvent, error) {
 		return domain.SecurityEvent{}, err
 	}
 	path := strings.TrimSpace(raw.Path)
-	if path == "" || len(path) > 2048 || len(raw.Host) > 255 || len(raw.Method) > 16 {
+	if path == "" || len(path) > 2048 || len(raw.SiteID) > 64 || len(raw.Host) > 255 ||
+		len(raw.Method) > 16 || len(raw.RawURI) > 4096 || len(raw.Query) > 4096 ||
+		len(raw.UserAgent) > 1024 || !validSecurityMatchedField(raw.Matched) {
 		return domain.SecurityEvent{}, errors.New("invalid security event fields")
 	}
 	return domain.SecurityEvent{
-		ID: uuid.NewString(), PolicyID: raw.PolicyID, ClientIP: address.String(), Host: strings.TrimSpace(raw.Host),
-		Path: path, Method: strings.ToUpper(strings.TrimSpace(raw.Method)), Action: raw.Action,
+		ID: uuid.NewString(), PolicyID: raw.PolicyID, SiteID: strings.TrimSpace(raw.SiteID),
+		ClientIP: address.String(), Host: strings.TrimSpace(raw.Host), Path: path,
+		RawURI: strings.TrimSpace(raw.RawURI), Query: strings.TrimSpace(raw.Query),
+		UserAgent: strings.TrimSpace(raw.UserAgent), MatchedField: raw.Matched,
+		Method: strings.ToUpper(strings.TrimSpace(raw.Method)), Action: raw.Action,
 		BanDurationSeconds: raw.BanSeconds, ObservedAt: observedAt,
 	}, nil
+}
+
+func validSecurityMatchedField(field domain.SecurityMatchField) bool {
+	switch field {
+	case "", domain.SecurityFieldPath, domain.SecurityFieldRawURI, domain.SecurityFieldQuery,
+		domain.SecurityFieldMethod, domain.SecurityFieldHost, domain.SecurityFieldUserAgent,
+		domain.SecurityFieldClientIP, domain.SecurityFieldHeader, domain.SecurityFieldBody:
+		return true
+	default:
+		return false
+	}
 }
 
 func containsSecurityBan(events []domain.SecurityEvent) bool {

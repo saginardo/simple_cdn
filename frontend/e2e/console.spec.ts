@@ -93,6 +93,137 @@ const site = {
   updated_at: now.toISOString(),
 };
 
+const staticAssetOverview = {
+  assets: [
+    {
+      id: "asset-1",
+      name: "应用图标",
+      original_name: "app-icon.png",
+      sha256:
+        "32d2d0ac234b7db74a19ec46f3159fe3250c6652a177c99316e91c3a8fca104d",
+      size_bytes: 184_320,
+      content_type: "image/png",
+      bindings: [
+        {
+          id: "binding-1",
+          asset_id: "asset-1",
+          site_id: site.id,
+          url_path: "/assets/app-icon.png",
+          cache_control: "public, max-age=31536000, immutable",
+          created_at: now.toISOString(),
+          updated_at: now.toISOString(),
+        },
+      ],
+      created_at: now.toISOString(),
+      updated_at: now.toISOString(),
+    },
+  ],
+  sites: [site],
+  max_file_bytes: 32 * 1024 * 1024,
+  cache_presets: [
+    "public, max-age=3600",
+    "public, max-age=86400",
+    "public, max-age=31536000, immutable",
+    "no-cache",
+  ],
+};
+
+const securityOverview = {
+  policies: [
+    {
+      id: "waf-traversal",
+      builtin: true,
+      name: "路径穿越防护",
+      enabled: true,
+      site_ids: [],
+      conditions: [
+        {
+          field: "raw_uri",
+          operator: "regex",
+          value: "(?:\\.\\.|%2e%2e|%252e%252e)",
+        },
+      ],
+      pattern: "(?:\\.\\.|%2e%2e|%252e%252e)",
+      action: "block",
+      response_status: 403,
+      priority: 100,
+      created_at: now.toISOString(),
+      updated_at: now.toISOString(),
+    },
+    {
+      id: "waf-api-client",
+      builtin: false,
+      name: "API 客户端检查",
+      enabled: true,
+      site_ids: [site.id],
+      conditions: [
+        {
+          field: "user_agent",
+          operator: "contains",
+          value: "scanner",
+        },
+        {
+          field: "path",
+          operator: "prefix",
+          value: "/api/",
+          negate: true,
+        },
+      ],
+      pattern: "scanner",
+      action: "ban",
+      ban_duration_seconds: 3600,
+      response_status: 403,
+      priority: 200,
+      created_at: now.toISOString(),
+      updated_at: now.toISOString(),
+    },
+  ],
+  pow_policies: [
+    {
+      id: "pow-login",
+      name: "登录入口验证",
+      enabled: true,
+      site_ids: [site.id],
+      path_pattern: "^/(?:login|auth)(?:/|$)",
+      difficulty_bits: 19,
+      challenge_ttl_seconds: 120,
+      pass_ttl_seconds: 1800,
+      priority: 100,
+      created_at: now.toISOString(),
+      updated_at: now.toISOString(),
+    },
+  ],
+  rate_limit_policies: [],
+  sites: [
+    {
+      id: site.id,
+      name: site.name,
+      domains: site.domains,
+      enabled: true,
+      deleting: false,
+    },
+  ],
+  bans: [],
+  active_ban_count: 0,
+  events: [],
+  nodes: [
+    {
+      id: "node-1",
+      name: "edge-hong-kong",
+      status: "active",
+      capable: true,
+      configured: true,
+      rate_limit_capable: true,
+      rate_limit_configured: true,
+      waf_chain_capable: true,
+      pow_capable: true,
+      pow_configured: true,
+      desired_version: 8,
+      applied_version: 8,
+    },
+  ],
+};
+
 const wireGuardNodes = [
   {
     id: "node-1",
@@ -940,14 +1071,8 @@ async function mockAPI(page: Page, overrides: Record<string, unknown> = {}) {
       },
       "/api/logs/request-404": accessLogs[0],
       "/api/logs/request-502": accessLogs[1],
-      "/api/security": {
-        policies: [],
-        rate_limit_policies: [],
-        bans: [],
-        active_ban_count: 0,
-        events: [],
-        nodes: [],
-      },
+      "/api/security": securityOverview,
+      "/api/static-assets": staticAssetOverview,
       "/api/monitoring": monitoring,
       "/api/monitoring/smart-routing": smartRouting,
       "/api/settings": {
@@ -1133,6 +1258,9 @@ test("list pagination renders at most 20 entries per page", async ({
   await mockAPI(page, { "/api/overview": { ...overview, sites } });
   await page.goto("/#/overview");
 
+  await expect(
+    page.getByRole("heading", { name: "概览", level: 1 }),
+  ).toBeVisible();
   const rows = page.locator("tbody tr");
   await expect(rows).toHaveCount(20);
   await expect(page.getByText("第 1-20 条，共 25 个站点")).toBeVisible();
@@ -1895,36 +2023,6 @@ test("language switch localizes workspaces and survives reload", async ({
     page.getByRole("button", { name: "Theme: System" }),
   ).toBeVisible();
 
-  for (const [path, heading] of [
-    ["logs", "Logs"],
-    ["monitoring", "Monitoring"],
-    ["scheduling", "Scheduling"],
-    ["wireguard", "WireGuard"],
-    ["nodes", "Nodes"],
-    ["sites", "Sites"],
-    ["security", "Security"],
-    ["certificates", "Certificates"],
-    ["settings", "Settings"],
-  ]) {
-    await page.goto(`/#/${path}`);
-    await expect(
-      page.getByRole("heading", { name: heading, level: 1 }),
-    ).toBeVisible();
-  }
-
-  await page.goto("/#/wireguard");
-  await expect(page.getByRole("tab", { name: "WireGuard" })).toBeVisible();
-  await page.screenshot({
-    path: testInfo.outputPath("wireguard-english.png"),
-    fullPage: true,
-  });
-  await page.getByRole("button", { name: "Add WireGuard tunnel" }).click();
-  const englishTunnelDialog = page.getByRole("dialog", {
-    name: "Add WireGuard tunnel",
-  });
-  await expect(englishTunnelDialog).toBeVisible();
-  await expect(page.getByLabel("WireGuard UDP port")).toBeVisible();
-  await englishTunnelDialog.getByRole("button", { name: "Cancel" }).click();
   await page.goto("/#/settings");
 
   await page.reload();
@@ -1947,6 +2045,48 @@ test("language switch localizes workspaces and survives reload", async ({
     path: testInfo.outputPath("scheduling-english-mobile.png"),
     fullPage: true,
   });
+  expect(errors).toEqual([]);
+});
+
+test("English locale covers workspaces and the WireGuard dialog", async ({
+  page,
+}, testInfo) => {
+  const errors = trackPageErrors(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await mockAPI(page);
+  await page.goto("/#/overview");
+
+  await page.getByRole("button", { name: "切换语言" }).click();
+  await page.getByRole("menuitemradio", { name: "English" }).click();
+  for (const [path, heading] of [
+    ["logs", "Logs"],
+    ["monitoring", "Monitoring"],
+    ["scheduling", "Scheduling"],
+    ["wireguard", "WireGuard"],
+    ["nodes", "Nodes"],
+    ["sites", "Sites"],
+    ["security", "Security"],
+    ["certificates", "Certificates"],
+  ]) {
+    await page.goto(`/#/${path}`);
+    await expect(
+      page.getByRole("heading", { name: heading, level: 1 }),
+    ).toBeVisible();
+  }
+
+  await page.goto("/#/wireguard");
+  await expect(page.getByRole("tab", { name: "WireGuard" })).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("wireguard-english.png"),
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "Add WireGuard tunnel" }).click();
+  const englishTunnelDialog = page.getByRole("dialog", {
+    name: "Add WireGuard tunnel",
+  });
+  await expect(englishTunnelDialog).toBeVisible();
+  await expect(page.getByLabel("WireGuard UDP port")).toBeVisible();
+  await englishTunnelDialog.getByRole("button", { name: "Cancel" }).click();
   expect(errors).toEqual([]);
 });
 
@@ -1987,46 +2127,154 @@ test("mobile sidebar closes after hash navigation without horizontal overflow", 
   });
 });
 
-test("security tabs fit on one line without scrollbars", async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
+test("security workspace exposes WAF and PoW controls without overflow", async ({
+  page,
+}, testInfo) => {
+  const errors = trackPageErrors(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
   await mockAPI(page);
   await page.goto("/#/security");
 
-  const tabs = page.locator('[data-slot="tabs-list"]');
-  await expect(tabs.getByRole("tab")).toHaveCount(5);
-  expect(
-    await tabs.evaluate((element) => ({
-      horizontalOverflow: element.scrollWidth > element.clientWidth,
-      overflowX: getComputedStyle(element).overflowX,
-      overflowY: getComputedStyle(element).overflowY,
-      rows: new Set(
-        Array.from(element.children, (child) =>
-          Math.round(child.getBoundingClientRect().top),
-        ),
-      ).size,
-    })),
-  ).toEqual({
-    horizontalOverflow: false,
-    overflowX: "visible",
-    overflowY: "visible",
-    rows: 1,
+  await expect(page.getByText("路径穿越防护", { exact: true })).toBeVisible();
+  await expect(page.getByText("API 客户端检查", { exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "浏览器验证" }).click();
+  await expect(page.getByText("登录入口验证", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "新增" }).click();
+  await expect(
+    page.getByRole("dialog", { name: "新增浏览器验证策略" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "取消" }).click();
+  await page.screenshot({
+    path: testInfo.outputPath("security-pow-desktop.png"),
+    fullPage: true,
   });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+
+  const tabs = page.locator('[data-slot="tabs-list"]');
+  await expect(tabs.getByRole("tab")).toHaveCount(6);
+  const geometry = await tabs.evaluate((element) => ({
+    horizontalOverflow: element.scrollWidth > element.clientWidth,
+    rows: new Set(
+      Array.from(element.children, (child) =>
+        Math.round(child.getBoundingClientRect().top),
+      ),
+    ).size,
+  }));
+  expect(geometry.horizontalOverflow).toBe(false);
+  expect(geometry.rows).toBe(2);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth + 1,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: testInfo.outputPath("security-mobile.png"),
+    fullPage: true,
+  });
+  expect(errors).toEqual([]);
+});
+
+test("static assets expose exact site URL assignments on desktop and mobile", async ({
+  page,
+}, testInfo) => {
+  const errors = trackPageErrors(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await mockAPI(page);
+  await page.goto("/#/static-assets");
+
+  await expect(
+    page.getByRole("heading", { name: "静态资源", level: 1 }),
+  ).toBeVisible();
+  await expect(page.getByText("应用图标", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "1 个路径" }).click();
+  const assignments = page.getByRole("dialog", { name: "站点分发" });
+  await expect(
+    assignments.locator("code:visible").filter({
+      hasText: "https://cdn.example.com/assets/app-icon.png",
+    }),
+  ).toBeVisible();
+  await assignments.getByRole("button", { name: "新增路径" }).click();
+  await expect(assignments.getByLabel("精确 URL 路径")).toHaveValue(
+    "/app-icon.png",
+  );
+  await page.screenshot({
+    path: testInfo.outputPath("static-assets-desktop.png"),
+    fullPage: true,
+  });
+  await assignments.getByRole("button", { name: "取消" }).click();
+  await assignments.getByRole("button", { name: "完成" }).click();
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth + 1,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: testInfo.outputPath("static-assets-mobile.png"),
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "1 个路径" }).click();
+  const mobileAssignments = page.getByRole("dialog", { name: "站点分发" });
+  await expect(mobileAssignments).toBeVisible();
+  expect(
+    await mobileAssignments.evaluate(
+      (element) => element.scrollWidth <= element.clientWidth + 1,
+    ),
+  ).toBe(true);
+  await mobileAssignments.getByRole("button", { name: "新增路径" }).click();
+  await expect(mobileAssignments.getByLabel("精确 URL 路径")).toHaveValue(
+    "/app-icon.png",
+  );
+  expect(
+    await mobileAssignments.evaluate(
+      (element) => element.scrollWidth <= element.clientWidth + 1,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: testInfo.outputPath("static-assets-dialog-mobile.png"),
+    fullPage: true,
+  });
+  expect(errors).toEqual([]);
+});
+
+test("static assets workspace localizes in English", async ({ page }) => {
+  const errors = trackPageErrors(page);
+  await mockAPI(page);
+  await page.goto("/#/static-assets");
+
+  await expect(
+    page.getByRole("heading", { name: "静态资源", level: 1 }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "切换语言" }).click();
+  await page.getByRole("menuitemradio", { name: "English" }).click();
+  await expect(page.locator("html")).toHaveAttribute("lang", "en");
+  await expect(
+    page.getByRole("heading", { name: "Static resources", level: 1 }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Upload resource" }),
+  ).toBeVisible();
+  expect(errors).toEqual([]);
 });
 
 test("rate limit errors can escalate from 429 to an IP ban", async ({
   page,
 }) => {
-  const securityOverview = {
+  const emptySecurityOverview = {
     policies: [],
+    pow_policies: [],
     rate_limit_policies: [],
+    sites: [],
     bans: [],
     active_ban_count: 0,
     events: [],
     nodes: [],
   };
   await mockAPI(page, {
-    "/api/security": securityOverview,
-    "/api/security/rate-limit-policies": securityOverview,
+    "/api/security": emptySecurityOverview,
+    "/api/security/rate-limit-policies": emptySecurityOverview,
   });
   await page.goto("/#/security");
   await page.getByRole("tab", { name: "请求限速" }).click();
@@ -2835,6 +3083,7 @@ test("all primary workspaces and the new-site editor mount without runtime error
     ["wireguard", "隧道"],
     ["nodes", "节点"],
     ["sites", "站点"],
+    ["static-assets", "静态资源"],
     ["certificates", "证书"],
     ["sites/new", "添加站点"],
     ["settings", "设置"],

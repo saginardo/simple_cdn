@@ -16,7 +16,7 @@ func TestSecurityPolicyAndBanLifecycle(t *testing.T) {
 	}
 	defer database.Close()
 	policies, err := database.ListSecurityPolicies()
-	if err != nil || len(policies) != 2 {
+	if err != nil || len(policies) != 6 {
 		t.Fatalf("seeded policies = %#v, err=%v", policies, err)
 	}
 	for _, seeded := range policies {
@@ -192,8 +192,9 @@ func TestBuiltinSecurityPolicyMigration(t *testing.T) {
 	}
 
 	customPattern := `(?i)^/+private-config(?:/|$)`
-	if _, err := database.db.Exec(`UPDATE security_policies SET pattern = ? WHERE id = ?`,
-		customPattern, domain.DefaultSecurityPolicyID); err != nil {
+	customConditions := `[{"field":"path","operator":"regex","value":"(?i)^/+private-config(?:/|$)"}]`
+	if _, err := database.db.Exec(`UPDATE security_policies SET pattern = ?, conditions_json = ? WHERE id = ?`,
+		customPattern, customConditions, domain.DefaultSecurityPolicyID); err != nil {
 		t.Fatal(err)
 	}
 	if err := database.Close(); err != nil {
@@ -217,10 +218,14 @@ func TestCustomSecurityPolicyCRUD(t *testing.T) {
 	}
 	defer database.Close()
 	created, err := database.CreateSecurityPolicy(domain.SecurityPolicy{
-		Name: "PHP probes", Enabled: true, Pattern: `(?i)^/+wp-admin(?:/|$)`,
-		Action: domain.SecurityActionBlock, Priority: 200,
+		Name: "PHP probes", Enabled: true,
+		Conditions: []domain.SecurityCondition{
+			{Field: domain.SecurityFieldPath, Operator: domain.SecurityOperatorPrefix, Value: "/wp-admin"},
+			{Field: domain.SecurityFieldUserAgent, Operator: domain.SecurityOperatorContains, Value: "scanner"},
+		},
+		Action: domain.SecurityActionBlock, ResponseStatus: 404, Priority: 200,
 	})
-	if err != nil || created.ID == "" || created.Builtin {
+	if err != nil || created.ID == "" || created.Builtin || len(created.Conditions) != 2 || created.ResponseStatus != 404 {
 		t.Fatalf("created policy = %#v, err=%v", created, err)
 	}
 	if err := database.DeleteSecurityPolicy(created.ID); err != nil {
@@ -228,6 +233,87 @@ func TestCustomSecurityPolicyCRUD(t *testing.T) {
 	}
 	if _, err := database.SecurityPolicy(created.ID); err != ErrNotFound {
 		t.Fatalf("deleted policy lookup = %v", err)
+	}
+}
+
+func TestMoveSecurityPolicyReordersAndRenumbersChain(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	created, err := database.CreateSecurityPolicy(domain.SecurityPolicy{
+		Name: "custom first", Enabled: true,
+		Conditions: []domain.SecurityCondition{{
+			Field: domain.SecurityFieldPath, Operator: domain.SecurityOperatorPrefix, Value: "/private",
+		}},
+		Action: domain.SecurityActionBlock, Priority: 50,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.MoveSecurityPolicy(created.ID, "down"); err != nil {
+		t.Fatal(err)
+	}
+	policies, err := database.ListSecurityPolicies()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(policies) != 7 || policies[1].ID != created.ID || policies[0].ID != domain.DefaultSecurityPolicyID {
+		t.Fatalf("moved policies = %#v", policies)
+	}
+	for index, policy := range policies {
+		if policy.Priority != (index+1)*100 {
+			t.Fatalf("policy %d priority = %d", index, policy.Priority)
+		}
+	}
+	if err := database.MoveSecurityPolicy(created.ID, "sideways"); err == nil {
+		t.Fatal("invalid direction was accepted")
+	}
+	if err := database.MoveSecurityPolicy("missing", "up"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing policy error = %v", err)
+	}
+}
+
+func TestWAFEventValidationUsesRichRequestFields(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	node, err := database.CreateNode("waf-event-edge", "203.0.113.230")
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := database.CreateSecurityPolicy(domain.SecurityPolicy{
+		Name: "API scanner log", Enabled: true, Conditions: []domain.SecurityCondition{
+			{Field: domain.SecurityFieldPath, Operator: domain.SecurityOperatorPrefix, Value: "/api/"},
+			{Field: domain.SecurityFieldUserAgent, Operator: domain.SecurityOperatorContains, Value: "scanner"},
+		},
+		Action: domain.SecurityActionLog, Priority: 1000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := domain.SecurityEvent{
+		ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", PolicyID: policy.ID,
+		ClientIP: "2606:4700:4700::1111", Host: "api.example.test", Path: "/api/items",
+		RawURI: "/api/items?id=1", Query: "id=1", UserAgent: "Example Scanner",
+		MatchedField: domain.SecurityFieldPath, Method: "GET", Action: domain.SecurityActionLog,
+		ObservedAt: time.Now().UTC(),
+	}
+	if accepted, err := database.RecordSecurityEvents(node.ID, []domain.SecurityEvent{event}); err != nil || accepted != 1 {
+		t.Fatalf("rich WAF event accepted=%d, err=%v", accepted, err)
+	}
+	recent, err := database.ListRecentSecurityEvents(1)
+	if err != nil || len(recent) != 1 || recent[0].UserAgent != event.UserAgent ||
+		recent[0].RawURI != event.RawURI || recent[0].MatchedField != event.MatchedField {
+		t.Fatalf("stored rich WAF event = %#v, err=%v", recent, err)
+	}
+	event.ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	event.UserAgent = "regular browser"
+	if _, err := database.RecordSecurityEvents(node.ID, []domain.SecurityEvent{event}); err == nil {
+		t.Fatal("WAF event with mismatched User-Agent was accepted")
 	}
 }
 

@@ -260,17 +260,18 @@ type PublishStatus struct {
 }
 
 type DesiredState struct {
-	Version           int64                 `json:"version"`
-	NginxConfig       string                `json:"nginx_config"`
-	NginxStreamConfig string                `json:"nginx_stream_config,omitempty"`
-	NginxMainConfig   string                `json:"nginx_main_config,omitempty"`
-	NginxEventsConfig string                `json:"nginx_events_config,omitempty"`
-	NginxFragments    *NginxConfigFragments `json:"nginx_fragments,omitempty"`
-	PublicPorts       []int                 `json:"public_ports"`
-	PublicUDPPorts    []int                 `json:"public_udp_ports,omitempty"`
-	OriginPools       []OriginPool          `json:"origin_pools,omitempty"`
-	CacheMaxBytes     int64                 `json:"cache_max_bytes,omitempty"`
-	Certificates      map[string]TLSBundle  `json:"certificates,omitempty"`
+	Version           int64                  `json:"version"`
+	NginxConfig       string                 `json:"nginx_config"`
+	NginxStreamConfig string                 `json:"nginx_stream_config,omitempty"`
+	NginxMainConfig   string                 `json:"nginx_main_config,omitempty"`
+	NginxEventsConfig string                 `json:"nginx_events_config,omitempty"`
+	NginxFragments    *NginxConfigFragments  `json:"nginx_fragments,omitempty"`
+	PublicPorts       []int                  `json:"public_ports"`
+	PublicUDPPorts    []int                  `json:"public_udp_ports,omitempty"`
+	OriginPools       []OriginPool           `json:"origin_pools,omitempty"`
+	StaticAssets      []StaticAssetReference `json:"static_assets,omitempty"`
+	CacheMaxBytes     int64                  `json:"cache_max_bytes,omitempty"`
+	Certificates      map[string]TLSBundle   `json:"certificates,omitempty"`
 }
 
 type NginxConfigFragment struct {

@@ -1,16 +1,16 @@
 # simple_cdn 项目状态与参考技术架构
 
-更新时间：2026-07-31（基于仓库实现和占位符部署拓扑，不记录实际生产环境信息）
+更新时间：2026-08-01（基于仓库实现和占位符部署拓扑，不记录实际生产环境信息）
 
 ## 1. 项目目标与边界
 
 这是一个面向单管理员、小规模自用场景的自托管 CDN：一个控制面 VPS 管理约 3-10 台 Debian 边缘 VPS。需要 HTTP/3 的边缘推荐 Debian 13；Debian 12 继续使用 HTTP/1.1 与 HTTP/2。Cloudflare 只作为权威 DNS 和 DNS-01 API 提供方，业务域名保持 DNS-only；终端用户直接连接边缘节点。
 
-当前设计边界：单管理员、IPv4、单 Cloudflare 账户、无租户/RBAC、无控制面高可用、无 GeoDNS、无 WAF/DDoS 服务、无 URL 级删除缓存。控制面故障不会中断已经下发到边缘的流量，但会阻止新发布、DNS 调整和证书续期。
+当前设计边界：单管理员、IPv4、单 Cloudflare 账户、无租户/RBAC、无控制面高可用、无 GeoDNS、无 URL 级缓存清理，也不提供托管机器人信誉/CAPTCHA 或流量型 DDoS 防护。项目已具备按能力下发的 WAF 处理链和浏览器 PoW，但它们不替代应用鉴权、输入校验与上游抗 DDoS 服务。控制面故障不会中断已经下发到边缘的流量，但会阻止新发布、DNS 调整、资源派发和证书续期。
 
 ## 2. 当前实施结论
 
-代码已经具备一个可运行的端到端闭环：节点注册、mTLS 边缘通信、站点配置、DNS-01 证书、Nginx 分片配置与回滚、缓存、流式协议、WireGuard 专用回源、有界健康检查/DNS 对账、日志聚合、带重试的备份、离线/在线恢复、消息中心和批量节点升级均已实现。SQLite 使用显式版本、名称和事务边界的迁移，不再依赖启动时散落的条件式 DDL。
+代码已经具备一个可运行的端到端闭环：节点注册、mTLS 边缘通信、站点配置、DNS-01 证书、Nginx 分片配置与回滚、缓存、托管静态资源、WAF/PoW、流式协议、WireGuard 专用回源、有界健康检查/DNS 对账、日志聚合、带重试的备份、离线/在线恢复、消息中心和批量节点升级均已实现。SQLite 使用显式版本、名称和事务边界的迁移，不再依赖启动时散落的条件式 DDL。
 
 参考部署由一个 Compose 控制面和多台 active 边缘节点组成。边缘节点统一使用 `/opt/cdn-edge` 集中布局，并应通过全量重新发布、健康检查、DNS 对账、业务访问和日志续传验证。
 
@@ -58,6 +58,8 @@ edge-a 上的 cdn-edge-agent ── HTTPS ${CONTROL_MTLS_PORT} ──> cdn-contr
 - 日志与指标：ClickHouse 原始请求日志保留 7 天，请求量与回源阶段耗时分钟聚合保留 30 天；边缘控制面不可达时，本地队列暂存访问日志。每个 HTTP、WebSocket 握手和 gRPC 请求使用边缘规范 `X-Request-ID` 贯穿主备回源与客户端响应，同时保留客户端 ID、源站响应 ID、边缘传输完成状态及回源字节；日志页可按三类 ID 统一检索。访问日志还包含回源建连、响应头和完整响应时间，站点页显示最近 24 小时连接复用率及按各自样本加权的平均值。5 秒机器状态和主动回源探测只在主控内存中保留最新值，不持久化历史。语义与协议边界见 [REQUEST_TRACING.md](REQUEST_TRACING.md)。
 - TCP 监测与智能路由：拨测目标支持唯一名称；SQLite 保存最新评分、目标结果及每节点智能路由策略。评分门控支持双阈值和独立连续轮数，时间门控支持 `Asia/Shanghai` 每周重复窗口，两者同时启用时采用 AND 关系。每轮目标明细在 SQLite 事务提交后进入有界内存队列，由后台批量写入 ClickHouse 并保留 7 天；ClickHouse 写入或查询故障不会阻塞节点上报，也不会清空 SQLite 当前状态。具体规则见 [SMART_ROUTING.md](SMART_ROUTING.md)。
 - WireGuard 回源：SQLite 迁移 v24 持久化隧道、Peer、一次性源站安装令牌和性能任务，v25 增加源站总出口与边缘 Peer 出口上限；管理 API 受管理员会话与 CSRF 保护，边缘配置、状态和任务接口沿用节点 mTLS，唯一公开的源站配置接口只接受 15 分钟高熵令牌。发布器在源站与全部 Peer 修订收敛后才将连接主机改写为私网 IP，不提供隐式公网回退。
+- 安全策略：控制面持久化有序、可限定站点的 WAF 规则和 PoW 策略；WAF 条件覆盖路径、URI、查询、方法、Host、UA、客户端 IP、请求头和前 64 KiB 请求体，动作支持放行、记录、拦截和封禁。PoW 密钥使用控制面加密器保存，运行时材料只进入具备相应能力的边缘 desired state。详见 [SECURITY_POLICIES.md](SECURITY_POLICIES.md)。
+- 托管静态资源：控制面保存不超过 32 MiB 的内容寻址对象和站点精确 URL 绑定，上传、重命名、删除与绑定 API 均受管理员会话、CSRF 和审计保护；边缘对象下载只允许节点当前 desired state 引用的 SHA-256。详见 [STATIC_ASSETS.md](STATIC_ASSETS.md)。
 
 ### 3.2 边缘面
 
@@ -68,12 +70,15 @@ edge-a 上的 cdn-edge-agent ── HTTPS ${CONTROL_MTLS_PORT} ──> cdn-contr
 - `origin_connection_v1` 节点按协议、规范化地址、Host 和 SNI 共享 upstream；每 worker 空闲连接预算由 `worker_connections` 自动分配。Agent 分层探测源站：约 5 秒复用服务连接，32-48 秒新建一次 TCP/TLS；任一层首次失败后加速到约 2 秒和 4-6 秒，单次超时 3 秒。两层分别累计，任一层连续 2 次失败把托管 include 切换为 `down`，两层分别连续成功后恢复。池状态在边缘持久化以跨重启维持熔断，但主控只接收实时快照。详见 [ORIGIN_CONNECTIONS.md](ORIGIN_CONNECTIONS.md)。
 - `wireguard_v1` 节点在本地生成并以 `0600` 持久化 Curve25519 私钥，按 ETag 拉取隧道期望状态，经 `wg-quick` 原子应用或回滚并上报握手、流量、修订与错误；端点解析到本机地址时会在改写配置前失败关闭。Agent 以 `tc` 管理边缘出口上限，源站安装器以 `wg-quick` 生命周期钩子持久化隧道总出口上限。`wireguard_performance_v2` 节点只在 3 分钟内存在握手时串行执行边缘到源站、源站到边缘两个方向的公网 TCP、隧道 TCP 和隧道 UDP `iperf3` 测试。详见 [WIREGUARD_ORIGIN.md](WIREGUARD_ORIGIN.md)。
 - Agent 上报自身 SHA-256 和 `online_upgrade_v1` 能力；主控可对单节点下发当前制品，独立 updater 在替换主进程后等待新 Agent 完成 mTLS 心跳，失败恢复旧二进制和 systemd/Nginx 集成。
-- 安全工作台管理全局请求路径策略、活动 IP 封禁和最近命中；Nginx 在回源前按正则返回 444，Agent 使用自有 nftables 表即时封禁 TCP 80/443 与 QUIC UDP 443，并通过 mTLS 在节点间同步和自动过期。
+- 安全工作台管理 WAF 处理链、按站点 PoW、客户端 IP 限速、活动封禁和最近命中。具备 `waf_chain_v1` 的 Nginx/OpenResty 在回源前按优先级执行多条件规则；`pow_challenge_v1` 节点在 HTTPS 浏览器 GET 上执行无状态 WebCrypto 计算挑战。Agent 使用自有 nftables 表即时封禁 TCP 80/443 与 QUIC UDP 443，并通过 mTLS 在节点间同步和自动过期。
+- `static_assets_v1` 节点按 desired state 拉取已授权对象，校验大小与 SHA-256 后原子落盘；Nginx 通过精确 location 仅响应 GET/HEAD，并保留 WAF、PoW、限速、访问日志和请求 ID。配置成功应用后才清理不再引用的本地对象。
 - Nginx 为 HTTP 与 stream 分别生成共享 `00-base.conf` 和每站点 `site-<id>.conf`；Agent 使用版本与内容摘要目录同时暂存两个配置族，再原子切换稳定索引。每个站点仍拥有独立 `server` 和 `upstream`：80 强制跳转 HTTPS，TCP 443 保留 TLS 1.2/1.3 与 HTTP/1.1/2；站点默认关闭 HTTP/3，只有主动开启且节点报告 `http3_v1` 时才额外监听 UDP 443、广告 `Alt-Svc` 并启用 QUIC 地址验证重试。Agent 在应用前后分别检查 TCP/UDP 端口归属，站点设置发布或节点能力变化会触发节点期望状态自动重建。节点级 `worker_processes`、`worker_connections` 和 `worker_rlimit_nofile` 分别由主配置与 `events` include 管理。
 - CDN 业务 HTTP/HTTPS server 默认显式使用 `keepalive_timeout 120s` 和 `keepalive_requests 1000`，并可按站点覆盖客户端保活秒数；每个 upstream、每个 worker 的空闲回源连接池为 `keepalive 30`，HTTP/gRPC 回源连接超时统一为 10 秒。HTTP/HTTPS 源站默认 HTTP/1.1，并可在新版节点上分别选择 H2C 或 TLS HTTP/2；WebSocket Upgrade 始终使用协议隔离的 HTTP/1.1 upstream，SSE 和 POST 继续进入无缓存分支。主配置启用 PCRE JIT 和最长一小时的旧 worker 排空，QUIC host key 跨升级保留，TLS session cache 超时为 30 分钟。
 
 ### 3.3 请求处理策略
 
+- WAF 与 PoW：WAF 按优先级执行，单条规则最多 8 个 AND 条件；仅记录动作继续后续规则，放行、拦截和封禁均为终止动作，其中放行还跳过 PoW，但不跳过独立限速。PoW 只适合 HTTPS 浏览器 GET 入口，健康检查固定绕过，非 GET、WebSocket 和 gRPC 不会被替换成 HTML 验证页。详见 [SECURITY_POLICIES.md](SECURITY_POLICIES.md)。
+- 托管静态资源：绑定使用站点内唯一的精确 URL，优先于通用回源 location，直接从边缘内容寻址目录返回；支持 1 小时、1 天、一年 immutable 和 no-cache 四档缓存头，不提供目录列表、动态转换或源站导入。详见 [STATIC_ASSETS.md](STATIC_ASSETS.md)。
 - 普通 HTTP(S)：只有 CSS、JavaScript、字体、图片、WebAssembly 和 Web Manifest 等常见静态后缀的 GET/HEAD 会选择缓存，其他 URI 使用 `proxy_cache off`；缓存键包含 `site_id` 和 `cache_generation`。携带 Authorization 或 Cookie 的请求不会读取或写入共享缓存，但这些请求头仍会原样回源；Nginx 同时遵循源站响应自带的缓存控制语义。
 - 磁盘缓存：所有站点共享节点缓存区，全局默认总上限为 1 GiB/节点，可在节点详情页单独覆写；`keys_zone` 大小按有效节点缓存上限和启用缓存的站点数计算，并限制在 16-512 MiB；7 天非活跃回收，并启用 cache lock、revalidate、后台刷新和上游错误时 stale 回退。
 - 整站透传：HTTP(S) 站点可选启用，关闭 Nginx 缓存、请求缓冲和响应缓冲，使用站点配置的读写空闲超时，并显式转发 `Range` / `If-Range`，适用于视频及其他按字节范围读取的流量。操作语义、已验证故障根因和验收命令见 [PASSTHROUGH_MODE.md](PASSTHROUGH_MODE.md)。
@@ -90,10 +95,10 @@ edge-a 上的 cdn-edge-agent ── HTTPS ${CONTROL_MTLS_PORT} ──> cdn-contr
 | 模块 | 状态 | 说明 |
 | --- | --- | --- |
 | `cmd/control` | 已实现 | 控制面进程；支持 `keygen` 和仅本机使用的 `publish-all`。 |
-| `internal/control` | 已实现 | HTTP API、认证、证书任务、发布、WireGuard 编排、DNS 健康对账、审计、嵌入式管理界面。 |
-| `internal/store` | 已实现 | 版本化事务迁移、SQLite schema、站点/节点/任务/消息/会话/证书/状态持久化。 |
-| `internal/edge` | 已实现 | 注册、mTLS、配置同步、WireGuard 对账与性能任务、原子应用、Nginx 回滚、心跳、日志转发、5 秒机器状态和低频缓存磁盘占用采集。 |
-| `internal/nginx` | 已实现 | HTTP 缓存、整站透传、回源、TLS、WebSocket/SSE、gRPC、备用源站与客户端 IP 限速配置渲染。 |
+| `internal/control` | 已实现 | HTTP API、认证、证书任务、发布、WAF/PoW、静态资源、WireGuard 编排、DNS 健康对账、审计、嵌入式管理界面。 |
+| `internal/store` | 已实现 | 版本化事务迁移，以及站点、节点、任务、消息、会话、证书、安全策略、静态对象元数据和状态的 SQLite 持久化。 |
+| `internal/edge` | 已实现 | 注册、mTLS、配置与静态对象同步、WireGuard 对账与性能任务、原子应用、Nginx 回滚、心跳、日志转发、5 秒机器状态和低频缓存磁盘占用采集。 |
+| `internal/nginx` | 已实现 | HTTP 缓存、托管静态文件、WAF/PoW、整站透传、回源、TLS、WebSocket/SSE、gRPC、备用源站与客户端 IP 限速配置渲染。 |
 | `internal/integrations` | 已实现 | Cloudflare、Certbot、SMTP 等外部适配器。 |
 | `internal/logstore` | 已实现 | ClickHouse 原始日志、分钟指标、节点缓存状态聚合，以及 7 天 TCP 拨测历史及异步批量写入。 |
 | `frontend/` 与 `internal/control/web/dist` | 已实现 | React 19、Vite、TypeScript、Tailwind CSS v4 和 shadcn/ui 简体中文管理台；Vite 哈希产物通过 `//go:embed web/dist` 编入控制面二进制。 |
@@ -103,7 +108,8 @@ edge-a 上的 cdn-edge-agent ── HTTPS ${CONTROL_MTLS_PORT} ──> cdn-contr
 
 - 概览：节点数、运行节点数、站点数、最近 24 小时请求量/传输量/错误率/状态码；站点请求趋势支持按站点、请求总量或传输量升降序排列，条目可进入独立分析页查看站点请求量、传输量、错误汇总、状态码分布和分时折线图。
 - 日志：从左侧导航进入，默认检索全部站点最近 1 小时原始日志，支持请求 ID、时间、站点、节点、方法、状态码、路径、客户端 IP、缓存状态筛选和每页 20 条手动分页；请求详情展示客户端/边缘/源站三类 ID、边缘传输状态及回源字节，原始日志保留 7 天。
-- 安全：全局访问策略增删改、内置敏感文件扫描与独立 PHP 恶意文件探测规则、拦截/IP 封禁动作、1 小时至 7 天档位，以及按客户端 IP 执行的每秒请求限速策略；限速可选择仅由 2xx/3xx/4xx/5xx 响应计数，超限由边缘返回 429。仅以 4xx/5xx 为条件的策略还可配置连续 429 次数，达到阈值后沿现有边缘事件链封禁 IP。页面同时展示访问安全/限速能力覆盖、活动封禁解封和最近命中。
+- 安全：六个 Tab 分别管理可调整顺序的 WAF 链、站点级 PoW、客户端 IP 限速、活动封禁、最近命中和节点能力。WAF 编辑器支持站点范围、最多 8 个 AND 条件、字段/运算符/取反/大小写、放行/记录/拦截/封禁动作及 403/404/444；内置敏感文件、PHP 探针、路径穿越、SQL 注入、XSS 和扫描器 UA 规则。PoW 可设置站点、路径、16-24 位难度、挑战与通行时长。限速仍支持响应状态条件及连续 429 后全局封禁。
+- 静态资源：独立侧栏页面支持不超过 32 MiB 的上传、搜索、重命名和安全删除；每个对象可为多个 HTTP 站点配置精确 URL 与四档缓存策略，页面显示完整访问地址、内容类型、大小、SHA-256 和当前绑定。
 - 监测：命名 TCP 拨测目标支持新增、重命名、启停和删除；节点列表保留当前评分、成功率、时延和连续异常，点击节点进入独立历史页。历史页可在 `1h / 6h / 12h / 24h / 7d` 间切换服务端聚合区间，并用可勾选图例将多个目标的时延曲线绘制在同一图中。“智能路由”Tab 可按节点编辑评分滞回和每周允许调度窗口，并显示当前阻断原因与下次切换时间。
 - 节点：列表仅保留运行概览和管理入口，并提供“一键升级全部”；后端一次评估全量节点，只为具备能力且制品落后的可用节点排队，逐节点报告已是最新、已有任务或阻塞原因。独立二级页面集中提供部署/升级命令、在线升级、暂停/启用调度、撤销/重新启用、卸载/删除、分配站点、节点缓存总配额覆写、心跳、能力与应用版本查看，并展示边缘心跳上报的发行版、版本、uptime、系统负载、CPU、RAM、根磁盘和默认出口网卡 RX/TX，以及缓存已用空间/节点有效总配额和最近 24 小时 ClickHouse 缓存状态分布。机器状态、缓存磁盘上报与请求统计独立降级，任一故障不阻塞节点管理。
 - 站点：创建后自动申请 TLS、编辑、节点分配、主/备源站、独立回源 TLS SNI、HTTP/2/H2C 与 WireGuard 回源链路、回源读写空闲超时、整站透传开关、带 TLS 签发门禁的发布、缓存刷新、源站 CIDR 查看，以及输入站点名确认的安全删除流程。
@@ -159,7 +165,7 @@ edge-a 上的 cdn-edge-agent ── HTTPS ${CONTROL_MTLS_PORT} ──> cdn-contr
 12. Nginx reload 假成功：旧目录迁移改变 `cdn_cache` 路径时改为冷重启；Agent reload 后必须观察到新 worker 才确认应用成功，否则回滚且不推进 applied version。根因、restart 边界和验收命令见 [NGINX_APPLY_SAFETY.md](NGINX_APPLY_SAFETY.md)。
 13. 站点级访问健康：控制面除节点 HTTP 探测外，新增直连节点 443、保留真实域名 Host/SNI 并校验证书和站点专属响应体的检查；按站点和节点独立执行 3 次失败摘除、5 次成功恢复，避免端口正常但虚拟主机仍错误时继续把该节点视为健康。
 14. Edge 在线升级：节点页按代理 SHA-256 判断是否落后，通过 mTLS 下发单节点任务；制品预检、独立 systemd updater、新代理心跳 readiness、持久化结果补报和失败回滚组成完整闭环。存量旧代理需最后手动升级一次以获得该能力。
-15. 通用访问安全：控制端持久化有序正则策略，Nginx 命中后在回源前关闭请求；边缘 Agent 将公网 IPv4 写入带超时的 nftables 集合，本地先执行、控制端校验记录、全节点同步，并提供手动解封。
+15. 通用访问安全：控制端持久化有序 WAF 链，Nginx/OpenResty 在回源前执行站点范围与多字段 AND 条件；放行、记录、拦截和封禁具有明确链语义。边缘 Agent 将公网 IPv4 写入带超时的 nftables 集合，本地先执行、控制端校验记录、全节点同步，并提供手动解封。
 16. 健康对账调度：改为固定上限 worker、单轮超时、错误聚合和耗时快照；超时后不再提交迟到探测的状态变更，定时器不会产生并行轮次。
 17. 数据库升级：引入 `schema_migrations`，每个版本独立事务执行并校验版本连续性、名称和目标版本；当前迁移覆盖核心 schema、任务约束、发布/安全、Nginx 分片、消息中心和持久化消息删除。
 18. Nginx 配置分片：共享 base、HTTP 站点和 stream 站点分别落盘到内容摘要目录，稳定入口只负责 include；两个配置族与证书共同纳入验证、应用和回滚。
@@ -168,6 +174,8 @@ edge-a 上的 cdn-edge-agent ── HTTPS ${CONTROL_MTLS_PORT} ──> cdn-contr
 21. 管理工作台：引入持久消息中心并移除页面顶部单行任务状态；节点列表新增全量升级及逐节点结果；颜色、焦点、密度、抽屉、分段筛选和移动端布局按可组合组件思路统一。
 22. TCP 拨测历史：目标增加唯一名称；最新评分、连续异常和调度状态继续由 SQLite 事务维护，每轮明细通过有界非阻塞队列异步写入保留 7 天的 ClickHouse 表。节点行进入历史详情，可切换五档范围并在同一曲线图选择多个目标；ClickHouse 不可用时当前状态和边缘上报独立降级。
 23. WireGuard 专用回源：新增能力门控的源站隧道、一次性安装、修订收敛、站点主/备回源选择、无公网回退发布门禁、Peer 状态和三路 `iperf3` 对照；源站可在隧道内使用 HTTP/H2C 或 `grpc://` 取消 TLS 证书管理，完整边界与验收见 [WIREGUARD_ORIGIN.md](WIREGUARD_ORIGIN.md)。
+24. 浏览器 PoW：新增按站点与路径启用的无状态 WebCrypto 挑战，策略密钥加密保存，挑战令牌和通行 Cookie 使用 HMAC-SHA256 验证；健康检查及非浏览器协议具有显式边界，能力不足的节点不会接收策略。
+25. 托管静态资源：新增内容寻址上传、精确 URL 绑定、缓存预设和响应式管理页；控制面到边缘沿 mTLS 授权下载，Agent 在应用 Nginx 前完成大小与 SHA-256 校验，并在成功应用后清理无引用对象。
 
 ## 7. 当前问题、风险与下一步
 
@@ -193,7 +201,7 @@ edge-a 上的 cdn-edge-agent ── HTTPS ${CONTROL_MTLS_PORT} ──> cdn-contr
 
 ### P3：产品与安全边界
 
-- 当前无 RBAC、多租户、API token、完整 WAF、URL 级 purge、跨控制面高可用或自动扩缩容；已有的路径阻断、IP 封禁和节点本地请求限速属于明确边界内的轻量安全能力。
+- 当前无 RBAC、多租户、API token、URL 级缓存 purge、托管 CAPTCHA/机器人信誉、流量型 DDoS 防护、跨控制面高可用或自动扩缩容。WAF 对请求体只检查前 64 KiB，PoW 只面向 HTTPS 浏览器 GET，两者都不能替代应用鉴权、协议解析器和上游清洗。
 - 发布任务成功表示 desired state 已生成；DNS 放量还取决于边缘应用版本、健康检查阈值和 Cloudflare DNS 对账周期。面向生产时可在 UI 中继续增加“节点已应用/健康/DNS 已更新”的组合状态。
 - Cloudflare Python SDK 的 Certbot 插件仍会打印版本升级警告；签发已成功，但应在维护窗口固定兼容版本或升级到受支持的主版本，避免未来自动升级造成 DNS-01 回归。
 
@@ -255,12 +263,16 @@ curl -fsS http://127.0.0.1/__cdn_health
 | `cmd/edge-agent/main.go` | 边缘 agent 启动和运行参数。 |
 | `internal/control/server.go` | API 路由、认证保护、TLS 状态接口、嵌入静态资源。 |
 | `internal/control/publisher.go` | 站点发布、desired state 和证书下发。 |
+| `internal/control/security.go` | WAF、PoW、限速、封禁和安全事件管理 API。 |
+| `internal/control/static_assets.go` | 静态资源上传、绑定、审计和边缘授权下载。 |
 | `internal/control/wireguard.go` | WireGuard 管理/边缘 API、一次性源站命令和性能任务。 |
 | `internal/control/certificates.go` | 异步 DNS-01 签发与续期。 |
 | `internal/control/health.go` | 健康检查、Cloudflare DNS 对账。 |
 | `internal/edge/agent.go` | mTLS 注册、同步、原子应用和回滚。 |
+| `internal/edge/static_assets.go` | 静态对象下载、摘要校验、原子安装与垃圾回收。 |
 | `internal/edge/wireguard.go` | 边缘密钥、配置对账、状态读取和 `iperf3` 执行。 |
-| `internal/nginx/render.go` | Nginx 缓存、流式、gRPC、TLS、回源配置生成。 |
+| `internal/nginx/render.go` | Nginx 缓存、静态文件、流式、gRPC、TLS、回源配置生成。 |
+| `internal/nginx/waf.go` | WAF/PoW OpenResty 运行时与策略配置生成。 |
 | `internal/store/migrations.go` | SQLite 版本化事务迁移和 schema 版本检查。 |
 | `internal/store/store.go` | SQLite 连接、生命周期和持久化入口。 |
 | `internal/logstore/clickhouse.go` | ClickHouse schema、访问日志和指标查询。 |
@@ -273,6 +285,8 @@ curl -fsS http://127.0.0.1/__cdn_health
 | `scripts/compose-backup.sh` | SQLite、ClickHouse、内部 CA、证书和控制配置的 Restic 备份核心步骤。 |
 | `scripts/restore-control-compose.sh` | 从 Restic 快照验证、临时恢复、切换及回滚完整主控数据。 |
 | `docs/NGINX_APPLY_SAFETY.md` | Nginx reload/restart 边界、新 worker 验证、站点 HTTPS/SNI 健康与故障处理。 |
+| `docs/SECURITY_POLICIES.md` | WAF 链、PoW、限速、封禁、能力门控与安全边界。 |
+| `docs/STATIC_ASSETS.md` | 静态对象、URL 绑定、边缘同步与运维边界。 |
 
 ## 10. 恢复开发时的第一步
 

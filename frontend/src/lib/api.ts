@@ -21,7 +21,9 @@ export function jsonBody(value: unknown): Pick<RequestInit, "body"> {
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const method = (init.method ?? "GET").toUpperCase();
   const headers = new Headers(init.headers);
-  if (init.body != null && !headers.has("Content-Type")) {
+  const multipart =
+    typeof FormData !== "undefined" && init.body instanceof FormData;
+  if (init.body != null && !multipart && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
   if (method !== "GET" && method !== "HEAD" && csrfToken) {

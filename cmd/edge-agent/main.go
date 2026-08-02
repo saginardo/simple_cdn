@@ -45,6 +45,7 @@ func main() {
 		NginxStatusSocketPath: env("NGINX_STATUS_SOCKET_PATH", "/opt/cdn-edge/nginx/run/status.sock"),
 		NginxVersionPath:      env("NGINX_VERSION_PATH", "/opt/cdn-edge/nginx/VERSION"),
 		NginxSHA256Path:       env("NGINX_SHA256_PATH", "/opt/cdn-edge/nginx/.bundle-sha256"),
+		StaticAssetDirectory:  env("EDGE_STATIC_ASSET_DIR", "/opt/cdn-edge/static/objects"),
 		CertificateDir:        env("EDGE_CERT_DIR", "/opt/cdn-edge/config/certs"), AccessLogPath: env("EDGE_ACCESS_LOG", "/opt/cdn-edge/logs/access.json"), PollInterval: time.Duration(pollSeconds) * time.Second,
 		SecurityLogPath: env("EDGE_SECURITY_LOG", "/opt/cdn-edge/logs/security.json"),
 		Capabilities:    splitValues(os.Getenv("EDGE_CAPABILITIES")),

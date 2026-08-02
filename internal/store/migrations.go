@@ -43,6 +43,121 @@ var schemaMigrations = []schemaMigration{
 	{Version: 24, Name: "wireguard-tunnels-and-performance", Apply: migrateWireGuard},
 	{Version: 25, Name: "wireguard-egress-limits", Apply: migrateWireGuardEgressLimits},
 	{Version: 26, Name: "wireguard-transfer-rates", Apply: migrateWireGuardTransferRates},
+	{Version: 27, Name: "waf-chain-and-proof-of-work", Apply: migrateWAFChainAndProofOfWork},
+	{Version: 28, Name: "static-assets", Apply: migrateStaticAssets},
+}
+
+func migrateStaticAssets(tx *sql.Tx) error {
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS static_assets (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		original_name TEXT NOT NULL,
+		sha256 TEXT NOT NULL UNIQUE,
+		size_bytes INTEGER NOT NULL,
+		content_type TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	);
+	CREATE TABLE IF NOT EXISTS static_asset_bindings (
+		id TEXT PRIMARY KEY,
+		asset_id TEXT NOT NULL REFERENCES static_assets(id) ON DELETE CASCADE,
+		site_id TEXT NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+		url_path TEXT NOT NULL,
+		cache_control TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL,
+		UNIQUE(site_id, url_path)
+	);
+	CREATE INDEX IF NOT EXISTS idx_static_asset_bindings_asset ON static_asset_bindings(asset_id, site_id);
+	CREATE INDEX IF NOT EXISTS idx_static_asset_bindings_site ON static_asset_bindings(site_id, url_path);`); err != nil {
+		return fmt.Errorf("create static asset schema: %w", err)
+	}
+	return addColumnIfMissing(tx, "node_states", "static_assets_json", "static_assets_json TEXT NOT NULL DEFAULT '[]'")
+}
+
+func migrateWAFChainAndProofOfWork(tx *sql.Tx) error {
+	for _, column := range []struct {
+		name       string
+		definition string
+	}{
+		{"site_ids_json", "site_ids_json TEXT NOT NULL DEFAULT '[]'"},
+		{"conditions_json", "conditions_json TEXT NOT NULL DEFAULT '[]'"},
+		{"response_status", "response_status INTEGER NOT NULL DEFAULT 403"},
+	} {
+		if err := addColumnIfMissing(tx, "security_policies", column.name, column.definition); err != nil {
+			return err
+		}
+	}
+	for _, column := range []struct {
+		name       string
+		definition string
+	}{
+		{"site_id", "site_id TEXT NOT NULL DEFAULT ''"},
+		{"raw_uri", "raw_uri TEXT NOT NULL DEFAULT ''"},
+		{"query_string", "query_string TEXT NOT NULL DEFAULT ''"},
+		{"user_agent", "user_agent TEXT NOT NULL DEFAULT ''"},
+		{"matched_field", "matched_field TEXT NOT NULL DEFAULT ''"},
+	} {
+		if err := addColumnIfMissing(tx, "security_events", column.name, column.definition); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS pow_policies (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL UNIQUE,
+		enabled INTEGER NOT NULL DEFAULT 1,
+		site_ids_json TEXT NOT NULL,
+		path_pattern TEXT NOT NULL,
+		difficulty_bits INTEGER NOT NULL,
+		challenge_ttl_seconds INTEGER NOT NULL,
+		pass_ttl_seconds INTEGER NOT NULL,
+		priority INTEGER NOT NULL,
+		secret_ciphertext BLOB NOT NULL,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_pow_policies_priority ON pow_policies(priority, created_at);`); err != nil {
+		return fmt.Errorf("create proof-of-work policy schema: %w", err)
+	}
+	if err := seedBuiltinSecurityPoliciesTx(tx); err != nil {
+		return err
+	}
+	rows, err := tx.Query(`SELECT id, pattern FROM security_policies WHERE conditions_json = '[]'`)
+	if err != nil {
+		return fmt.Errorf("read legacy security policies: %w", err)
+	}
+	type legacyPolicy struct {
+		id      string
+		pattern string
+	}
+	legacy := make([]legacyPolicy, 0)
+	for rows.Next() {
+		var policy legacyPolicy
+		if err := rows.Scan(&policy.id, &policy.pattern); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan legacy security policy: %w", err)
+		}
+		legacy = append(legacy, policy)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("read legacy security policies: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close legacy security policies: %w", err)
+	}
+	for _, policy := range legacy {
+		conditions, err := json.Marshal([]domain.SecurityCondition{{
+			Field: domain.SecurityFieldPath, Operator: domain.SecurityOperatorRegex, Value: policy.pattern,
+		}})
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`UPDATE security_policies SET conditions_json = ? WHERE id = ?`, string(conditions), policy.id); err != nil {
+			return fmt.Errorf("backfill security policy %s: %w", policy.id, err)
+		}
+	}
+	return nil
 }
 
 func migrateWireGuardTransferRates(tx *sql.Tx) error {

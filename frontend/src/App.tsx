@@ -35,6 +35,11 @@ const SecurityPage = lazy(() =>
     default: module.SecurityPage,
   })),
 );
+const StaticAssetsPage = lazy(() =>
+  import("@/features/static-assets/static-assets-page").then((module) => ({
+    default: module.StaticAssetsPage,
+  })),
+);
 const MonitoringPage = lazy(() =>
   import("@/features/monitoring/monitoring-page").then((module) => ({
     default: module.MonitoringPage,
@@ -130,6 +135,10 @@ export default function App() {
                       <Route path="/logs" element={<LogsPage />} />
                       <Route path="/logs/:logId" element={<LogDetailPage />} />
                       <Route path="/security" element={<SecurityPage />} />
+                      <Route
+                        path="/static-assets"
+                        element={<StaticAssetsPage />}
+                      />
                       <Route path="/monitoring" element={<MonitoringPage />} />
                       <Route path="/scheduling" element={<SchedulingPage />} />
                       <Route path="/wireguard" element={<WireGuardPage />} />

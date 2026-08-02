@@ -3,8 +3,10 @@ package control
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"simple_cdn/internal/domain"
+	"simple_cdn/internal/nginx"
 	"simple_cdn/internal/store"
 )
 
@@ -106,6 +109,72 @@ func TestSecurityPoliciesRenderOnlyForCapableNodes(t *testing.T) {
 	}
 }
 
+func TestSecurityOverviewTracksWAFAndPOWConfiguration(t *testing.T) {
+	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	node, err := database.CreateNode("modern-security", "203.0.113.89")
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities := []string{domain.EdgeCapabilityWAFChain, domain.EdgeCapabilityPOWChallenge}
+	if err := database.SetNodeCapabilities(node.ID, capabilities); err != nil {
+		t.Fatal(err)
+	}
+	site, err := database.CreateSite(domain.Site{
+		Name: "pow-site", Domains: []string{"pow.example.test"}, Nodes: []string{node.ID},
+		PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, Enabled: true,
+	}, "zone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	powPolicy, err := database.CreatePOWPolicy(domain.POWPolicy{
+		Name: "browser check", Enabled: true, SiteIDs: []string{site.ID}, PathPattern: `^/private`,
+		DifficultyBits: 18, ChallengeTTLSeconds: 120, PassTTLSeconds: 1800, Priority: 100,
+	}, []byte("encrypted-secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	policies, err := database.ListSecurityPolicies()
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration, err := nginx.RenderWithRuntimeOptions([]domain.Site{site}, policies, nil, nginx.RenderRuntimeOptions{
+		DefaultCacheSizeGB: domain.DefaultCacheMaxSizeGB,
+		WAFChainCapable:    true,
+		POWCapable:         true,
+		POWPolicies: []domain.POWPolicyRuntime{{
+			Policy: powPolicy, Secret: base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte{0x2a}, 32)),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SaveNodeState(node.ID, domain.DesiredState{Version: 1, NginxConfig: configuration}, nil); err != nil {
+		t.Fatal(err)
+	}
+	overview, err := (&Server{Store: database}).securityOverview(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(overview.Nodes) != 1 || !overview.Nodes[0].Configured || !overview.Nodes[0].POWConfigured {
+		t.Fatalf("modern security coverage = %#v", overview.Nodes)
+	}
+	configuration = strings.Replace(configuration, nginx.POWRuntimeMarker, "# proof-of-work runtime removed", 1)
+	if err := database.SaveNodeState(node.ID, domain.DesiredState{Version: 2, NginxConfig: configuration}, nil); err != nil {
+		t.Fatal(err)
+	}
+	overview, err = (&Server{Store: database}).securityOverview(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !overview.Nodes[0].Configured || overview.Nodes[0].POWConfigured {
+		t.Fatalf("stale proof-of-work coverage = %#v", overview.Nodes[0])
+	}
+}
+
 func TestEdgeSecurityEventsReportsRejectedEventIndex(t *testing.T) {
 	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
 	if err != nil {
@@ -193,12 +262,53 @@ func TestSecurityOverviewReportsCoverage(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := &Server{Store: database}
+	site, err := database.CreateSite(domain.Site{
+		Name: "security-site", Domains: []string{"security.example.test"},
+		Nodes: []string{node.ID}, PrimaryOrigin: domain.Origin{URL: "http://origin.example.test", Enabled: true}, Enabled: false,
+	}, "zone")
+	if err != nil {
+		t.Fatal(err)
+	}
 	overview, err := server.securityOverview(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(overview.Policies) != 2 || len(overview.Nodes) != 1 || !overview.Nodes[0].Capable || overview.Nodes[0].Configured {
+	if len(overview.Policies) != 6 || len(overview.Nodes) != 1 || !overview.Nodes[0].Capable || overview.Nodes[0].Configured ||
+		len(overview.Sites) != 1 || overview.Sites[0].ID != site.ID || overview.Sites[0].Domains[0] != "security.example.test" {
 		t.Fatalf("security overview = %#v", overview)
+	}
+}
+
+func TestMoveSecurityPolicyAPI(t *testing.T) {
+	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	created, err := database.CreateSecurityPolicy(domain.SecurityPolicy{
+		Name: "first custom", Enabled: true,
+		Conditions: []domain.SecurityCondition{{
+			Field: domain.SecurityFieldPath, Operator: domain.SecurityOperatorPrefix, Value: "/private",
+		}},
+		Action: domain.SecurityActionBlock, Priority: 50,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{Store: database, Publisher: Publisher{Store: database}}
+	request := httptest.NewRequest(http.MethodPost, "/api/security/policies/"+created.ID+"/move", strings.NewReader(`{"direction":"down"}`))
+	request.SetPathValue("id", created.ID)
+	response := httptest.NewRecorder()
+	server.moveSecurityPolicy(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("move status = %d, body=%s", response.Code, response.Body.String())
+	}
+	var overview securityOverviewResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &overview); err != nil {
+		t.Fatal(err)
+	}
+	if len(overview.Policies) != 7 || overview.Policies[1].ID != created.ID {
+		t.Fatalf("move response policies = %#v", overview.Policies)
 	}
 }
 
@@ -268,6 +378,94 @@ func TestRateLimitPolicyAPI(t *testing.T) {
 	}
 	if _, err := database.RateLimitPolicy(policyID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("deleted policy lookup = %v", err)
+	}
+}
+
+func TestPOWPolicyAPIAndNodeSecretScoping(t *testing.T) {
+	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	key, err := NewEncryptionKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := NewCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := database.CreateNode("pow-edge", "203.0.113.220")
+	if err != nil {
+		t.Fatal(err)
+	}
+	site, err := database.CreateSite(domain.Site{
+		Name: "pow-site", Domains: []string{"pow.example.test"}, Nodes: []string{node.ID},
+		PrimaryOrigin: domain.Origin{URL: "http://origin.example.test", Enabled: true}, Enabled: false,
+	}, "zone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	publisher := Publisher{Store: database, Cipher: cipher}
+	server := &Server{Store: database, Cipher: cipher, Publisher: publisher}
+	payload := fmt.Sprintf(`{
+		"name":"browser check","enabled":true,"site_ids":[%q],"path_pattern":"^/private",
+		"difficulty_bits":18,"challenge_ttl_seconds":120,"pass_ttl_seconds":1800,"priority":100
+	}`, site.ID)
+	request := httptest.NewRequest(http.MethodPost, "/api/security/pow-policies", strings.NewReader(payload))
+	response := httptest.NewRecorder()
+	server.createPOWPolicy(response, request)
+	if response.Code != http.StatusCreated || strings.Contains(response.Body.String(), "secret") {
+		t.Fatalf("create status = %d, body=%s", response.Code, response.Body.String())
+	}
+	var overview securityOverviewResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &overview); err != nil || len(overview.POWPolicies) != 1 {
+		t.Fatalf("create response = %s, err=%v", response.Body.String(), err)
+	}
+	policy := overview.POWPolicies[0]
+	before, err := database.ListEnabledPOWPolicyMaterials()
+	if err != nil || len(before) != 1 {
+		t.Fatalf("stored proof-of-work material = %#v, err=%v", before, err)
+	}
+	runtimes, err := publisher.powPoliciesForNode(before, []domain.Site{{ID: site.ID, Enabled: true}}, []string{
+		domain.EdgeCapabilityWAFChain, domain.EdgeCapabilityPOWChallenge,
+	})
+	if err != nil || len(runtimes) != 1 {
+		t.Fatalf("target node runtimes = %#v, err=%v", runtimes, err)
+	}
+	secret, err := base64.RawStdEncoding.DecodeString(runtimes[0].Secret)
+	if err != nil || len(secret) != 32 {
+		t.Fatalf("runtime secret length = %d, err=%v", len(secret), err)
+	}
+	runtimes, err = publisher.powPoliciesForNode(before, nil, []string{
+		domain.EdgeCapabilityWAFChain, domain.EdgeCapabilityPOWChallenge,
+	})
+	if err != nil || len(runtimes) != 0 {
+		t.Fatalf("unrelated node received runtimes = %#v, err=%v", runtimes, err)
+	}
+
+	payload = fmt.Sprintf(`{
+		"name":"browser check","enabled":true,"site_ids":[%q],"path_pattern":"^/private",
+		"difficulty_bits":20,"challenge_ttl_seconds":120,"pass_ttl_seconds":1800,"priority":100
+	}`, site.ID)
+	request = httptest.NewRequest(http.MethodPut, "/api/security/pow-policies/"+policy.ID, strings.NewReader(payload))
+	request.SetPathValue("id", policy.ID)
+	response = httptest.NewRecorder()
+	server.updatePOWPolicy(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("update status = %d, body=%s", response.Code, response.Body.String())
+	}
+	after, err := database.ListEnabledPOWPolicyMaterials()
+	if err != nil || len(after) != 1 || !bytes.Equal(before[0].SecretCiphertext, after[0].SecretCiphertext) {
+		t.Fatalf("proof-of-work secret changed during update: before=%#v after=%#v err=%v", before, after, err)
+	}
+
+	request = httptest.NewRequest(http.MethodDelete, "/api/security/pow-policies/"+policy.ID, nil)
+	request.SetPathValue("id", policy.ID)
+	response = httptest.NewRecorder()
+	server.deletePOWPolicy(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("delete status = %d, body=%s", response.Code, response.Body.String())
 	}
 }
 

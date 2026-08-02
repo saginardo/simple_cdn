@@ -2,9 +2,11 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
 	"strings"
 	"time"
 
@@ -12,8 +14,8 @@ import (
 	"simple_cdn/internal/domain"
 )
 
-const securityPolicyColumns = `id, name, enabled, pattern, action, ban_duration_seconds,
-	priority, created_at, updated_at`
+const securityPolicyColumns = `id, name, enabled, site_ids_json, conditions_json, pattern, action,
+	ban_duration_seconds, response_status, priority, created_at, updated_at`
 
 const (
 	maxSecurityPolicies = 100
@@ -30,6 +32,7 @@ type securityEventPolicy struct {
 	ID                 string
 	Name               string
 	Pattern            string
+	Policy             *domain.SecurityPolicy
 	Action             domain.SecurityPolicyAction
 	BanDurationSeconds int
 	RateLimit          bool
@@ -87,10 +90,18 @@ func (s *Store) CreateSecurityPolicy(policy domain.SecurityPolicy) (domain.Secur
 	if count >= maxSecurityPolicies {
 		return domain.SecurityPolicy{}, fmt.Errorf("security policy limit of %d reached", maxSecurityPolicies)
 	}
-	_, err = tx.Exec(`INSERT INTO security_policies(id, name, enabled, pattern, action,
-		ban_duration_seconds, priority, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		policy.ID, policy.Name, boolInt(policy.Enabled), policy.Pattern, policy.Action,
-		policy.BanDurationSeconds, policy.Priority, stamp(policy.CreatedAt), stamp(policy.UpdatedAt))
+	if err := validateSecuritySiteIDsTx(tx, policy.SiteIDs); err != nil {
+		return domain.SecurityPolicy{}, err
+	}
+	siteIDs, conditions, err := encodeSecurityPolicyJSON(policy)
+	if err != nil {
+		return domain.SecurityPolicy{}, err
+	}
+	_, err = tx.Exec(`INSERT INTO security_policies(id, name, enabled, site_ids_json, conditions_json,
+		pattern, action, ban_duration_seconds, response_status, priority, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, policy.ID, policy.Name, boolInt(policy.Enabled),
+		siteIDs, conditions, policy.Pattern, policy.Action, policy.BanDurationSeconds, policy.ResponseStatus,
+		policy.Priority, stamp(policy.CreatedAt), stamp(policy.UpdatedAt))
 	if err != nil {
 		return domain.SecurityPolicy{}, err
 	}
@@ -106,10 +117,23 @@ func (s *Store) UpdateSecurityPolicy(id string, policy domain.SecurityPolicy) (d
 	if err != nil {
 		return domain.SecurityPolicy{}, err
 	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return domain.SecurityPolicy{}, err
+	}
+	defer tx.Rollback()
+	if err := validateSecuritySiteIDsTx(tx, policy.SiteIDs); err != nil {
+		return domain.SecurityPolicy{}, err
+	}
+	siteIDs, conditions, err := encodeSecurityPolicyJSON(policy)
+	if err != nil {
+		return domain.SecurityPolicy{}, err
+	}
 	updatedAt := now()
-	result, err := s.db.Exec(`UPDATE security_policies SET name = ?, enabled = ?, pattern = ?, action = ?,
-		ban_duration_seconds = ?, priority = ?, updated_at = ? WHERE id = ?`, policy.Name,
-		boolInt(policy.Enabled), policy.Pattern, policy.Action, policy.BanDurationSeconds,
+	result, err := tx.Exec(`UPDATE security_policies SET name = ?, enabled = ?, site_ids_json = ?,
+		conditions_json = ?, pattern = ?, action = ?, ban_duration_seconds = ?, response_status = ?,
+		priority = ?, updated_at = ? WHERE id = ?`, policy.Name, boolInt(policy.Enabled), siteIDs,
+		conditions, policy.Pattern, policy.Action, policy.BanDurationSeconds, policy.ResponseStatus,
 		policy.Priority, stamp(updatedAt), id)
 	if err != nil {
 		return domain.SecurityPolicy{}, err
@@ -120,6 +144,9 @@ func (s *Store) UpdateSecurityPolicy(id string, policy domain.SecurityPolicy) (d
 	}
 	if changed != 1 {
 		return domain.SecurityPolicy{}, ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.SecurityPolicy{}, err
 	}
 	return s.SecurityPolicy(id)
 }
@@ -140,6 +167,62 @@ func (s *Store) DeleteSecurityPolicy(id string) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+func (s *Store) MoveSecurityPolicy(id, direction string) error {
+	direction = strings.ToLower(strings.TrimSpace(direction))
+	delta := 0
+	switch direction {
+	case "up":
+		delta = -1
+	case "down":
+		delta = 1
+	default:
+		return errors.New("security policy direction must be up or down")
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	rows, err := tx.Query(`SELECT ` + securityPolicyColumns + ` FROM security_policies ORDER BY priority, created_at, id`)
+	if err != nil {
+		return err
+	}
+	policies := make([]domain.SecurityPolicy, 0)
+	for rows.Next() {
+		policy, scanErr := scanSecurityPolicy(rows)
+		if scanErr != nil {
+			_ = rows.Close()
+			return scanErr
+		}
+		policies = append(policies, policy)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	index := slices.IndexFunc(policies, func(policy domain.SecurityPolicy) bool { return policy.ID == id })
+	if index < 0 {
+		return ErrNotFound
+	}
+	target := index + delta
+	if target < 0 || target >= len(policies) {
+		return tx.Commit()
+	}
+	policies[index], policies[target] = policies[target], policies[index]
+	updatedAt := stamp(now())
+	for position, policy := range policies {
+		if _, err := tx.Exec(`UPDATE security_policies SET priority = ?, updated_at = ? WHERE id = ?`,
+			(position+1)*100, updatedAt, policy.ID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) RecordSecurityEvents(nodeID string, events []domain.SecurityEvent) (int, error) {
@@ -185,17 +268,20 @@ func (s *Store) RecordSecurityEvents(nodeID string, events []domain.SecurityEven
 			return accepted, err
 		}
 		address, err := netip.ParseAddr(strings.TrimSpace(input.ClientIP))
-		if err != nil || !address.Is4() || !address.IsGlobalUnicast() || address.IsPrivate() {
-			return invalid(index, errors.New("security event client IP is not a public IPv4 address"))
+		if err != nil || !address.IsGlobalUnicast() || address.IsPrivate() ||
+			(policy.Action == domain.SecurityActionBan && !address.Is4()) {
+			return invalid(index, errors.New("security event client IP is not supported"))
 		}
 		path := strings.TrimSpace(input.Path)
-		if path == "" || len(path) > 2048 || len(input.Host) > 255 || len(input.Method) > 16 {
+		if path == "" || len(path) > 2048 || len(input.SiteID) > 64 || len(input.Host) > 255 ||
+			len(input.Method) > 16 || len(input.RawURI) > 4096 || len(input.Query) > 4096 ||
+			len(input.UserAgent) > 1024 {
 			return invalid(index, errors.New("security event fields are invalid"))
 		}
-		if !policy.RateLimit {
-			matcher, err := domain.CompileSecurityPattern(policy.Pattern)
-			if err != nil || !matcher.MatchString(path) {
-				return invalid(index, errors.New("security event path does not match its policy"))
+		if policy.Policy != nil {
+			matched, err := securityPolicyMatchesEvent(*policy.Policy, input)
+			if err != nil || !matched {
+				return invalid(index, errors.New("security event does not match its policy"))
 			}
 		}
 		observedAt := input.ObservedAt.UTC()
@@ -231,10 +317,12 @@ func (s *Store) RecordSecurityEvents(nodeID string, events []domain.SecurityEven
 			encodedExpiry = stamp(*banExpiresAt)
 		}
 		securityPolicyID, rateLimitPolicyID := securityEventPolicyReferences(policy)
-		_, err = tx.Exec(`INSERT INTO security_events(id, node_id, policy_id, rate_limit_policy_id, policy_name, client_ip,
-			host, path, method, action, observed_at, ban_expires_at, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, eventID, nodeID, securityPolicyID,
-			rateLimitPolicyID, policy.Name, address.String(), strings.TrimSpace(input.Host), path,
+		_, err = tx.Exec(`INSERT INTO security_events(id, node_id, policy_id, rate_limit_policy_id, policy_name,
+			site_id, client_ip, host, path, raw_uri, query_string, user_agent, matched_field, method, action,
+			observed_at, ban_expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			eventID, nodeID, securityPolicyID, rateLimitPolicyID, policy.Name, strings.TrimSpace(input.SiteID),
+			address.String(), strings.TrimSpace(input.Host), path, strings.TrimSpace(input.RawURI),
+			strings.TrimSpace(input.Query), strings.TrimSpace(input.UserAgent), input.MatchedField,
 			strings.ToUpper(strings.TrimSpace(input.Method)), policy.Action, stamp(observedAt), encodedExpiry, stamp(createdAt))
 		if err != nil {
 			return accepted, err
@@ -268,7 +356,7 @@ func securityEventPolicyForInput(tx *sql.Tx, input domain.SecurityEvent) (securi
 		}
 		return securityEventPolicy{
 			ID: policy.ID, Name: policy.Name, Pattern: policy.Pattern, Action: policy.Action,
-			BanDurationSeconds: policy.BanDurationSeconds,
+			BanDurationSeconds: policy.BanDurationSeconds, Policy: &policy,
 		}, nil
 	}
 	if !errors.Is(err, ErrNotFound) {
@@ -299,6 +387,110 @@ func securityEventPolicyReferences(policy securityEventPolicy) (any, any) {
 		return nil, policy.ID
 	}
 	return policy.ID, nil
+}
+
+func securityPolicyMatchesEvent(policy domain.SecurityPolicy, event domain.SecurityEvent) (bool, error) {
+	if len(policy.SiteIDs) > 0 && !slices.Contains(policy.SiteIDs, strings.TrimSpace(event.SiteID)) {
+		return false, nil
+	}
+	if event.MatchedField != "" {
+		found := false
+		for _, condition := range policy.Conditions {
+			if condition.Field == event.MatchedField {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false, nil
+		}
+	}
+	for _, condition := range policy.Conditions {
+		actual, known := securityEventConditionValue(condition, event)
+		if !known {
+			continue
+		}
+		matched, err := matchSecurityEventCondition(condition, actual, event.ClientIP)
+		if err != nil {
+			return false, err
+		}
+		if condition.Negate {
+			matched = !matched
+		}
+		if !matched {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func securityEventConditionValue(condition domain.SecurityCondition, event domain.SecurityEvent) (string, bool) {
+	switch condition.Field {
+	case domain.SecurityFieldPath:
+		return event.Path, true
+	case domain.SecurityFieldRawURI:
+		return event.RawURI, true
+	case domain.SecurityFieldQuery:
+		return event.Query, true
+	case domain.SecurityFieldMethod:
+		return event.Method, true
+	case domain.SecurityFieldHost:
+		return event.Host, true
+	case domain.SecurityFieldUserAgent:
+		return event.UserAgent, true
+	case domain.SecurityFieldClientIP:
+		return event.ClientIP, true
+	case domain.SecurityFieldHeader, domain.SecurityFieldBody:
+		// Header and body values are deliberately not persisted in security logs.
+		return "", false
+	default:
+		return "", false
+	}
+}
+
+func matchSecurityEventCondition(condition domain.SecurityCondition, actual, clientIP string) (bool, error) {
+	if condition.Operator == domain.SecurityOperatorCIDR {
+		address, err := netip.ParseAddr(clientIP)
+		if err != nil {
+			return false, err
+		}
+		for _, value := range strings.Split(condition.Value, ",") {
+			prefix, err := netip.ParsePrefix(value)
+			if err != nil {
+				return false, err
+			}
+			if prefix.Contains(address) {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+	expected := condition.Value
+	if condition.Operator == domain.SecurityOperatorRegex {
+		if !condition.CaseSensitive {
+			expected = "(?i)" + expected
+		}
+		matcher, err := domain.CompileSecurityPattern(expected)
+		if err != nil {
+			return false, err
+		}
+		return matcher.MatchString(actual), nil
+	}
+	if !condition.CaseSensitive {
+		actual, expected = strings.ToLower(actual), strings.ToLower(expected)
+	}
+	switch condition.Operator {
+	case domain.SecurityOperatorEquals:
+		return actual == expected, nil
+	case domain.SecurityOperatorContains:
+		return strings.Contains(actual, expected), nil
+	case domain.SecurityOperatorPrefix:
+		return strings.HasPrefix(actual, expected), nil
+	case domain.SecurityOperatorSuffix:
+		return strings.HasSuffix(actual, expected), nil
+	default:
+		return false, errors.New("security event condition operator is unsupported")
+	}
 }
 
 func (s *Store) ListActiveSecurityBans() ([]domain.SecurityBan, error) {
@@ -350,7 +542,8 @@ func (s *Store) ListRecentSecurityEvents(limit int) ([]domain.SecurityEvent, err
 		limit = 100
 	}
 	rows, err := s.db.Query(`SELECT id, COALESCE(node_id, ''), COALESCE(policy_id, rate_limit_policy_id, ''), policy_name,
-		client_ip, host, path, method, action, observed_at, ban_expires_at, created_at
+		site_id, client_ip, host, path, raw_uri, query_string, user_agent, matched_field,
+		method, action, observed_at, ban_expires_at, created_at
 		FROM security_events ORDER BY created_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -395,9 +588,10 @@ func (s *Store) ReconcileSecurity() error {
 func scanSecurityPolicy(row scanner) (domain.SecurityPolicy, error) {
 	var policy domain.SecurityPolicy
 	var enabled int
-	var createdAt, updatedAt string
-	err := row.Scan(&policy.ID, &policy.Name, &enabled, &policy.Pattern, &policy.Action,
-		&policy.BanDurationSeconds, &policy.Priority, &createdAt, &updatedAt)
+	var siteIDs, conditions, createdAt, updatedAt string
+	err := row.Scan(&policy.ID, &policy.Name, &enabled, &siteIDs, &conditions, &policy.Pattern,
+		&policy.Action, &policy.BanDurationSeconds, &policy.ResponseStatus, &policy.Priority,
+		&createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.SecurityPolicy{}, ErrNotFound
 	}
@@ -406,13 +600,56 @@ func scanSecurityPolicy(row scanner) (domain.SecurityPolicy, error) {
 	}
 	policy.Enabled = enabled != 0
 	policy.Builtin = domain.IsBuiltinSecurityPolicyID(policy.ID)
+	if err := json.Unmarshal([]byte(siteIDs), &policy.SiteIDs); err != nil {
+		return domain.SecurityPolicy{}, fmt.Errorf("decode security policy sites: %w", err)
+	}
+	if err := json.Unmarshal([]byte(conditions), &policy.Conditions); err != nil {
+		return domain.SecurityPolicy{}, fmt.Errorf("decode security policy conditions: %w", err)
+	}
 	if policy.CreatedAt, err = parseTime(createdAt); err != nil {
 		return domain.SecurityPolicy{}, err
 	}
 	if policy.UpdatedAt, err = parseTime(updatedAt); err != nil {
 		return domain.SecurityPolicy{}, err
 	}
-	return policy, nil
+	normalized, err := domain.NormalizeSecurityPolicy(policy)
+	if err != nil {
+		return domain.SecurityPolicy{}, fmt.Errorf("normalize stored security policy %s: %w", policy.ID, err)
+	}
+	normalized.ID = policy.ID
+	normalized.Builtin = policy.Builtin
+	normalized.CreatedAt = policy.CreatedAt
+	normalized.UpdatedAt = policy.UpdatedAt
+	return normalized, nil
+}
+
+func encodeSecurityPolicyJSON(policy domain.SecurityPolicy) (string, string, error) {
+	siteIDs, err := json.Marshal(policy.SiteIDs)
+	if err != nil {
+		return "", "", err
+	}
+	conditions, err := json.Marshal(policy.Conditions)
+	if err != nil {
+		return "", "", err
+	}
+	return string(siteIDs), string(conditions), nil
+}
+
+func validateSecuritySiteIDsTx(tx *sql.Tx, siteIDs []string) error {
+	for _, siteID := range siteIDs {
+		var tcpOnly, deleting int
+		err := tx.QueryRow(`SELECT tcp_only, deleting FROM sites WHERE id = ?`, siteID).Scan(&tcpOnly, &deleting)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("security policy site %s does not exist", siteID)
+		}
+		if err != nil {
+			return err
+		}
+		if tcpOnly != 0 || deleting != 0 {
+			return fmt.Errorf("security policy site %s is not an active HTTP site", siteID)
+		}
+	}
+	return nil
 }
 
 func scanSecurityBan(row scanner) (domain.SecurityBan, error) {
@@ -439,8 +676,9 @@ func scanSecurityEvent(row scanner) (domain.SecurityEvent, error) {
 	var event domain.SecurityEvent
 	var observedAt, createdAt string
 	var banExpiresAt sql.NullString
-	if err := row.Scan(&event.ID, &event.NodeID, &event.PolicyID, &event.PolicyName, &event.ClientIP,
-		&event.Host, &event.Path, &event.Method, &event.Action, &observedAt, &banExpiresAt, &createdAt); err != nil {
+	if err := row.Scan(&event.ID, &event.NodeID, &event.PolicyID, &event.PolicyName, &event.SiteID,
+		&event.ClientIP, &event.Host, &event.Path, &event.RawURI, &event.Query, &event.UserAgent,
+		&event.MatchedField, &event.Method, &event.Action, &observedAt, &banExpiresAt, &createdAt); err != nil {
 		return domain.SecurityEvent{}, err
 	}
 	var err error

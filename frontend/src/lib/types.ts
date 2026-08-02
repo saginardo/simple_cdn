@@ -643,17 +643,67 @@ export interface LogPage {
   has_more: boolean;
 }
 
+export type SecurityConditionField =
+  | "path"
+  | "raw_uri"
+  | "query"
+  | "method"
+  | "host"
+  | "user_agent"
+  | "client_ip"
+  | "header"
+  | "body";
+
+export type SecurityConditionOperator =
+  "regex" | "equals" | "contains" | "prefix" | "suffix" | "cidr";
+
+export type SecurityPolicyAction = "allow" | "log" | "block" | "ban";
+
+export interface SecurityCondition {
+  field: SecurityConditionField;
+  operator: SecurityConditionOperator;
+  value: string;
+  header_name?: string;
+  negate?: boolean;
+  case_sensitive?: boolean;
+}
+
 export interface SecurityPolicy {
   id: string;
   builtin: boolean;
   name: string;
   enabled: boolean;
+  site_ids?: string[];
+  conditions: SecurityCondition[];
   pattern: string;
-  action: "block" | "ban";
+  action: SecurityPolicyAction;
   ban_duration_seconds?: number;
+  response_status?: number;
   priority: number;
   created_at: string;
   updated_at: string;
+}
+
+export interface POWPolicy {
+  id: string;
+  name: string;
+  enabled: boolean;
+  site_ids: string[];
+  path_pattern: string;
+  difficulty_bits: number;
+  challenge_ttl_seconds: number;
+  pass_ttl_seconds: number;
+  priority: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SecuritySiteOption {
+  id: string;
+  name: string;
+  domains: string[];
+  enabled: boolean;
+  deleting: boolean;
 }
 
 export interface RateLimitPolicy {
@@ -673,7 +723,9 @@ export interface RateLimitPolicy {
 
 export interface SecurityOverview {
   policies: SecurityPolicy[];
+  pow_policies: POWPolicy[];
   rate_limit_policies: RateLimitPolicy[];
+  sites: SecuritySiteOption[];
   bans: Array<{
     ip: string;
     policy_id?: string;
@@ -692,11 +744,16 @@ export interface SecurityOverview {
     node_id?: string;
     policy_id: string;
     policy_name?: string;
+    site_id?: string;
     client_ip: string;
     host?: string;
     path: string;
+    raw_uri?: string;
+    query?: string;
+    user_agent?: string;
+    matched_field?: SecurityConditionField;
     method?: string;
-    action: "block" | "ban";
+    action: SecurityPolicyAction;
     observed_at: string;
     ban_expires_at?: string;
   }>;
@@ -708,11 +765,43 @@ export interface SecurityOverview {
     configured: boolean;
     rate_limit_capable: boolean;
     rate_limit_configured: boolean;
+    waf_chain_capable: boolean;
+    pow_capable: boolean;
+    pow_configured: boolean;
     desired_version: number;
     applied_version: number;
     last_error?: string;
   }>;
   deployment_error?: string;
+}
+
+export interface StaticAssetBinding {
+  id: string;
+  asset_id: string;
+  site_id: string;
+  url_path: string;
+  cache_control: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StaticAsset {
+  id: string;
+  name: string;
+  original_name: string;
+  sha256: string;
+  size_bytes: number;
+  content_type: string;
+  bindings: StaticAssetBinding[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StaticAssetOverview {
+  assets: StaticAsset[];
+  sites: Site[];
+  max_file_bytes: number;
+  cache_presets: string[];
 }
 
 export interface Settings {

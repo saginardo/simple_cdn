@@ -24,6 +24,7 @@ const (
 	DefaultCachePath                          = "/opt/cdn-edge/cache"
 	DefaultOriginPoolConfigDirectory          = "/opt/cdn-edge/config/nginx/origin-pools"
 	DefaultQUICHostKeyPath                    = "/opt/cdn-edge/config/nginx/quic-host.key"
+	DefaultStaticAssetDirectory               = "/opt/cdn-edge/static/objects"
 	DefaultCacheMaxBytes                int64 = 1 << 30
 	defaultClientKeepaliveRequests            = 1000
 	defaultUpstreamConnectTimeout             = "10s"
@@ -66,21 +67,31 @@ quic_retry on;
 {{if .DefaultHTTP}}server {
     listen 80 default_server;
     server_name _;
-{{if .Sites}}    set $cdn_site_id "";
+{{if or .Sites .LegacySecurityEnabled .RuntimeSecurityEnabled}}	set $cdn_site_id "";
 {{end}}
 	keepalive_timeout {{.DefaultClientKeepaliveTimeout}};
 	keepalive_requests {{.ClientKeepaliveRequests}};
-{{if .SecurityEnabled}}    access_log /opt/cdn-edge/logs/security.json cdn_security_json if=$cdn_security_policy_id;
+{{if .LegacySecurityEnabled}}    access_log /opt/cdn-edge/logs/security.json cdn_security_json if=$cdn_security_policy_id;
     if ($cdn_security_policy_id) { return 444; }
+{{end}}
+{{if .RuntimeSecurityEnabled}}{{range .RuntimeSecurityLogs}}    access_log /opt/cdn-edge/logs/security.json {{.Format}} if=$cdn_security_match_{{.Index}};
+{{end}}
+    access_by_lua_block { package.loaded.simple_cdn_security.access() }
 {{end}}
 {{if .RateLimitBanEnabled}}    set $cdn_rate_limit_ban_policy_id "";
     set $cdn_rate_limit_ban_seconds 0;
     access_log /opt/cdn-edge/logs/security.json cdn_rate_limit_ban_json if=$cdn_rate_limit_ban_policy_id;
 {{end}}
     location = /__cdn_health { access_log off; add_header Content-Type text/plain; return 200 "ok\n"; }
-{{if .RateLimitEnabled}}    location / {
-        access_by_lua_block { package.loaded.simple_cdn_rate_limit.access() }
+{{if or .RuntimeSecurityEnabled .RateLimitEnabled}}    location / {
+        access_by_lua_block {
+            {{if $.RuntimeSecurityEnabled}}package.loaded.simple_cdn_security.access()
+            {{end}}{{if $.RateLimitEnabled}}package.loaded.simple_cdn_rate_limit.access()
+            {{end}}
+        }
+        {{if $.RateLimitEnabled}}
         header_filter_by_lua_block { package.loaded.simple_cdn_rate_limit.response() }
+        {{end}}
         content_by_lua_block { return ngx.exit(404) }
     }
 {{else}}
@@ -161,16 +172,26 @@ server {
 	keepalive_timeout {{.ClientKeepaliveTimeout}};
 	keepalive_requests {{$.ClientKeepaliveRequests}};
     add_header X-Request-ID $request_id always;
-    {{if $.SecurityEnabled}}access_log /opt/cdn-edge/logs/security.json cdn_security_json if=$cdn_security_policy_id;
+    {{if $.LegacySecurityEnabled}}access_log /opt/cdn-edge/logs/security.json cdn_security_json if=$cdn_security_policy_id;
     if ($cdn_security_policy_id) { return 444; }
+    {{end}}
+    {{if $.RuntimeSecurityEnabled}}{{range $.RuntimeSecurityLogs}}access_log /opt/cdn-edge/logs/security.json {{.Format}} if=$cdn_security_match_{{.Index}};
+    {{end}}
+    access_by_lua_block { package.loaded.simple_cdn_security.access() }
     {{end}}
     {{if $.RateLimitBanEnabled}}set $cdn_rate_limit_ban_policy_id "";
     set $cdn_rate_limit_ban_seconds 0;
     access_log /opt/cdn-edge/logs/security.json cdn_rate_limit_ban_json if=$cdn_rate_limit_ban_policy_id;
     {{end}}
-    {{if $.RateLimitEnabled}}location / {
-        access_by_lua_block { package.loaded.simple_cdn_rate_limit.access() }
+    {{if or $.RuntimeSecurityEnabled $.RateLimitEnabled}}location / {
+        access_by_lua_block {
+            {{if $.RuntimeSecurityEnabled}}package.loaded.simple_cdn_security.access()
+            {{end}}{{if $.RateLimitEnabled}}package.loaded.simple_cdn_rate_limit.access()
+            {{end}}
+        }
+        {{if $.RateLimitEnabled}}
         header_filter_by_lua_block { package.loaded.simple_cdn_rate_limit.response() }
+        {{end}}
         content_by_lua_block { return ngx.redirect("https://" .. ngx.var.host .. ngx.var.request_uri, 301) }
     }
     {{else}}
@@ -193,8 +214,12 @@ server {
     client_max_body_size {{.ClientMaxBodySizeMB}}m;
     keepalive_timeout {{.ClientKeepaliveTimeout}};
     keepalive_requests {{$.ClientKeepaliveRequests}};
-    {{if $.SecurityEnabled}}access_log /opt/cdn-edge/logs/security.json cdn_security_json if=$cdn_security_policy_id;
+    {{if $.LegacySecurityEnabled}}access_log /opt/cdn-edge/logs/security.json cdn_security_json if=$cdn_security_policy_id;
     if ($cdn_security_policy_id) { return 444; }
+    {{end}}
+    {{if $.RuntimeSecurityEnabled}}{{range $.RuntimeSecurityLogs}}access_log /opt/cdn-edge/logs/security.json {{.Format}} if=$cdn_security_match_{{.Index}};
+    {{end}}
+    access_by_lua_block { package.loaded.simple_cdn_security.access() }
     {{end}}
     {{if $.RateLimitBanEnabled}}set $cdn_rate_limit_ban_policy_id "";
     set $cdn_rate_limit_ban_seconds 0;
@@ -215,9 +240,39 @@ server {
         return 200 "{{.HealthBody}}\n";
     }
 
+    {{range .StaticAssets}}
+    location = "{{.URLPath}}" {
+        {{if or $.RuntimeSecurityEnabled $.RateLimitEnabled}}access_by_lua_block {
+            {{if $.RuntimeSecurityEnabled}}package.loaded.simple_cdn_security.access()
+            {{end}}{{if $.RateLimitEnabled}}package.loaded.simple_cdn_rate_limit.access()
+            {{end}}ngx.ctx.cdn_static_asset_allowed = true
+        }
+        header_filter_by_lua_block {
+            {{if $.RateLimitEnabled}}package.loaded.simple_cdn_rate_limit.response()
+            {{end}}if ngx.ctx.cdn_static_asset_allowed and ngx.status < 400 then
+                ngx.header["Cache-Control"] = "{{.CacheControl}}"
+                ngx.header["X-Content-Type-Options"] = "nosniff"
+            end
+        }
+        {{else}}
+        add_header Cache-Control "{{.CacheControl}}";
+        add_header X-Content-Type-Options nosniff;
+        {{end}}
+        alias "{{.ObjectPath}}";
+        types { }
+        default_type "{{.ContentType}}";
+        etag on;
+        if_modified_since exact;
+        limit_except GET HEAD { deny all; }
+    }
+    {{end}}
+
     {{if .GRPC}}
     location / {
-        {{if $.RateLimitEnabled}}access_by_lua_block { package.loaded.simple_cdn_rate_limit.access() }
+        {{if $.RateLimitEnabled}}access_by_lua_block {
+            {{if $.RuntimeSecurityEnabled}}package.loaded.simple_cdn_security.access()
+            {{end}}package.loaded.simple_cdn_rate_limit.access()
+        }
         header_filter_by_lua_block { package.loaded.simple_cdn_rate_limit.response() }
         {{end}}
 		grpc_pass {{.PrimaryScheme}}://{{.PrimaryUpstreamName}};
@@ -307,7 +362,10 @@ server {
 	location @cdn_http_{{.ID}} {
 		internal;
 		proxy_http_version {{.PrimaryProxyHTTPVersion}};
-		{{if $.RateLimitEnabled}}access_by_lua_block { package.loaded.simple_cdn_rate_limit.access() }
+		{{if $.RateLimitEnabled}}access_by_lua_block {
+			{{if $.RuntimeSecurityEnabled}}package.loaded.simple_cdn_security.access()
+			{{end}}package.loaded.simple_cdn_rate_limit.access()
+		}
 		header_filter_by_lua_block { package.loaded.simple_cdn_rate_limit.response() }
 		{{end}}
 		proxy_pass {{.PrimaryScheme}}://{{.PrimaryUpstreamName}};
@@ -351,7 +409,10 @@ server {
 	location @cdn_stream_{{.ID}} {
 		internal;
 		proxy_http_version {{.PrimaryProxyHTTPVersion}};
-		{{if $.RateLimitEnabled}}access_by_lua_block { package.loaded.simple_cdn_rate_limit.access() }
+		{{if $.RateLimitEnabled}}access_by_lua_block {
+			{{if $.RuntimeSecurityEnabled}}package.loaded.simple_cdn_security.access()
+			{{end}}package.loaded.simple_cdn_rate_limit.access()
+		}
 		header_filter_by_lua_block { package.loaded.simple_cdn_rate_limit.response() }
 		{{end}}
 		proxy_pass {{.PrimaryScheme}}://{{.PrimaryUpstreamName}};
@@ -395,7 +456,10 @@ server {
 	location @cdn_websocket_{{.ID}} {
 		internal;
 		proxy_http_version 1.1;
-		{{if $.RateLimitEnabled}}access_by_lua_block { package.loaded.simple_cdn_rate_limit.access() }
+		{{if $.RateLimitEnabled}}access_by_lua_block {
+			{{if $.RuntimeSecurityEnabled}}package.loaded.simple_cdn_security.access()
+			{{end}}package.loaded.simple_cdn_rate_limit.access()
+		}
 		header_filter_by_lua_block { package.loaded.simple_cdn_rate_limit.response() }
 		{{end}}
 		proxy_pass {{.PrimaryScheme}}://{{.PrimaryWebSocketUpstreamName}};
@@ -579,6 +643,14 @@ type renderedSite struct {
 	AlwaysUnbuffered             bool
 	RequestBodyBuffering         bool
 	OriginResponseBuffering      bool
+	StaticAssets                 []renderedStaticAsset
+}
+
+type renderedStaticAsset struct {
+	URLPath      string
+	ObjectPath   string
+	ContentType  string
+	CacheControl string
 }
 
 type renderedOriginPool struct {
@@ -608,7 +680,9 @@ type renderInput struct {
 	CachePaths                    []renderedCachePath
 	DefaultHTTP                   bool
 	HTTP3Enabled                  bool
-	SecurityEnabled               bool
+	LegacySecurityEnabled         bool
+	RuntimeSecurityEnabled        bool
+	RuntimeSecurityLogs           []renderedWAFLog
 	SecurityConfig                string
 	RateLimitEnabled              bool
 	RateLimitBanEnabled           bool
@@ -649,6 +723,11 @@ type RenderRuntimeOptions struct {
 	NginxWorkerConnections    int
 	OriginPoolConfigDirectory string
 	QUICHostKeyPath           string
+	WAFChainCapable           bool
+	POWCapable                bool
+	POWPolicies               []domain.POWPolicyRuntime
+	StaticAssets              []domain.StaticAssetReference
+	StaticAssetDirectory      string
 	originPoolsOutput         *[]domain.OriginPool
 }
 
@@ -691,6 +770,36 @@ func RenderWithRuntimeOptions(sites []domain.Site, securityPolicies []domain.Sec
 	}
 	if !filepath.IsAbs(quicHostKeyPath) || filepath.Clean(quicHostKeyPath) != quicHostKeyPath {
 		return "", fmt.Errorf("QUIC host key path must be an absolute clean path")
+	}
+	staticAssetDirectory := strings.TrimRight(strings.TrimSpace(options.StaticAssetDirectory), "/")
+	if staticAssetDirectory == "" {
+		staticAssetDirectory = DefaultStaticAssetDirectory
+	}
+	if !filepath.IsAbs(staticAssetDirectory) || filepath.Clean(staticAssetDirectory) != staticAssetDirectory ||
+		strings.ContainsAny(staticAssetDirectory, "\x00\r\n\"$") {
+		return "", fmt.Errorf("static asset directory must be a safe absolute clean path")
+	}
+	staticAssetsBySite := make(map[string][]renderedStaticAsset)
+	staticAssetPaths := make(map[string]struct{})
+	for _, reference := range options.StaticAssets {
+		reference, err = domain.NormalizeStaticAssetReference(reference)
+		if err != nil {
+			return "", fmt.Errorf("static asset reference %q: %w", reference.BindingID, err)
+		}
+		key := reference.SiteID + "\x00" + reference.URLPath
+		if _, found := staticAssetPaths[key]; found {
+			return "", fmt.Errorf("site %s has duplicate static asset URL %s", reference.SiteID, reference.URLPath)
+		}
+		staticAssetPaths[key] = struct{}{}
+		staticAssetsBySite[reference.SiteID] = append(staticAssetsBySite[reference.SiteID], renderedStaticAsset{
+			URLPath: reference.URLPath, ObjectPath: staticAssetDirectory + "/" + reference.SHA256,
+			ContentType: reference.ContentType, CacheControl: reference.CacheControl,
+		})
+	}
+	for siteID := range staticAssetsBySite {
+		sort.Slice(staticAssetsBySite[siteID], func(i, j int) bool {
+			return staticAssetsBySite[siteID][i].URLPath < staticAssetsBySite[siteID][j].URLPath
+		})
 	}
 	cachePaths := make([]renderedCachePath, 0, 1)
 	cacheEnabled := false
@@ -742,7 +851,9 @@ func RenderWithRuntimeOptions(sites []domain.Site, securityPolicies []domain.Sec
 			OriginResponseBuffering: site.OriginResponseBuffering && !alwaysUnbuffered,
 			PrimaryProxyHTTPVersion: nginxProxyHTTPVersion(primaryHTTPVersion),
 			PrimaryUsesHTTP2:        isHTTP2OriginVersion(primaryHTTPVersion),
+			StaticAssets:            staticAssetsBySite[site.ID],
 		}
+		delete(staticAssetsBySite, site.ID)
 		http3Enabled = http3Enabled || item.HTTP3Enabled
 		item.PrimaryUpstreamName = "origin_" + item.ID
 		item.PrimaryWebSocketUpstreamName = item.PrimaryUpstreamName
@@ -819,6 +930,9 @@ func RenderWithRuntimeOptions(sites []domain.Site, securityPolicies []domain.Sec
 		}
 		items = append(items, item)
 	}
+	if len(staticAssetsBySite) != 0 {
+		return "", fmt.Errorf("static asset references include a site that is not enabled on this node")
+	}
 	sort.Slice(items, func(i, j int) bool { return items[i].ID < items[j].ID })
 	originPools, renderedOriginPools, err := finalizeOriginPools(poolBuilders, options.NginxWorkerConnections)
 	if err != nil {
@@ -835,6 +949,18 @@ func RenderWithRuntimeOptions(sites []domain.Site, securityPolicies []domain.Sec
 		return "", err
 	}
 	var out bytes.Buffer
+	httpEnabled := len(items) > 0 || !dedicatedTCP
+	legacySecurityEnabled := !options.WAFChainCapable && len(enabledLegacySecurityPolicies(securityPolicies)) > 0 && httpEnabled
+	runtimeSecurityEnabled := options.WAFChainCapable &&
+		(len(enabledSecurityPolicies(securityPolicies)) > 0 || len(enabledPOWPolicies(options.POWPolicies)) > 0) && httpEnabled
+	securityConfig := renderSecurityConfig(securityPolicies, httpEnabled)
+	var runtimeSecurityLogs []renderedWAFLog
+	if options.WAFChainCapable {
+		securityConfig, runtimeSecurityLogs, err = renderWAFConfig(securityPolicies, options.POWPolicies, httpEnabled, options.POWCapable)
+		if err != nil {
+			return "", err
+		}
+	}
 	if err := template.Execute(&out, renderInput{
 		Sites:                         items,
 		OriginPools:                   renderedOriginPools,
@@ -842,11 +968,13 @@ func RenderWithRuntimeOptions(sites []domain.Site, securityPolicies []domain.Sec
 		CachePaths:                    cachePaths,
 		DefaultHTTP:                   !dedicatedTCP,
 		HTTP3Enabled:                  http3Enabled,
-		SecurityEnabled:               len(enabledSecurityPolicies(securityPolicies)) > 0 && !dedicatedTCP,
-		SecurityConfig:                renderSecurityConfig(securityPolicies, !dedicatedTCP),
-		RateLimitEnabled:              len(enabledRateLimitPolicies(rateLimitPolicies)) > 0 && !dedicatedTCP,
-		RateLimitBanEnabled:           hasEnabledRateLimitBanPolicy(rateLimitPolicies) && !dedicatedTCP,
-		RateLimitConfig:               renderRateLimitConfig(rateLimitPolicies, !dedicatedTCP),
+		LegacySecurityEnabled:         legacySecurityEnabled,
+		RuntimeSecurityEnabled:        runtimeSecurityEnabled,
+		RuntimeSecurityLogs:           runtimeSecurityLogs,
+		SecurityConfig:                securityConfig,
+		RateLimitEnabled:              len(enabledRateLimitPolicies(rateLimitPolicies)) > 0 && httpEnabled,
+		RateLimitBanEnabled:           hasEnabledRateLimitBanPolicy(rateLimitPolicies) && httpEnabled,
+		RateLimitConfig:               renderRateLimitConfig(rateLimitPolicies, httpEnabled),
 		DefaultClientKeepaliveTimeout: fmt.Sprintf("%ds", domain.DefaultClientKeepaliveTimeoutSeconds),
 		ClientKeepaliveRequests:       defaultClientKeepaliveRequests,
 		UpstreamConnectTimeout:        defaultUpstreamConnectTimeout,
@@ -1198,6 +1326,26 @@ func enabledSecurityPolicies(policies []domain.SecurityPolicy) []domain.Security
 	return result
 }
 
+func enabledLegacySecurityPolicies(policies []domain.SecurityPolicy) []domain.SecurityPolicy {
+	result := make([]domain.SecurityPolicy, 0, len(policies))
+	for _, policy := range policies {
+		if !policy.Enabled {
+			continue
+		}
+		legacy, ok := domain.LegacySecurityPolicy(policy)
+		if ok {
+			result = append(result, legacy)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Priority != result[j].Priority {
+			return result[i].Priority < result[j].Priority
+		}
+		return result[i].ID < result[j].ID
+	})
+	return result
+}
+
 func renderSecurityConfig(policies []domain.SecurityPolicy, httpEnabled bool) string {
 	if policies == nil {
 		return ""
@@ -1205,7 +1353,7 @@ func renderSecurityConfig(policies []domain.SecurityPolicy, httpEnabled bool) st
 	var result strings.Builder
 	result.WriteString(SecurityRevisionMarker(policies))
 	result.WriteByte('\n')
-	policies = enabledSecurityPolicies(policies)
+	policies = enabledLegacySecurityPolicies(policies)
 	if len(policies) == 0 || !httpEnabled {
 		return result.String()
 	}
@@ -1342,6 +1490,10 @@ log_format cdn_rate_limit_ban_json escape=json '{"timestamp":"$time_iso8601","po
     end
 
     local function access()
+		local security = package.loaded.simple_cdn_security
+		if security ~= nil and security.access() then
+			return
+		end
         if ngx.is_subrequest then
             return
         end
@@ -1393,18 +1545,28 @@ func SecurityRevisionMarker(policies []domain.SecurityPolicy) string {
 		ID                 string
 		Name               string
 		Enabled            bool
+		SiteIDs            []string
+		Conditions         []domain.SecurityCondition
 		Pattern            string
 		Action             domain.SecurityPolicyAction
 		BanDurationSeconds int
+		ResponseStatus     int
 		Priority           int
 	}
 	ordered := append([]domain.SecurityPolicy(nil), policies...)
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].ID < ordered[j].ID })
 	revision := make([]revisionPolicy, 0, len(ordered))
 	for _, policy := range ordered {
+		if normalized, err := domain.NormalizeSecurityPolicy(policy); err == nil {
+			normalized.ID = policy.ID
+			normalized.Enabled = policy.Enabled
+			policy = normalized
+		}
 		revision = append(revision, revisionPolicy{
-			ID: policy.ID, Name: policy.Name, Enabled: policy.Enabled, Pattern: policy.Pattern,
-			Action: policy.Action, BanDurationSeconds: policy.BanDurationSeconds, Priority: policy.Priority,
+			ID: policy.ID, Name: policy.Name, Enabled: policy.Enabled,
+			SiteIDs: append([]string(nil), policy.SiteIDs...), Conditions: append([]domain.SecurityCondition(nil), policy.Conditions...),
+			Pattern: policy.Pattern, Action: policy.Action, BanDurationSeconds: policy.BanDurationSeconds,
+			ResponseStatus: policy.ResponseStatus, Priority: policy.Priority,
 		})
 	}
 	encoded, _ := json.Marshal(revision)

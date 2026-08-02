@@ -575,6 +575,8 @@ install -d -m 0750 "$edge_root/config" "$edge_root/config/nginx" "$edge_root/dat
 install -d -m 0700 "$edge_root/config/certs"
 install -d -m 0750 "$edge_root/cache"
 chown www-data:www-data "$edge_root/cache"
+install -d -m 0755 "$edge_root/static" "$edge_root/static/objects"
+chown root:root "$edge_root/static" "$edge_root/static/objects"
 
 poll_seconds=30
 if ((legacy_layout == 1)); then
@@ -585,6 +587,10 @@ if ((legacy_layout == 1)); then
 elif [[ "$layout_before" != "none" ]]; then
   if value=$(read_environment_value "$edge_root/config/edge.env" EDGE_POLL_SECONDS) && [[ "$value" =~ ^[0-9]+$ ]] && ((value >= 5 && value <= 300)); then poll_seconds="$value"; fi
 fi
+# Nginx only serves content-addressed objects. Keep the directory and existing
+# files outside the worker's write boundary; the root-owned agent still writes
+# new objects through its temporary-file-and-rename path.
+find "$edge_root/static/objects" -maxdepth 1 -type f -exec chown root:root {} + -exec chmod 0644 {} +
 
 if ((legacy_layout == 1)) && [[ -f "$(root_path /etc/nginx/conf.d/cdn-platform.conf)" ]]; then
   sed \
@@ -660,7 +666,7 @@ systemctl enable nginx.service
 systemctl start nginx.service
 systemctl is-active --quiet nginx.service
 
-edge_capabilities="tcp_stream_v1,edge_rate_limit_v1,nginx_capacity_v1,nginx_bundle_v1"
+edge_capabilities="tcp_stream_v1,edge_rate_limit_v1,waf_chain_v1,pow_challenge_v1,static_assets_v1,nginx_capacity_v1,nginx_bundle_v1"
 nginx_version_output=$("$nginx_binary" -V 2>&1)
 if grep -Fq -- '--with-http_v3_module' <<<"$nginx_version_output"; then edge_capabilities+=",http3_v1"; fi
 cat >"$edge_root/config/edge.env" <<EOF
@@ -677,6 +683,7 @@ NGINX_PID_PATH=/opt/cdn-edge/nginx/run/nginx.pid
 NGINX_STATUS_SOCKET_PATH=/opt/cdn-edge/nginx/run/status.sock
 NGINX_VERSION_PATH=/opt/cdn-edge/nginx/VERSION
 NGINX_SHA256_PATH=/opt/cdn-edge/nginx/.bundle-sha256
+EDGE_STATIC_ASSET_DIR=/opt/cdn-edge/static/objects
 EDGE_CERT_DIR=/opt/cdn-edge/config/certs
 EDGE_ACCESS_LOG=/opt/cdn-edge/logs/access.json
 EDGE_SECURITY_LOG=/opt/cdn-edge/logs/security.json

@@ -58,6 +58,11 @@ func TestNodeStateNginxFragmentsRoundTrip(t *testing.T) {
 			ConfigPath:           "/opt/cdn-edge/config/nginx/origin-pools/0123456789abcdef01234567.conf",
 			KeepaliveConnections: 32, References: []domain.OriginPoolReference{{SiteID: "site-a", Role: "primary"}},
 		}},
+		StaticAssets: []domain.StaticAssetReference{{
+			AssetID: "asset-a", BindingID: "binding-a", SiteID: "site-a", URLPath: "/status.txt",
+			SHA256: strings.Repeat("a", 64), SizeBytes: 6, ContentType: "text/plain",
+			CacheControl: domain.StaticAssetCacheHour,
+		}},
 	}
 	if err := database.SaveNodeState(node.ID, state, nil); err != nil {
 		t.Fatal(err)
@@ -70,7 +75,9 @@ func TestNodeStateNginxFragmentsRoundTrip(t *testing.T) {
 		loaded.NginxEventsConfig != "worker_connections 4096;" || loaded.CacheMaxBytes != 9<<30 ||
 		len(loaded.NginxFragments.HTTPSites) != 1 || loaded.NginxFragments.StreamSites[0].Content != "stream site" ||
 		len(loaded.PublicUDPPorts) != 1 || loaded.PublicUDPPorts[0] != 443 || len(loaded.OriginPools) != 1 ||
-		loaded.OriginPools[0].KeepaliveConnections != 32 || loaded.OriginPools[0].References[0].SiteID != "site-a" {
+		loaded.OriginPools[0].KeepaliveConnections != 32 || loaded.OriginPools[0].References[0].SiteID != "site-a" ||
+		len(loaded.StaticAssets) != 1 || loaded.StaticAssets[0].URLPath != "/status.txt" ||
+		loaded.StaticAssets[0].CacheControl != domain.StaticAssetCacheHour {
 		t.Fatalf("stored Nginx fragments = %#v", loaded.NginxFragments)
 	}
 }

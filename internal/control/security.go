@@ -1,6 +1,7 @@
 package control
 
 import (
+	"crypto/rand"
 	"errors"
 	"net/http"
 	"slices"
@@ -20,6 +21,9 @@ type securityCoverageNode struct {
 	Configured          bool              `json:"configured"`
 	RateLimitCapable    bool              `json:"rate_limit_capable"`
 	RateLimitConfigured bool              `json:"rate_limit_configured"`
+	WAFChainCapable     bool              `json:"waf_chain_capable"`
+	POWCapable          bool              `json:"pow_capable"`
+	POWConfigured       bool              `json:"pow_configured"`
 	DesiredVersion      int64             `json:"desired_version"`
 	AppliedVersion      int64             `json:"applied_version"`
 	LastError           string            `json:"last_error,omitempty"`
@@ -27,7 +31,9 @@ type securityCoverageNode struct {
 
 type securityOverviewResponse struct {
 	Policies          []domain.SecurityPolicy  `json:"policies"`
+	POWPolicies       []domain.POWPolicy       `json:"pow_policies"`
 	RateLimitPolicies []domain.RateLimitPolicy `json:"rate_limit_policies"`
+	Sites             []securitySiteOption     `json:"sites"`
 	Bans              []domain.SecurityBan     `json:"bans"`
 	ActiveBanCount    int                      `json:"active_ban_count"`
 	Events            []domain.SecurityEvent   `json:"events"`
@@ -35,13 +41,39 @@ type securityOverviewResponse struct {
 	DeploymentError   string                   `json:"deployment_error,omitempty"`
 }
 
+type securitySiteOption struct {
+	ID       string   `json:"id"`
+	Name     string   `json:"name"`
+	Domains  []string `json:"domains"`
+	Enabled  bool     `json:"enabled"`
+	Deleting bool     `json:"deleting"`
+}
+
 type securityPolicyRequest struct {
 	Name               string                      `json:"name"`
 	Enabled            bool                        `json:"enabled"`
+	SiteIDs            []string                    `json:"site_ids"`
+	Conditions         []domain.SecurityCondition  `json:"conditions"`
 	Pattern            string                      `json:"pattern"`
 	Action             domain.SecurityPolicyAction `json:"action"`
 	BanDurationSeconds int                         `json:"ban_duration_seconds"`
+	ResponseStatus     int                         `json:"response_status"`
 	Priority           int                         `json:"priority"`
+}
+
+type securityPolicyMoveRequest struct {
+	Direction string `json:"direction"`
+}
+
+type powPolicyRequest struct {
+	Name                string   `json:"name"`
+	Enabled             bool     `json:"enabled"`
+	SiteIDs             []string `json:"site_ids"`
+	PathPattern         string   `json:"path_pattern"`
+	DifficultyBits      int      `json:"difficulty_bits"`
+	ChallengeTTLSeconds int      `json:"challenge_ttl_seconds"`
+	PassTTLSeconds      int      `json:"pass_ttl_seconds"`
+	Priority            int      `json:"priority"`
 }
 
 type rateLimitPolicyRequest struct {
@@ -57,6 +89,10 @@ type rateLimitPolicyRequest struct {
 
 func (s *Server) securityOverview(deploymentErr error) (securityOverviewResponse, error) {
 	policies, err := s.Store.ListSecurityPolicies()
+	if err != nil {
+		return securityOverviewResponse{}, err
+	}
+	powPolicies, err := s.Store.ListPOWPolicies()
 	if err != nil {
 		return securityOverviewResponse{}, err
 	}
@@ -76,6 +112,19 @@ func (s *Server) securityOverview(deploymentErr error) (securityOverviewResponse
 	if err != nil {
 		return securityOverviewResponse{}, err
 	}
+	sites, err := s.Store.ListSites()
+	if err != nil {
+		return securityOverviewResponse{}, err
+	}
+	siteOptions := make([]securitySiteOption, 0, len(sites))
+	for _, site := range sites {
+		if site.TCPOnly || site.Deleting {
+			continue
+		}
+		siteOptions = append(siteOptions, securitySiteOption{
+			ID: site.ID, Name: site.Name, Domains: site.Domains, Enabled: site.Enabled, Deleting: site.Deleting,
+		})
+	}
 	nodes, err := s.Store.ListNodes()
 	if err != nil {
 		return securityOverviewResponse{}, err
@@ -86,9 +135,17 @@ func (s *Server) securityOverview(deploymentErr error) (securityOverviewResponse
 		if err != nil {
 			return securityOverviewResponse{}, err
 		}
-		configured, rateLimitConfigured := false, false
+		configured, powConfigured, rateLimitConfigured := false, false, false
 		if nodeState, _, stateErr := s.Store.NodeState(node.ID); stateErr == nil {
-			configured = nginx.HasSecurityRevision(nodeState.NginxConfig, policies)
+			nodeSecurityPolicies := securityPoliciesForCapabilities(policies, node.Capabilities)
+			configured = nginx.HasSecurityRevision(nodeState.NginxConfig, nodeSecurityPolicies)
+			if slices.Contains(node.Capabilities, domain.EdgeCapabilityWAFChain) {
+				configured = configured && strings.Contains(nodeState.NginxConfig, nginx.WAFRuntimeMarker)
+			}
+			nodePOWPolicies := powPoliciesForCoverage(powPolicies, sites, node.ID, node.Capabilities)
+			powConfigured = slices.Contains(node.Capabilities, domain.EdgeCapabilityPOWChallenge) &&
+				strings.Contains(nodeState.NginxConfig, nginx.POWRuntimeMarker) &&
+				nginx.HasPOWRevision(nodeState.NginxConfig, nodePOWPolicies)
 			nodeRateLimitPolicies := rateLimitPoliciesForCapabilities(rateLimitPolicies, node.Capabilities)
 			rateLimitConfigured = nginx.HasRateLimitRevision(nodeState.NginxConfig, nodeRateLimitPolicies)
 		} else if !errors.Is(stateErr, store.ErrNotFound) {
@@ -100,17 +157,46 @@ func (s *Server) securityOverview(deploymentErr error) (securityOverviewResponse
 			Configured:          configured,
 			RateLimitCapable:    slices.Contains(node.Capabilities, domain.EdgeCapabilityRateLimit),
 			RateLimitConfigured: rateLimitConfigured,
+			WAFChainCapable:     slices.Contains(node.Capabilities, domain.EdgeCapabilityWAFChain),
+			POWCapable:          slices.Contains(node.Capabilities, domain.EdgeCapabilityPOWChallenge),
+			POWConfigured:       powConfigured,
 			DesiredVersion:      desiredVersion, AppliedVersion: node.AppliedVersion, LastError: node.LastError,
 		})
 	}
 	result := securityOverviewResponse{
-		Policies: policies, RateLimitPolicies: rateLimitPolicies, Bans: bans,
-		ActiveBanCount: activeBanCount, Events: events, Nodes: coverage,
+		Policies: policies, POWPolicies: powPolicies, RateLimitPolicies: rateLimitPolicies, Bans: bans,
+		Sites: siteOptions, ActiveBanCount: activeBanCount, Events: events, Nodes: coverage,
 	}
 	if deploymentErr != nil {
 		result.DeploymentError = deploymentErr.Error()
 	}
 	return result, nil
+}
+
+func powPoliciesForCoverage(policies []domain.POWPolicy, sites []domain.Site, nodeID string, capabilities []string) []domain.POWPolicy {
+	if !slices.Contains(capabilities, domain.EdgeCapabilityWAFChain) ||
+		!slices.Contains(capabilities, domain.EdgeCapabilityPOWChallenge) {
+		return nil
+	}
+	siteIDs := make(map[string]struct{})
+	for _, site := range sites {
+		if site.Enabled && !site.TCPOnly && siteHasNode(site, nodeID) {
+			siteIDs[site.ID] = struct{}{}
+		}
+	}
+	result := make([]domain.POWPolicy, 0, len(policies))
+	for _, policy := range policies {
+		if !policy.Enabled {
+			continue
+		}
+		for _, siteID := range policy.SiteIDs {
+			if _, found := siteIDs[siteID]; found {
+				result = append(result, policy)
+				break
+			}
+		}
+	}
+	return result
 }
 
 func (s *Server) getSecurityOverview(response http.ResponseWriter, request *http.Request) {
@@ -124,8 +210,17 @@ func (s *Server) getSecurityOverview(response http.ResponseWriter, request *http
 
 func securityPolicyFromRequest(input securityPolicyRequest) domain.SecurityPolicy {
 	return domain.SecurityPolicy{
-		Name: input.Name, Enabled: input.Enabled, Pattern: input.Pattern, Action: input.Action,
-		BanDurationSeconds: input.BanDurationSeconds, Priority: input.Priority,
+		Name: input.Name, Enabled: input.Enabled, SiteIDs: input.SiteIDs, Conditions: input.Conditions,
+		Pattern: input.Pattern, Action: input.Action, BanDurationSeconds: input.BanDurationSeconds,
+		ResponseStatus: input.ResponseStatus, Priority: input.Priority,
+	}
+}
+
+func powPolicyFromRequest(input powPolicyRequest) domain.POWPolicy {
+	return domain.POWPolicy{
+		Name: input.Name, Enabled: input.Enabled, SiteIDs: input.SiteIDs, PathPattern: input.PathPattern,
+		DifficultyBits: input.DifficultyBits, ChallengeTTLSeconds: input.ChallengeTTLSeconds,
+		PassTTLSeconds: input.PassTTLSeconds, Priority: input.Priority,
 	}
 }
 
@@ -196,6 +291,104 @@ func (s *Server) deleteSecurityPolicy(response http.ResponseWriter, request *htt
 	}
 	deploymentErr := s.Publisher.PublishAll()
 	s.audit(request, adminID(request.Context()), "delete", "security_policy", id, "")
+	result, err := s.securityOverview(deploymentErr)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
+}
+
+func (s *Server) moveSecurityPolicy(response http.ResponseWriter, request *http.Request) {
+	var input securityPolicyMoveRequest
+	if !readJSON(response, request, &input) {
+		return
+	}
+	id := request.PathValue("id")
+	if err := s.Store.MoveSecurityPolicy(id, input.Direction); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeStoreError(response, err)
+		} else {
+			writeError(response, http.StatusBadRequest, err)
+		}
+		return
+	}
+	deploymentErr := s.Publisher.PublishAll()
+	s.audit(request, adminID(request.Context()), "move", "security_policy", id, strings.ToLower(strings.TrimSpace(input.Direction)))
+	result, err := s.securityOverview(deploymentErr)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
+}
+
+func (s *Server) createPOWPolicy(response http.ResponseWriter, request *http.Request) {
+	var input powPolicyRequest
+	if !readJSON(response, request, &input) {
+		return
+	}
+	if s.Cipher == nil {
+		writeError(response, http.StatusServiceUnavailable, errors.New("proof-of-work encryption is not configured"))
+		return
+	}
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		writeError(response, http.StatusInternalServerError, err)
+		return
+	}
+	ciphertext, err := s.Cipher.Encrypt(secret)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, err)
+		return
+	}
+	policy, err := s.Store.CreatePOWPolicy(powPolicyFromRequest(input), ciphertext)
+	if err != nil {
+		writeError(response, http.StatusBadRequest, err)
+		return
+	}
+	deploymentErr := s.Publisher.PublishAll()
+	s.audit(request, adminID(request.Context()), "create", "pow_policy", policy.ID, policy.Name)
+	result, err := s.securityOverview(deploymentErr)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(response, http.StatusCreated, result)
+}
+
+func (s *Server) updatePOWPolicy(response http.ResponseWriter, request *http.Request) {
+	var input powPolicyRequest
+	if !readJSON(response, request, &input) {
+		return
+	}
+	policy, err := s.Store.UpdatePOWPolicy(request.PathValue("id"), powPolicyFromRequest(input))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeStoreError(response, err)
+		} else {
+			writeError(response, http.StatusBadRequest, err)
+		}
+		return
+	}
+	deploymentErr := s.Publisher.PublishAll()
+	s.audit(request, adminID(request.Context()), "update", "pow_policy", policy.ID, policy.Name)
+	result, err := s.securityOverview(deploymentErr)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
+}
+
+func (s *Server) deletePOWPolicy(response http.ResponseWriter, request *http.Request) {
+	id := request.PathValue("id")
+	if err := s.Store.DeletePOWPolicy(id); err != nil {
+		writeStoreError(response, err)
+		return
+	}
+	deploymentErr := s.Publisher.PublishAll()
+	s.audit(request, adminID(request.Context()), "delete", "pow_policy", id, "")
 	result, err := s.securityOverview(deploymentErr)
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, err)

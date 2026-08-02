@@ -3,6 +3,7 @@ package control
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -255,6 +256,14 @@ func (p Publisher) renderNodeStateUpdates(materials []publicationMaterial, affec
 	if err != nil {
 		return nil, nil, err
 	}
+	powPolicyMaterials, err := p.Store.ListEnabledPOWPolicyMaterials()
+	if err != nil {
+		return nil, nil, err
+	}
+	staticAssetReferences, err := p.Store.ListStaticAssetReferences()
+	if err != nil {
+		return nil, nil, err
+	}
 	rateLimitPolicies, err := p.Store.ListRateLimitPolicies()
 	if err != nil {
 		return nil, nil, err
@@ -305,11 +314,16 @@ func (p Publisher) renderNodeStateUpdates(materials []publicationMaterial, affec
 		if sitesRequireOriginHTTP2(nodeSites) && !originHTTP2Capable {
 			return nil, nil, fmt.Errorf("node %s must be upgraded before publishing HTTP/2 origin connections", node.Name)
 		}
-		var nodeSecurityPolicies []domain.SecurityPolicy
-		if slices.Contains(node.Capabilities, domain.EdgeCapabilitySecurity) {
-			nodeSecurityPolicies = securityPolicies
+		nodeSecurityPolicies := securityPoliciesForCapabilities(securityPolicies, node.Capabilities)
+		nodePOWPolicies, err := p.powPoliciesForNode(powPolicyMaterials, nodeSites, node.Capabilities)
+		if err != nil {
+			return nil, nil, fmt.Errorf("node %s proof-of-work policies: %w", node.Name, err)
 		}
 		nodeRateLimitPolicies := rateLimitPoliciesForCapabilities(rateLimitPolicies, node.Capabilities)
+		nodeStaticAssets, err := staticAssetsForNode(staticAssetReferences, nodeSites, node.Capabilities)
+		if err != nil {
+			return nil, nil, fmt.Errorf("node %s static assets: %w", node.Name, err)
+		}
 		http3Capable := slices.Contains(node.Capabilities, domain.EdgeCapabilityHTTP3)
 		managedOriginPools := slices.Contains(node.Capabilities, domain.EdgeCapabilityOriginConnection)
 		cacheSizeGB, err := domain.EffectiveNodeCacheMaxSizeGB(node, settings.CacheDefaultSizeGB)
@@ -322,6 +336,10 @@ func (p Publisher) renderNodeStateUpdates(materials []publicationMaterial, affec
 			ManagedOriginPools:     managedOriginPools,
 			OriginHTTP2Capable:     originHTTP2Capable,
 			NginxWorkerConnections: node.NginxCapacity.WorkerConnections,
+			WAFChainCapable:        slices.Contains(node.Capabilities, domain.EdgeCapabilityWAFChain),
+			POWCapable:             slices.Contains(node.Capabilities, domain.EdgeCapabilityPOWChallenge),
+			POWPolicies:            nodePOWPolicies,
+			StaticAssets:           nodeStaticAssets,
 		})
 		if err != nil {
 			return nil, nil, err
@@ -345,7 +363,7 @@ func (p Publisher) renderNodeStateUpdates(materials []publicationMaterial, affec
 		}
 		version := int64(1)
 		if stateErr == nil {
-			if p.nodeStateMatches(previous, previousCertificates, config, streamConfig, mainConfig, eventsConfig, fragments, ports, udpPorts, originPools, cacheMaxBytes, certificates) {
+			if p.nodeStateMatches(previous, previousCertificates, config, streamConfig, mainConfig, eventsConfig, fragments, ports, udpPorts, originPools, nodeStaticAssets, cacheMaxBytes, certificates) {
 				continue
 			}
 			version = previous.Version + 1
@@ -354,7 +372,7 @@ func (p Publisher) renderNodeStateUpdates(materials []publicationMaterial, affec
 			Version: version, NginxConfig: config, NginxStreamConfig: streamConfig,
 			NginxMainConfig: mainConfig, NginxEventsConfig: eventsConfig, NginxFragments: fragments,
 			PublicPorts: ports, PublicUDPPorts: udpPorts, OriginPools: originPools,
-			CacheMaxBytes: cacheMaxBytes, Certificates: certificates,
+			StaticAssets: nodeStaticAssets, CacheMaxBytes: cacheMaxBytes, Certificates: certificates,
 		}
 		serialized, err := json.Marshal(state.Certificates)
 		if err != nil {
@@ -370,6 +388,86 @@ func (p Publisher) renderNodeStateUpdates(materials []publicationMaterial, affec
 		}
 	}
 	return updates, targets, nil
+}
+
+func securityPoliciesForCapabilities(policies []domain.SecurityPolicy, capabilities []string) []domain.SecurityPolicy {
+	if slices.Contains(capabilities, domain.EdgeCapabilityWAFChain) {
+		return policies
+	}
+	if !slices.Contains(capabilities, domain.EdgeCapabilitySecurity) {
+		return nil
+	}
+	result := make([]domain.SecurityPolicy, 0, len(policies))
+	for _, policy := range policies {
+		if legacy, ok := domain.LegacySecurityPolicy(policy); ok {
+			result = append(result, legacy)
+		}
+	}
+	return result
+}
+
+func (p Publisher) powPoliciesForNode(materials []store.POWPolicyMaterial, sites []domain.Site, capabilities []string) ([]domain.POWPolicyRuntime, error) {
+	if !slices.Contains(capabilities, domain.EdgeCapabilityWAFChain) ||
+		!slices.Contains(capabilities, domain.EdgeCapabilityPOWChallenge) {
+		return nil, nil
+	}
+	siteIDs := make(map[string]struct{}, len(sites))
+	for _, site := range sites {
+		if site.Enabled && !site.TCPOnly {
+			siteIDs[site.ID] = struct{}{}
+		}
+	}
+	result := make([]domain.POWPolicyRuntime, 0, len(materials))
+	for _, material := range materials {
+		relevant := false
+		for _, siteID := range material.Policy.SiteIDs {
+			if _, found := siteIDs[siteID]; found {
+				relevant = true
+				break
+			}
+		}
+		if !relevant {
+			continue
+		}
+		if p.Cipher == nil {
+			return nil, errors.New("publisher encryption is not configured")
+		}
+		secret, err := p.Cipher.Decrypt(material.SecretCiphertext)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt policy %s secret: %w", material.Policy.ID, err)
+		}
+		if len(secret) != 32 {
+			return nil, fmt.Errorf("policy %s secret must be 32 bytes", material.Policy.ID)
+		}
+		result = append(result, domain.POWPolicyRuntime{
+			Policy: material.Policy, Secret: base64.RawStdEncoding.EncodeToString(secret),
+		})
+	}
+	return result, nil
+}
+
+func staticAssetsForNode(references []domain.StaticAssetReference, sites []domain.Site, capabilities []string) ([]domain.StaticAssetReference, error) {
+	if !slices.Contains(capabilities, domain.EdgeCapabilityStaticAssets) {
+		return nil, nil
+	}
+	siteIDs := make(map[string]struct{}, len(sites))
+	for _, site := range sites {
+		if site.Enabled && !site.TCPOnly {
+			siteIDs[site.ID] = struct{}{}
+		}
+	}
+	result := make([]domain.StaticAssetReference, 0)
+	for _, reference := range references {
+		if _, found := siteIDs[reference.SiteID]; !found {
+			continue
+		}
+		normalized, err := domain.NormalizeStaticAssetReference(reference)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, normalized)
+	}
+	return result, nil
 }
 
 func (p Publisher) wireGuardTunnels(materials []publicationMaterial) (map[string]domain.WireGuardTunnel, error) {
@@ -536,10 +634,10 @@ func (p Publisher) decryptPublicationMaterials(materials []publicationMaterial, 
 	return rendered, nil
 }
 
-func (p Publisher) nodeStateMatches(previous domain.DesiredState, encryptedCertificates []byte, config, streamConfig, mainConfig, eventsConfig string, fragments *domain.NginxConfigFragments, ports, udpPorts []int, originPools []domain.OriginPool, cacheMaxBytes int64, certificates map[string]domain.TLSBundle) bool {
+func (p Publisher) nodeStateMatches(previous domain.DesiredState, encryptedCertificates []byte, config, streamConfig, mainConfig, eventsConfig string, fragments *domain.NginxConfigFragments, ports, udpPorts []int, originPools []domain.OriginPool, staticAssets []domain.StaticAssetReference, cacheMaxBytes int64, certificates map[string]domain.TLSBundle) bool {
 	if previous.NginxConfig != config || previous.NginxStreamConfig != streamConfig || previous.NginxMainConfig != mainConfig || previous.NginxEventsConfig != eventsConfig ||
 		!nginxConfigFragmentsEqual(previous.NginxFragments, fragments) || !slices.Equal(previous.PublicPorts, ports) || !slices.Equal(previous.PublicUDPPorts, udpPorts) ||
-		!originPoolsEqual(previous.OriginPools, originPools) || previous.CacheMaxBytes != cacheMaxBytes {
+		!originPoolsEqual(previous.OriginPools, originPools) || !slices.Equal(previous.StaticAssets, staticAssets) || previous.CacheMaxBytes != cacheMaxBytes {
 		return false
 	}
 	previousBundles := make(map[string]domain.TLSBundle)

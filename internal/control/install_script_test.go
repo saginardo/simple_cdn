@@ -53,6 +53,7 @@ func TestInstallEdgeScriptCreatesManagedOptLayout(t *testing.T) {
 		"opt/cdn-edge/config/edge.env",
 		"opt/cdn-edge/config/nginx/cdn-platform.conf",
 		"opt/cdn-edge/config/nginx/quic-host.key",
+		"opt/cdn-edge/static/objects",
 		"opt/cdn-edge/systemd/nginx.service",
 		"opt/cdn-edge/systemd/cdn-edge-agent.service",
 		"opt/cdn-edge/systemd/cdn-edge-updater@.service",
@@ -68,6 +69,8 @@ func TestInstallEdgeScriptCreatesManagedOptLayout(t *testing.T) {
 		"opt/cdn-edge/nginx":                 0o755,
 		"opt/cdn-edge/nginx/conf/nginx.conf": 0o644,
 		"opt/cdn-edge/nginx/sbin/nginx":      0o755,
+		"opt/cdn-edge/static":                0o755,
+		"opt/cdn-edge/static/objects":        0o755,
 	} {
 		info, err := os.Stat(filepath.Join(harness.root, path))
 		if err != nil || info.Mode().Perm() != wanted {
@@ -94,7 +97,8 @@ func TestInstallEdgeScriptCreatesManagedOptLayout(t *testing.T) {
 		"NGINX_STATUS_SOCKET_PATH=/opt/cdn-edge/nginx/run/status.sock",
 		"NGINX_VERSION_PATH=/opt/cdn-edge/nginx/VERSION",
 		"NGINX_SHA256_PATH=/opt/cdn-edge/nginx/.bundle-sha256",
-		"EDGE_CAPABILITIES=tcp_stream_v1,edge_rate_limit_v1,nginx_capacity_v1,nginx_bundle_v1",
+		"EDGE_STATIC_ASSET_DIR=/opt/cdn-edge/static/objects",
+		"EDGE_CAPABILITIES=tcp_stream_v1,edge_rate_limit_v1,waf_chain_v1,pow_challenge_v1,static_assets_v1,nginx_capacity_v1,nginx_bundle_v1",
 	} {
 		if !strings.Contains(environment, expected) {
 			t.Fatalf("edge.env does not contain %q:\n%s", expected, environment)

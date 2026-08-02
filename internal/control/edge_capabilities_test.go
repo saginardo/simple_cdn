@@ -126,6 +126,46 @@ func TestOriginHTTP2StateRebuildsAfterCapabilityRemoval(t *testing.T) {
 	}
 }
 
+func TestStaticAssetStateRebuildsAfterCapabilityRemoval(t *testing.T) {
+	state := domain.DesiredState{
+		StaticAssets: []domain.StaticAssetReference{{
+			AssetID: "asset", BindingID: "binding", SiteID: "site", URLPath: "/app.js",
+			SHA256: strings.Repeat("a", 64), SizeBytes: 3, ContentType: "text/javascript",
+		}},
+	}
+	server := &Server{}
+	needsRebuild, err := server.staticAssetStateNeedsRebuild("node", state, nil)
+	if err != nil || !needsRebuild {
+		t.Fatalf("static asset state after capability removal = %v, err=%v; want rebuild", needsRebuild, err)
+	}
+	state.StaticAssets = nil
+	needsRebuild, err = server.staticAssetStateNeedsRebuild("node", state, nil)
+	if err != nil || needsRebuild {
+		t.Fatalf("empty static asset state after capability removal = %v, err=%v; want no rebuild", needsRebuild, err)
+	}
+}
+
+func TestSecurityRuntimeStateTracksWAFAndPOWCapabilities(t *testing.T) {
+	legacy := domain.DesiredState{NginxConfig: "server { listen 80; }"}
+	if securityRuntimeStateNeedsRebuild(legacy, nil) {
+		t.Fatal("legacy state requested a runtime security rebuild without capabilities")
+	}
+	waf := domain.DesiredState{NginxConfig: nginx.WAFRuntimeMarker}
+	if securityRuntimeStateNeedsRebuild(waf, []string{domain.EdgeCapabilityWAFChain}) {
+		t.Fatal("WAF runtime state requested a rebuild while WAF capability remained")
+	}
+	if !securityRuntimeStateNeedsRebuild(waf, []string{domain.EdgeCapabilityWAFChain, domain.EdgeCapabilityPOWChallenge}) {
+		t.Fatal("WAF-only state did not request a PoW capability rebuild")
+	}
+	pow := domain.DesiredState{NginxConfig: nginx.WAFRuntimeMarker + "\n" + nginx.POWRuntimeMarker}
+	if securityRuntimeStateNeedsRebuild(pow, []string{domain.EdgeCapabilityWAFChain, domain.EdgeCapabilityPOWChallenge}) {
+		t.Fatal("WAF/PoW runtime state requested an unnecessary rebuild")
+	}
+	if !securityRuntimeStateNeedsRebuild(pow, []string{domain.EdgeCapabilityWAFChain}) {
+		t.Fatal("PoW runtime state did not request a capability-removal rebuild")
+	}
+}
+
 func TestRequestTracingStateRebuildsOnlyForCapableHTTPNodes(t *testing.T) {
 	legacy := domain.DesiredState{NginxConfig: "location / { proxy_pass https://origin; }"}
 	capabilities := []string{domain.EdgeCapabilityRequestTracing}

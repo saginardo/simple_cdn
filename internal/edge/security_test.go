@@ -78,6 +78,20 @@ func TestDecodeRateLimitBanLog(t *testing.T) {
 	}
 }
 
+func TestDecodeRichWAFLog(t *testing.T) {
+	line := fmt.Sprintf(`{"timestamp":"%s","policy_id":"%s","action":"log","ban_seconds":0,"site_id":"site-a","client_ip":"2606:4700:4700::1111","host":"api.example.test","method":"GET","path":"/api/items","raw_uri":"/api/items?id=1","query":"id=1","user_agent":"Example Scanner","matched_field":"user_agent"}`,
+		time.Now().UTC().Format(time.RFC3339), "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+	event, err := decodeSecurityLog([]byte(line))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.SiteID != "site-a" || event.RawURI != "/api/items?id=1" || event.Query != "id=1" ||
+		event.UserAgent != "Example Scanner" || event.MatchedField != domain.SecurityFieldUserAgent ||
+		event.Action != domain.SecurityActionLog {
+		t.Fatalf("decoded rich WAF event = %#v", event)
+	}
+}
+
 func TestDecodeSecurityLogRejectsPrivateIPAndDuration(t *testing.T) {
 	base := time.Now().UTC().Format(time.RFC3339)
 	for _, line := range []string{

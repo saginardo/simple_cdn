@@ -22,10 +22,47 @@ func (s *Server) reconcileEdgeRuntimeCapabilities(nodeID string, capabilities []
 	if err != nil {
 		return err
 	}
-	if !http3StateNeedsRebuild(state, http3Wanted) && !originPoolStateNeedsRebuild(state, capabilities) && !originHTTP2StateNeedsRebuild(state, capabilities) && !requestTracingStateNeedsRebuild(state, capabilities) && !runtimeOptimizationStateNeedsRebuild(state) {
+	staticAssetsNeedRebuild, err := s.staticAssetStateNeedsRebuild(nodeID, state, capabilities)
+	if err != nil {
+		return err
+	}
+	if !http3StateNeedsRebuild(state, http3Wanted) && !originPoolStateNeedsRebuild(state, capabilities) && !originHTTP2StateNeedsRebuild(state, capabilities) && !requestTracingStateNeedsRebuild(state, capabilities) && !securityRuntimeStateNeedsRebuild(state, capabilities) && !staticAssetsNeedRebuild && !runtimeOptimizationStateNeedsRebuild(state) {
 		return nil
 	}
 	return s.Publisher.PublishNode(nodeID)
+}
+
+func (s *Server) staticAssetStateNeedsRebuild(nodeID string, state domain.DesiredState, capabilities []string) (bool, error) {
+	if !slices.Contains(capabilities, domain.EdgeCapabilityStaticAssets) {
+		return len(state.StaticAssets) != 0, nil
+	}
+	publications, err := s.Store.ListSitePublications()
+	if err != nil {
+		return false, err
+	}
+	sites := make([]domain.Site, 0)
+	for _, publication := range publications {
+		if siteHasNode(publication.Site, nodeID) {
+			sites = append(sites, publication.Site)
+		}
+	}
+	references, err := s.Store.ListStaticAssetReferences()
+	if err != nil {
+		return false, err
+	}
+	expected, err := staticAssetsForNode(references, sites, capabilities)
+	if err != nil {
+		return false, err
+	}
+	return !slices.Equal(state.StaticAssets, expected), nil
+}
+
+func securityRuntimeStateNeedsRebuild(state domain.DesiredState, capabilities []string) bool {
+	wafWanted := slices.Contains(capabilities, domain.EdgeCapabilityWAFChain)
+	powWanted := wafWanted && slices.Contains(capabilities, domain.EdgeCapabilityPOWChallenge)
+	wafConfigured := strings.Contains(state.NginxConfig, nginx.WAFRuntimeMarker)
+	powConfigured := strings.Contains(state.NginxConfig, nginx.POWRuntimeMarker)
+	return wafWanted != wafConfigured || powWanted != powConfigured
 }
 
 func requestTracingStateNeedsRebuild(state domain.DesiredState, capabilities []string) bool {

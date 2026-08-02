@@ -104,6 +104,85 @@ func TestWireGuardTransferRateMigrationAddsSampleColumns(t *testing.T) {
 	}
 }
 
+func TestWAFChainMigrationBackfillsLegacyPolicies(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err := database.db.Exec(`DELETE FROM security_policies WHERE id NOT IN (?, ?)`,
+		domain.DefaultSecurityPolicyID, domain.DefaultPHPSecurityPolicyID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`DROP TABLE pow_policies`); err != nil {
+		t.Fatal(err)
+	}
+	for _, column := range []string{"site_ids_json", "conditions_json", "response_status"} {
+		if _, err := database.db.Exec(`ALTER TABLE security_policies DROP COLUMN ` + column); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := database.db.Exec(`DELETE FROM schema_migrations WHERE version >= 27`); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, column := range []string{"site_ids_json", "conditions_json", "response_status"} {
+		found, err := columnExists(database.db, "security_policies", column)
+		if err != nil || !found {
+			t.Fatalf("%s column = %v, %v", column, found, err)
+		}
+	}
+	policies, err := database.ListSecurityPolicies()
+	if err != nil || len(policies) != 6 {
+		t.Fatalf("migrated security policies = %#v, err=%v", policies, err)
+	}
+	for _, policy := range policies {
+		if len(policy.Conditions) != 1 {
+			t.Fatalf("migrated policy has no condition: %#v", policy)
+		}
+	}
+	if _, err := database.ListPOWPolicies(); err != nil {
+		t.Fatalf("proof-of-work table was not recreated: %v", err)
+	}
+}
+
+func TestStaticAssetMigrationCreatesSchemaAndNodeStateColumn(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	for _, table := range []string{"static_asset_bindings", "static_assets"} {
+		if _, err := database.db.Exec(`DROP TABLE ` + table); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := database.db.Exec(`ALTER TABLE node_states DROP COLUMN static_assets_json`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`DELETE FROM schema_migrations WHERE version >= 28`); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{"static_assets", "static_asset_bindings"} {
+		var count int
+		if err := database.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("migration did not create %s", table)
+		}
+	}
+	found, err := columnExists(database.db, "node_states", "static_assets_json")
+	if err != nil || !found {
+		t.Fatalf("static asset state column = %v, %v", found, err)
+	}
+}
+
 func TestSiteHTTP3MigrationDefaultsExistingSitesOff(t *testing.T) {
 	database, err := Open(filepath.Join(t.TempDir(), "control.db"))
 	if err != nil {

@@ -63,7 +63,14 @@ func TestDefaultSecurityPolicyPatterns(t *testing.T) {
 }
 
 func TestDefaultSecurityPolicyIDsAndDurations(t *testing.T) {
-	for _, id := range []string{DefaultSecurityPolicyID, DefaultPHPSecurityPolicyID} {
+	for _, id := range []string{
+		DefaultSecurityPolicyID,
+		DefaultPHPSecurityPolicyID,
+		DefaultPathTraversalPolicyID,
+		DefaultSQLInjectionPolicyID,
+		DefaultXSSPolicyID,
+		DefaultScannerUAPolicyID,
+	} {
 		if !IsBuiltinSecurityPolicyID(id) {
 			t.Errorf("default policy ID %q was not recognized", id)
 		}
@@ -89,6 +96,9 @@ func TestNormalizeSecurityPolicy(t *testing.T) {
 	if err != nil || policy.Name != "sensitive files" {
 		t.Fatalf("normalized policy = %#v, err=%v", policy, err)
 	}
+	if policy.ResponseStatus != 403 || len(policy.Conditions) != 1 || policy.Pattern == "" {
+		t.Fatalf("legacy policy was not upgraded: %#v", policy)
+	}
 	if _, err := NormalizeSecurityPolicy(SecurityPolicy{
 		Name: "PHP probes", Enabled: true, Pattern: DefaultPHPSecurityPolicyPattern,
 		Action: SecurityActionBlock, Priority: 200,
@@ -111,6 +121,63 @@ func TestNormalizeSecurityPolicy(t *testing.T) {
 	}
 	if _, err := NormalizeSecurityPolicy(SecurityPolicy{Name: "safe", Pattern: `(?i)^/+wp-admin(?:/.*|$)`, Action: SecurityActionBlock, Priority: 1}); err != nil {
 		t.Fatalf("safe custom pattern was rejected: %v", err)
+	}
+}
+
+func TestNormalizeSecurityPolicyChain(t *testing.T) {
+	policy, err := NormalizeSecurityPolicy(SecurityPolicy{
+		Name:    "API scanners",
+		Enabled: true,
+		SiteIDs: []string{" site-b ", "site-a", "site-a"},
+		Conditions: []SecurityCondition{
+			{Field: SecurityFieldPath, Operator: SecurityOperatorPrefix, Value: "/v1/"},
+			{Field: SecurityFieldHeader, Operator: SecurityOperatorContains, HeaderName: "X-Scanner", Value: "yes"},
+			{Field: SecurityFieldClientIP, Operator: SecurityOperatorCIDR, Value: "192.0.2.9, 2001:db8::/32"},
+		},
+		Action: SecurityActionBlock, ResponseStatus: 404, Priority: 300,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(policy.SiteIDs, []string{"site-a", "site-b"}) || policy.Pattern != "" ||
+		policy.ResponseStatus != 404 || policy.Conditions[2].Value != "192.0.2.9/32,2001:db8::/32" {
+		t.Fatalf("normalized chain = %#v", policy)
+	}
+
+	invalid := []SecurityPolicy{
+		{Name: "missing", Action: SecurityActionBlock, Priority: 1},
+		{Name: "header", Conditions: []SecurityCondition{{Field: SecurityFieldHeader, Operator: SecurityOperatorEquals, HeaderName: "bad header", Value: "x"}}, Action: SecurityActionBlock, Priority: 1},
+		{Name: "cidr field", Conditions: []SecurityCondition{{Field: SecurityFieldPath, Operator: SecurityOperatorCIDR, Value: "192.0.2.0/24"}}, Action: SecurityActionBlock, Priority: 1},
+		{Name: "cidr value", Conditions: []SecurityCondition{{Field: SecurityFieldClientIP, Operator: SecurityOperatorCIDR, Value: "invalid"}}, Action: SecurityActionBlock, Priority: 1},
+		{Name: "status", Conditions: []SecurityCondition{{Field: SecurityFieldPath, Operator: SecurityOperatorEquals, Value: "/"}}, Action: SecurityActionBlock, ResponseStatus: 500, Priority: 1},
+	}
+	for _, candidate := range invalid {
+		if _, err := NormalizeSecurityPolicy(candidate); err == nil {
+			t.Fatalf("invalid policy was accepted: %#v", candidate)
+		}
+	}
+}
+
+func TestNormalizePOWPolicy(t *testing.T) {
+	policy, err := NormalizePOWPolicy(POWPolicy{
+		Name: " Browser check ", SiteIDs: []string{"site-b", "site-a", "site-a"}, Priority: 100,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy.Name != "Browser check" || !slices.Equal(policy.SiteIDs, []string{"site-a", "site-b"}) ||
+		policy.PathPattern != `^/` || policy.DifficultyBits != DefaultPOWDifficultyBits ||
+		policy.ChallengeTTLSeconds != DefaultPOWChallengeTTL || policy.PassTTLSeconds != DefaultPOWPassTTL {
+		t.Fatalf("normalized proof-of-work policy = %#v", policy)
+	}
+	for _, candidate := range []POWPolicy{
+		{Name: "no sites", Priority: 1},
+		{Name: "bad regex", SiteIDs: []string{"site"}, PathPattern: `(?=x)`, Priority: 1},
+		{Name: "too hard", SiteIDs: []string{"site"}, DifficultyBits: MaxPOWDifficultyBits + 1, Priority: 1},
+	} {
+		if _, err := NormalizePOWPolicy(candidate); err == nil {
+			t.Fatalf("invalid proof-of-work policy was accepted: %#v", candidate)
+		}
 	}
 }
 
