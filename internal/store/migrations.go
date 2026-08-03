@@ -45,6 +45,83 @@ var schemaMigrations = []schemaMigration{
 	{Version: 26, Name: "wireguard-transfer-rates", Apply: migrateWireGuardTransferRates},
 	{Version: 27, Name: "waf-chain-and-proof-of-work", Apply: migrateWAFChainAndProofOfWork},
 	{Version: 28, Name: "static-assets", Apply: migrateStaticAssets},
+	{Version: 29, Name: "passkey-authentication", Apply: migratePasskeyAuthentication},
+	{Version: 30, Name: "authentication-hardening", Apply: migrateAuthenticationHardening},
+}
+
+func migrateAuthenticationHardening(tx *sql.Tx) error {
+	for _, column := range []struct {
+		table      string
+		name       string
+		definition string
+	}{
+		{"admin_users", "last_totp_counter", "last_totp_counter INTEGER"},
+		{"sessions", "auth_method", "auth_method TEXT NOT NULL DEFAULT 'legacy'"},
+		{"sessions", "authenticator_id", "authenticator_id TEXT NOT NULL DEFAULT ''"},
+		{"sessions", "authenticated_at", "authenticated_at TEXT"},
+		{"sessions", "elevated_until", "elevated_until TEXT"},
+	} {
+		if err := addColumnIfMissing(tx, column.table, column.name, column.definition); err != nil {
+			return err
+		}
+	}
+	_, err := tx.Exec(`UPDATE sessions SET authenticated_at = created_at WHERE authenticated_at IS NULL;
+	CREATE TABLE IF NOT EXISTS authentication_attempts (
+		id TEXT PRIMARY KEY,
+		scope TEXT NOT NULL,
+		key_hash TEXT NOT NULL,
+		attempted_at TEXT NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_authentication_attempts_lookup
+		ON authentication_attempts(scope, key_hash, attempted_at);
+	CREATE INDEX IF NOT EXISTS idx_authentication_attempts_time
+		ON authentication_attempts(attempted_at);`)
+	if err != nil {
+		return fmt.Errorf("create hardened authentication schema: %w", err)
+	}
+	return nil
+}
+
+func migratePasskeyAuthentication(tx *sql.Tx) error {
+	if err := addColumnIfMissing(tx, "admin_users", "passkey_enabled", "passkey_enabled INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	_, err := tx.Exec(`CREATE TABLE IF NOT EXISTS webauthn_users (
+		rpid TEXT NOT NULL,
+		user_id TEXT NOT NULL REFERENCES admin_users(id) ON DELETE CASCADE,
+		user_handle BLOB NOT NULL,
+		created_at TEXT NOT NULL,
+		PRIMARY KEY(rpid, user_id),
+		UNIQUE(rpid, user_handle)
+	);
+	CREATE TABLE IF NOT EXISTS passkey_credentials (
+		rpid TEXT NOT NULL,
+		credential_id TEXT NOT NULL,
+		user_id TEXT NOT NULL,
+		name TEXT NOT NULL,
+		credential_ciphertext BLOB NOT NULL,
+		last_used_at TEXT,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL,
+		PRIMARY KEY(rpid, credential_id),
+		FOREIGN KEY(rpid, user_id) REFERENCES webauthn_users(rpid, user_id) ON DELETE CASCADE
+	);
+	CREATE TABLE IF NOT EXISTS webauthn_challenges (
+		token_hash TEXT PRIMARY KEY,
+		purpose TEXT NOT NULL,
+		user_id TEXT NOT NULL,
+		rpid TEXT NOT NULL,
+		label TEXT NOT NULL DEFAULT '',
+		session_json BLOB NOT NULL,
+		expires_at TEXT NOT NULL,
+		created_at TEXT NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_passkey_credentials_user ON passkey_credentials(rpid, user_id, created_at);
+	CREATE INDEX IF NOT EXISTS idx_webauthn_challenges_expires ON webauthn_challenges(expires_at);`)
+	if err != nil {
+		return fmt.Errorf("create passkey authentication schema: %w", err)
+	}
+	return nil
 }
 
 func migrateStaticAssets(tx *sql.Tx) error {

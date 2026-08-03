@@ -18,6 +18,7 @@ import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { toast } from "sonner";
 import { BrandMark } from "@/components/brand-mark";
 import { BackupRestore } from "@/features/settings/backup-restore";
+import { AuthenticationSettingsPanel } from "@/features/settings/authentication-settings";
 import {
   PageBody,
   PageError,
@@ -54,7 +55,7 @@ export function SettingsPage() {
   useI18n();
   const [section, setSection] = usePersistentEnum(
     "simple-cdn.settings.tab",
-    ["common", "network", "notifications", "backup"] as const,
+    ["common", "authentication", "network", "notifications", "backup"] as const,
     "common",
   );
   const query = useQuery({
@@ -88,14 +89,20 @@ export function SettingsPage() {
             onValueChange={(value) => setSection(value as typeof section)}
             className="space-y-5"
           >
-            <TabsList>
+            <TabsList className="max-w-full flex-wrap justify-start group-data-horizontal/tabs:h-auto">
               <TabsTrigger value="common">{t("通用")}</TabsTrigger>
+              <TabsTrigger value="authentication">
+                {t("登录与安全")}
+              </TabsTrigger>
               <TabsTrigger value="network">{t("网络与 DNS")}</TabsTrigger>
               <TabsTrigger value="notifications">{t("通知")}</TabsTrigger>
               <TabsTrigger value="backup">{t("备份与恢复")}</TabsTrigger>
             </TabsList>
             <TabsContent value="common">
               <BrandingForm settings={query.data} />
+            </TabsContent>
+            <TabsContent value="authentication">
+              <AuthenticationSettingsPanel />
             </TabsContent>
             <TabsContent value="network" className="grid gap-4 lg:grid-cols-2">
               <CacheForm

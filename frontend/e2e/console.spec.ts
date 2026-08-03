@@ -1118,6 +1118,15 @@ async function mockAPI(page: Page, overrides: Record<string, unknown> = {}) {
           environment_configured: false,
         },
       },
+      "/api/settings/authentication": {
+        totp_enabled: true,
+        recent_authentication: true,
+        passkey_available: true,
+        passkey_enabled: false,
+        passkey_operational: false,
+        rp_id: "127.0.0.1",
+        passkeys: [],
+      },
       "/api/backups/status": null,
       "/api/backups/snapshots": [],
       "/api/backups/restores/current": null,
@@ -1760,6 +1769,172 @@ test("site operations show current assignments instead of publish task targets",
   await page.screenshot({
     path: testInfo.outputPath("origin-allowlist-mobile.png"),
   });
+});
+
+test("authentication settings keep TOTP on and allow disabling passkeys", async ({
+  page,
+}, testInfo) => {
+  const errors = trackPageErrors(page);
+  const createdAt = new Date("2026-08-01T10:30:00Z").toISOString();
+  const enabledSettings = {
+    totp_enabled: true,
+    recent_authentication: true,
+    passkey_available: true,
+    passkey_enabled: true,
+    passkey_operational: true,
+    rp_id: "control.example.test",
+    passkeys: [
+      {
+        id: "credential-id",
+        rp_id: "control.example.test",
+        name: "Operations laptop",
+        current_rp: true,
+        created_at: createdAt,
+      },
+      {
+        id: "old-credential-id",
+        rp_id: "old-control.example.test",
+        name: "Old domain key",
+        current_rp: false,
+        created_at: createdAt,
+      },
+    ],
+  };
+  await mockAPI(page, {
+    "/api/settings/authentication": enabledSettings,
+    "/api/settings/authentication/totp/begin": {
+      totp_secret: "JBSWY3DPEHPK3PXP",
+      otpauth_url:
+        "otpauth://totp/simple_cdn%3Aadmin?issuer=simple_cdn&secret=JBSWY3DPEHPK3PXP",
+    },
+  });
+  let passkeyEnabledInput: boolean | undefined;
+  await page.route("**/api/settings/authentication/passkeys", async (route) => {
+    const input = route.request().postDataJSON() as { enabled: boolean };
+    passkeyEnabledInput = input.enabled;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ...enabledSettings,
+        passkey_enabled: input.enabled,
+        passkey_operational: input.enabled,
+      }),
+    });
+  });
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/#/settings");
+  await page.getByRole("tab", { name: "登录与安全" }).click();
+  const totpSwitch = page.getByRole("switch", { name: "TOTP 始终开启" });
+  const passkeySwitch = page.getByRole("switch", { name: "Passkey 登录" });
+  await expect(totpSwitch).toBeChecked();
+  await expect(totpSwitch).toBeDisabled();
+  await expect(passkeySwitch).toBeChecked();
+  await expect(page.getByText("Operations laptop")).toBeVisible();
+  await expect(page.getByText("old-control.example.test")).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("authentication-settings-desktop.png"),
+    fullPage: true,
+  });
+
+  await passkeySwitch.click();
+  await expect.poll(() => passkeyEnabledInput).toBe(false);
+  await expect(passkeySwitch).not.toBeChecked();
+  await expect(totpSwitch).toBeChecked();
+  await expect(page.getByText("Passkey 登录已关闭")).toBeVisible();
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth + 1,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: testInfo.outputPath("authentication-settings-mobile.png"),
+    fullPage: true,
+  });
+
+  await page.getByRole("button", { name: "更换 TOTP" }).click();
+  const dialog = page.getByRole("dialog", { name: "设置新的 TOTP" });
+  await expect(dialog.getByText("JBSWY3DPEHPK3PXP")).toBeVisible();
+  await expect(dialog.getByLabel("新 6 位验证码")).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth + 1,
+    ),
+  ).toBe(true);
+  expect(errors).toEqual([]);
+  await page.screenshot({
+    path: testInfo.outputPath("totp-replacement-mobile.png"),
+    fullPage: true,
+  });
+});
+
+test("authentication changes require recent password and TOTP verification", async ({
+  page,
+}) => {
+  const errors = trackPageErrors(page);
+  let recentlyAuthenticated = false;
+  let reauthenticationInput:
+    { password: string; totp: string; recovery_code: string } | undefined;
+  const authenticationSettings = () => ({
+    totp_enabled: true,
+    recent_authentication: recentlyAuthenticated,
+    passkey_available: true,
+    passkey_enabled: false,
+    passkey_operational: false,
+    rp_id: "control.example.test",
+    passkeys: [],
+  });
+  await mockAPI(page);
+  await page.route("**/api/settings/authentication", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(authenticationSettings()),
+    });
+  });
+  await page.route(
+    "**/api/settings/authentication/reauthenticate",
+    async (route) => {
+      reauthenticationInput = route.request().postDataJSON() as {
+        password: string;
+        totp: string;
+        recovery_code: string;
+      };
+      recentlyAuthenticated = true;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: true,
+          elevated_until: new Date(Date.now() + 5 * 60_000).toISOString(),
+        }),
+      });
+    },
+  );
+
+  await page.goto("/#/settings");
+  await page.getByRole("tab", { name: "登录与安全" }).click();
+  await expect(page.getByText("安全设置已锁定")).toBeVisible();
+  await expect(page.getByRole("button", { name: "更换 TOTP" })).toBeDisabled();
+  await page.getByRole("button", { name: "重新验证" }).click();
+  const dialog = page.getByRole("dialog", { name: "重新验证管理员身份" });
+  await dialog.getByLabel("管理员密码").fill("correct horse battery staple");
+  await dialog.getByLabel("6 位验证码").fill("123456");
+  await dialog.getByRole("button", { name: "重新验证" }).click();
+
+  await expect
+    .poll(() => reauthenticationInput)
+    .toEqual({
+      password: "correct horse battery staple",
+      totp: "123456",
+      recovery_code: "",
+    });
+  await expect(page.getByText("安全设置已锁定")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "更换 TOTP" })).toBeEnabled();
+  expect(errors).toEqual([]);
 });
 
 test("SMTP test shows progress and keeps timeout feedback visible", async ({
@@ -3571,10 +3746,75 @@ test("login screen renders without an authenticated session", async ({
   await expect(page.getByLabel("Administrator password")).toBeVisible();
 });
 
+test("failed passkey login falls back to TOTP", async ({ page }, testInfo) => {
+  const errors = trackPageErrors(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.route("**/api/session", (route) =>
+    route.fulfill({
+      status: 401,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "authentication required" }),
+    }),
+  );
+  await page.route("**/api/setup/status", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ initialized: true, passkey_enabled: true }),
+    }),
+  );
+  await page.route("**/api/auth/passkey/begin", (route) =>
+    route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "Passkey is temporarily unavailable" }),
+    }),
+  );
+  await page.goto("/");
+
+  await expect(
+    page.getByRole("button", { name: "使用 Passkey 登录" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "使用 Passkey 登录" }).click();
+  await expect(page.getByLabel("管理员密码")).toBeVisible();
+  await expect(
+    page.getByText("Passkey is temporarily unavailable"),
+  ).toBeVisible();
+  await expect(page.getByRole("tab", { name: "TOTP" }).first()).toHaveAttribute(
+    "data-state",
+    "active",
+  );
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth + 1,
+    ),
+  ).toBe(true);
+  expect(errors).toEqual([]);
+  await page.screenshot({
+    path: testInfo.outputPath("passkey-fallback-mobile.png"),
+    fullPage: true,
+  });
+});
+
 test("initial setup requires the local one-time token", async ({
   page,
 }, testInfo) => {
   const errors = trackPageErrors(page);
+  const recoveryCodes = Array.from(
+    { length: 10 },
+    (_, index) => `RECOVERY-${String(index + 1).padStart(8, "0")}`,
+  );
+  let beginInput:
+    { initialization_token: string; password: string } | undefined;
+  let finishInput:
+    | {
+        initialization_token: string;
+        password: string;
+        totp_secret: string;
+        totp_code: string;
+        recovery_codes: string[];
+      }
+    | undefined;
   await page.route("**/api/session", (route) =>
     route.fulfill({
       status: 401,
@@ -3600,6 +3840,30 @@ test("initial setup requires the local one-time token", async ({
       }),
     }),
   );
+  await page.route("**/api/setup/begin", async (route) => {
+    beginInput = route.request().postDataJSON() as {
+      initialization_token: string;
+      password: string;
+    };
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        totp_secret: "JBSWY3DPEHPK3PXP",
+        otpauth_url:
+          "otpauth://totp/simple_cdn%3Aadmin?issuer=simple_cdn&secret=JBSWY3DPEHPK3PXP",
+        recovery_codes: recoveryCodes,
+      }),
+    });
+  });
+  await page.route("**/api/setup/finish", async (route) => {
+    finishInput = route.request().postDataJSON() as typeof finishInput;
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true }),
+    });
+  });
 
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
@@ -3627,6 +3891,46 @@ test("initial setup requires the local one-time token", async ({
   await page.getByRole("button", { name: "切换语言" }).click();
   await page.getByRole("menuitemradio", { name: "English" }).click();
   await expect(page.getByLabel("One-time initialization token")).toBeVisible();
+  await page.getByRole("button", { name: "Change language" }).click();
+  await page.getByRole("menuitemradio", { name: "Simplified Chinese" }).click();
+
+  await page.getByLabel("一次性初始化令牌").fill("local-setup-token");
+  await page.getByLabel("管理员密码").fill("correct horse battery staple");
+  await page.getByLabel("确认密码").fill("correct horse battery staple");
+  await page.getByRole("button", { name: "初始化" }).click();
+  await expect
+    .poll(() => beginInput)
+    .toEqual({
+      initialization_token: "local-setup-token",
+      password: "correct horse battery staple",
+    });
+  await expect(
+    page.getByRole("heading", { name: "绑定管理员验证器" }),
+  ).toBeVisible();
+  await expect(page.getByText("JBSWY3DPEHPK3PXP")).toBeVisible();
+  await expect(page.getByText(recoveryCodes[0])).toBeVisible();
+  const confirmButton = page.getByRole("button", {
+    name: "确认并创建管理员",
+  });
+  await expect(confirmButton).toBeDisabled();
+  await page.getByLabel("恢复代码已安全保存").check();
+  await page.getByLabel("6 位验证码").fill("123456");
+  await expect(confirmButton).toBeEnabled();
+  await page.screenshot({
+    path: testInfo.outputPath("initial-setup-confirmation-mobile.png"),
+    fullPage: true,
+  });
+  await confirmButton.click();
+  await expect
+    .poll(() => finishInput)
+    .toEqual({
+      initialization_token: "local-setup-token",
+      password: "correct horse battery staple",
+      totp_secret: "JBSWY3DPEHPK3PXP",
+      totp_code: "123456",
+      recovery_codes: recoveryCodes,
+    });
+  await expect(page.getByRole("heading", { name: "登录控制面" })).toBeVisible();
   expect(errors).toEqual([]);
 });
 

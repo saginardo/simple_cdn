@@ -1117,14 +1117,28 @@ func TestLoginAndEnrollmentCommandGuard(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := &Server{Store: database, Cipher: cipher, ControlURL: "https://control.example.test", EdgeControlURL: "https://edge-control.example.test:8443", InitializationTokenPath: tokenPath}
-	setup := httptest.NewRequest(http.MethodPost, "/api/setup", bytes.NewBufferString(`{"initialization_token":"`+strings.TrimSpace(string(token))+`","password":"correct horse battery staple","totp_secret":"JBSWY3DPEHPK3PXP"}`))
+	recoveryCodes, err := newRecoveryCodes(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setupBody, err := json.Marshal(map[string]any{
+		"initialization_token": strings.TrimSpace(string(token)),
+		"password":             "correct horse battery staple",
+		"totp_secret":          "JBSWY3DPEHPK3PXP",
+		"totp_code":            testTOTPCode(t, "JBSWY3DPEHPK3PXP", time.Now()),
+		"recovery_codes":       recoveryCodes,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup := httptest.NewRequest(http.MethodPost, "/api/setup/finish", bytes.NewReader(setupBody))
 	setup.Header.Set("Content-Type", "application/json")
 	setupResponse := httptest.NewRecorder()
 	server.Handler().ServeHTTP(setupResponse, setup)
 	if setupResponse.Code != http.StatusCreated {
 		t.Fatalf("setup failed: %d %s", setupResponse.Code, setupResponse.Body.String())
 	}
-	login := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewBufferString(`{"password":"correct horse battery staple","recovery_code":"`+decodeRecoveryCode(t, setupResponse.Body.Bytes())+`"}`))
+	login := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewBufferString(`{"password":"correct horse battery staple","recovery_code":"`+recoveryCodes[0]+`"}`))
 	login.Header.Set("Content-Type", "application/json")
 	login.RemoteAddr = "127.0.0.1:12345"
 	loginResponse := httptest.NewRecorder()
@@ -1363,18 +1377,4 @@ func decodeCSRF(t *testing.T, body []byte) string {
 		t.Fatal(err)
 	}
 	return result["csrf_token"]
-}
-
-func decodeRecoveryCode(t *testing.T, body []byte) string {
-	t.Helper()
-	var result struct {
-		RecoveryCodes []string `json:"recovery_codes"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		t.Fatal(err)
-	}
-	if len(result.RecoveryCodes) == 0 {
-		t.Fatal("setup response did not include recovery codes")
-	}
-	return result.RecoveryCodes[0]
 }

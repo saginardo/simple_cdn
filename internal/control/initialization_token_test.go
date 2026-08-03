@@ -2,6 +2,7 @@ package control
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -9,7 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"simple_cdn/internal/auth"
 	"simple_cdn/internal/store"
 )
 
@@ -74,21 +77,63 @@ func TestSetupRequiresOneTimeTokenAndEncryptsTOTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := &Server{Store: database, Cipher: cipher, InitializationTokenPath: tokenPath}
+	initializationToken := strings.TrimSpace(string(token))
 
-	for _, initializationToken := range []string{"", "wrong-token"} {
-		request := httptest.NewRequest(http.MethodPost, "/api/setup", bytes.NewBufferString(`{"initialization_token":"`+initializationToken+`","password":"correct horse battery staple","totp_secret":"JBSWY3DPEHPK3PXP"}`))
-		request.Header.Set("Content-Type", "application/json")
-		response := httptest.NewRecorder()
-		server.Handler().ServeHTTP(response, request)
+	for _, candidate := range []string{"", "wrong-token"} {
+		response := setupJSONRequest(t, server, "/api/setup/begin", map[string]any{
+			"initialization_token": candidate,
+			"password":             "correct horse battery staple",
+		})
 		if response.Code != http.StatusForbidden {
-			t.Fatalf("setup with token %q status = %d, want %d: %s", initializationToken, response.Code, http.StatusForbidden, response.Body.String())
+			t.Fatalf("setup with token %q status = %d, want %d: %s", candidate, response.Code, http.StatusForbidden, response.Body.String())
 		}
 	}
 
-	request := httptest.NewRequest(http.MethodPost, "/api/setup", bytes.NewBufferString(`{"initialization_token":"`+strings.TrimSpace(string(token))+`","password":"correct horse battery staple","totp_secret":"JBSWY3DPEHPK3PXP"}`))
-	request.Header.Set("Content-Type", "application/json")
-	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, request)
+	response := setupJSONRequest(t, server, "/api/setup/begin", map[string]any{
+		"initialization_token": initializationToken,
+		"password":             "correct horse battery staple",
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("begin setup status = %d, want %d: %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	var material struct {
+		TOTPSecret    string   `json:"totp_secret"`
+		TOTPURL       string   `json:"otpauth_url"`
+		RecoveryCodes []string `json:"recovery_codes"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &material); err != nil {
+		t.Fatal(err)
+	}
+	if !auth.ValidTOTPSecret(material.TOTPSecret) || !strings.HasPrefix(material.TOTPURL, "otpauth://totp/") || len(material.RecoveryCodes) != 10 {
+		t.Fatalf("setup material = %#v", material)
+	}
+	if initialized, err := database.HasAdmin(); err != nil || initialized {
+		t.Fatalf("administrator exists before TOTP confirmation: initialized=%t err=%v", initialized, err)
+	}
+	if _, err := os.Stat(tokenPath); err != nil {
+		t.Fatalf("begin setup consumed initialization token: %v", err)
+	}
+
+	finishInput := map[string]any{
+		"initialization_token": initializationToken,
+		"password":             "correct horse battery staple",
+		"totp_secret":          material.TOTPSecret,
+		"totp_code":            "not-a-code",
+		"recovery_codes":       material.RecoveryCodes,
+	}
+	response = setupJSONRequest(t, server, "/api/setup/finish", finishInput)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("finish setup with invalid TOTP = %d, want %d: %s", response.Code, http.StatusBadRequest, response.Body.String())
+	}
+	if initialized, err := database.HasAdmin(); err != nil || initialized {
+		t.Fatalf("administrator exists after failed TOTP confirmation: initialized=%t err=%v", initialized, err)
+	}
+	if _, err := os.Stat(tokenPath); err != nil {
+		t.Fatalf("failed setup consumed initialization token: %v", err)
+	}
+
+	finishInput["totp_code"] = testTOTPCode(t, material.TOTPSecret, time.Now())
+	response = setupJSONRequest(t, server, "/api/setup/finish", finishInput)
 	if response.Code != http.StatusCreated {
 		t.Fatalf("setup status = %d, want %d: %s", response.Code, http.StatusCreated, response.Body.String())
 	}
@@ -102,13 +147,38 @@ func TestSetupRequiresOneTimeTokenAndEncryptsTOTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if admin.TOTPSecret == "JBSWY3DPEHPK3PXP" || !strings.HasPrefix(admin.TOTPSecret, encryptedTOTPSecretPrefix) {
+	if admin.TOTPSecret == material.TOTPSecret || !strings.HasPrefix(admin.TOTPSecret, encryptedTOTPSecretPrefix) {
 		t.Fatalf("TOTP secret was not encrypted: %q", admin.TOTPSecret)
 	}
+	if admin.LastTOTPCounter == nil {
+		t.Fatal("setup did not record the TOTP confirmation counter")
+	}
 	secret, legacy, err := server.decryptTOTPSecret(admin.TOTPSecret)
-	if err != nil || legacy || secret != "JBSWY3DPEHPK3PXP" {
+	if err != nil || legacy || secret != material.TOTPSecret {
 		t.Fatalf("decrypt TOTP secret = %q, legacy=%t, err=%v", secret, legacy, err)
 	}
+
+	loginResponse := setupJSONRequest(t, server, "/api/login", map[string]any{
+		"password":      "correct horse battery staple",
+		"recovery_code": material.RecoveryCodes[0],
+	})
+	if loginResponse.Code != http.StatusOK {
+		t.Fatalf("login with issued recovery code = %d %s", loginResponse.Code, loginResponse.Body.String())
+	}
+}
+
+func setupJSONRequest(t *testing.T, server *Server, path string, input any) *httptest.ResponseRecorder {
+	t.Helper()
+	body, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.RemoteAddr = "127.0.0.1:12345"
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	return response
 }
 
 func TestMigrateAdminTOTPSecret(t *testing.T) {

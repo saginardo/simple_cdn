@@ -98,17 +98,25 @@ func ValidTOTPSecret(secret string) bool {
 
 // TOTP is intentionally implemented locally to avoid a dependency for a small, offline-safe control plane.
 func VerifyTOTP(secret, code string, now time.Time) bool {
+	_, valid := MatchTOTP(secret, code, now)
+	return valid
+}
+
+// MatchTOTP returns the exact time-step counter so callers can atomically
+// prevent a valid one-time password from being accepted more than once.
+func MatchTOTP(secret, code string, now time.Time) (int64, bool) {
 	secret = NormalizeTOTPSecret(secret)
 	decoded, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(secret)
 	if err != nil || len(code) != 6 {
-		return false
+		return 0, false
 	}
-	for offset := int64(-1); offset <= 1; offset++ {
-		if subtle.ConstantTimeCompare([]byte(totp(decoded, now.Add(time.Duration(offset*30)*time.Second))), []byte(code)) == 1 {
-			return true
+	for _, offset := range []int64{0, -1, 1} {
+		candidate := now.Add(time.Duration(offset*30) * time.Second)
+		if subtle.ConstantTimeCompare([]byte(totp(decoded, candidate)), []byte(code)) == 1 {
+			return candidate.Unix() / 30, true
 		}
 	}
-	return false
+	return 0, false
 }
 
 func totp(secret []byte, now time.Time) string {

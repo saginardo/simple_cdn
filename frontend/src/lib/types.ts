@@ -847,6 +847,26 @@ export interface Settings {
   };
 }
 
+export interface PasskeyCredential {
+  id: string;
+  rp_id: string;
+  name: string;
+  current_rp: boolean;
+  created_at: string;
+  last_used_at?: string;
+}
+
+export interface AuthenticationSettings {
+  totp_enabled: true;
+  recent_authentication: boolean;
+  passkey_available: boolean;
+  passkey_enabled: boolean;
+  passkey_operational: boolean;
+  passkey_error?: string;
+  rp_id?: string;
+  passkeys: PasskeyCredential[];
+}
+
 export interface Message {
   id: string;
   severity: "info" | "success" | "warning" | "error";

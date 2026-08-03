@@ -23,8 +23,13 @@ func TestPasswordAndTOTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !VerifyTOTP(secret, totp(decoded, time.Unix(59, 0)), time.Unix(59, 0)) {
+	code := totp(decoded, time.Unix(59, 0))
+	if !VerifyTOTP(secret, code, time.Unix(59, 0)) {
 		t.Fatal("RFC 6238 TOTP vector did not verify")
+	}
+	counter, matched := MatchTOTP(secret, code, time.Unix(59, 0))
+	if !matched || counter != 1 {
+		t.Fatalf("matched TOTP counter = %d, matched=%t, want counter 1", counter, matched)
 	}
 	if !ValidTOTPSecret("jbswy3dpehpk3pxp") || ValidTOTPSecret("not a secret!") {
 		t.Fatal("unexpected TOTP secret validation")

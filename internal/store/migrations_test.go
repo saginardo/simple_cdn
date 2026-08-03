@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"simple_cdn/internal/domain"
@@ -180,6 +181,114 @@ func TestStaticAssetMigrationCreatesSchemaAndNodeStateColumn(t *testing.T) {
 	found, err := columnExists(database.db, "node_states", "static_assets_json")
 	if err != nil || !found {
 		t.Fatalf("static asset state column = %v, %v", found, err)
+	}
+}
+
+func TestPasskeyMigrationCreatesSchemaAndDefaultsExistingAdminOff(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.CreateInitialAdmin("password-hash", "totp-secret"); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{"webauthn_challenges", "passkey_credentials", "webauthn_users"} {
+		if _, err := database.db.Exec(`DROP TABLE ` + table); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := database.db.Exec(`ALTER TABLE admin_users DROP COLUMN passkey_enabled`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`DELETE FROM schema_migrations WHERE version >= 29`); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{"webauthn_users", "passkey_credentials", "webauthn_challenges"} {
+		var count int
+		if err := database.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("migration did not create %s", table)
+		}
+	}
+	found, err := columnExists(database.db, "admin_users", "passkey_enabled")
+	if err != nil || !found {
+		t.Fatalf("passkey enabled column = %v, %v", found, err)
+	}
+	admin, err := database.Admin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if admin.PasskeyEnabled {
+		t.Fatal("migration enabled passkey login for an existing administrator")
+	}
+}
+
+func TestAuthenticationHardeningMigrationBackfillsExistingSessions(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.CreateInitialAdmin("password-hash", "totp-secret"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CreateSession("admin", "legacy-session", "csrf-token", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`DROP TABLE authentication_attempts`); err != nil {
+		t.Fatal(err)
+	}
+	for _, column := range []string{"auth_method", "authenticator_id", "authenticated_at", "elevated_until"} {
+		if _, err := database.db.Exec(`ALTER TABLE sessions DROP COLUMN ` + column); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := database.db.Exec(`ALTER TABLE admin_users DROP COLUMN last_totp_counter`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`DELETE FROM schema_migrations WHERE version >= 30`); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	for table, columns := range map[string][]string{
+		"admin_users": {"last_totp_counter"},
+		"sessions":    {"auth_method", "authenticator_id", "authenticated_at", "elevated_until"},
+	} {
+		for _, column := range columns {
+			found, err := columnExists(database.db, table, column)
+			if err != nil || !found {
+				t.Fatalf("%s.%s column = %v, %v", table, column, found, err)
+			}
+		}
+	}
+	var attemptsTableCount int
+	if err := database.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'authentication_attempts'`).Scan(&attemptsTableCount); err != nil {
+		t.Fatal(err)
+	}
+	if attemptsTableCount != 1 {
+		t.Fatalf("authentication_attempts table count = %d", attemptsTableCount)
+	}
+	session, err := database.Session("legacy-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.AuthMethod != "legacy" || session.AuthenticatedAt == nil || session.ElevatedUntil != nil {
+		t.Fatalf("migrated legacy session = %#v", session)
+	}
+	admin, err := database.Admin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if admin.LastTOTPCounter != nil {
+		t.Fatalf("legacy administrator TOTP counter = %#v", admin.LastTOTPCounter)
 	}
 }
 

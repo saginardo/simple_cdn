@@ -634,6 +634,14 @@ func (s *Store) CreateInitialAdmin(passwordHash, totpSecret string) error {
 }
 
 func (s *Store) CreateInitialAdminWithRecoveryCodes(passwordHash, totpSecret string, recoveryCodeHashes []string) error {
+	return s.createInitialAdminWithRecoveryCodes(passwordHash, totpSecret, recoveryCodeHashes, nil)
+}
+
+func (s *Store) CreateInitialAdminWithRecoveryCodesAndTOTPCounter(passwordHash, totpSecret string, recoveryCodeHashes []string, totpCounter int64) error {
+	return s.createInitialAdminWithRecoveryCodes(passwordHash, totpSecret, recoveryCodeHashes, &totpCounter)
+}
+
+func (s *Store) createInitialAdminWithRecoveryCodes(passwordHash, totpSecret string, recoveryCodeHashes []string, totpCounter *int64) error {
 	if passwordHash == "" || totpSecret == "" {
 		return errors.New("password hash and totp secret are required")
 	}
@@ -650,7 +658,7 @@ func (s *Store) CreateInitialAdminWithRecoveryCodes(passwordHash, totpSecret str
 		return errors.New("an admin account already exists")
 	}
 	ts := stamp(now())
-	_, err = tx.Exec("INSERT INTO admin_users(id, password_hash, totp_secret, created_at, updated_at) VALUES (?, ?, ?, ?, ?)", "admin", passwordHash, totpSecret, ts, ts)
+	_, err = tx.Exec("INSERT INTO admin_users(id, password_hash, totp_secret, last_totp_counter, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)", "admin", passwordHash, totpSecret, totpCounter, ts, ts)
 	if err != nil {
 		return err
 	}
@@ -685,6 +693,24 @@ func (s *Store) ReplaceAdminTOTPSecret(userID, totpSecret string) error {
 		return errors.New("TOTP secret is required")
 	}
 	result, err := s.db.Exec(`UPDATE admin_users SET totp_secret = ?, updated_at = ? WHERE id = ?`, totpSecret, stamp(now()), userID)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) ReplaceAdminTOTPSecretWithCounter(userID, totpSecret string, totpCounter int64) error {
+	if strings.TrimSpace(totpSecret) == "" {
+		return errors.New("TOTP secret is required")
+	}
+	result, err := s.db.Exec(`UPDATE admin_users SET totp_secret = ?, last_totp_counter = ?, updated_at = ? WHERE id = ?`, totpSecret, totpCounter, stamp(now()), userID)
 	if err != nil {
 		return err
 	}
@@ -745,16 +771,23 @@ func (s *Store) ConsumeRecoveryCode(codeHash string) (string, error) {
 }
 
 type Admin struct {
-	ID           string
-	PasswordHash string
-	TOTPSecret   string
+	ID              string
+	PasswordHash    string
+	TOTPSecret      string
+	PasskeyEnabled  bool
+	LastTOTPCounter *int64
 }
 
 func (s *Store) Admin() (Admin, error) {
 	var admin Admin
-	err := s.db.QueryRow("SELECT id, password_hash, totp_secret FROM admin_users LIMIT 1").Scan(&admin.ID, &admin.PasswordHash, &admin.TOTPSecret)
+	var lastTOTPCounter sql.NullInt64
+	err := s.db.QueryRow("SELECT id, password_hash, totp_secret, passkey_enabled, last_totp_counter FROM admin_users LIMIT 1").Scan(&admin.ID, &admin.PasswordHash, &admin.TOTPSecret, &admin.PasskeyEnabled, &lastTOTPCounter)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Admin{}, ErrNotFound
+	}
+	if err == nil && lastTOTPCounter.Valid {
+		value := lastTOTPCounter.Int64
+		admin.LastTOTPCounter = &value
 	}
 	return admin, err
 }
@@ -765,15 +798,21 @@ func (s *Store) CreateSession(userID, token, csrf string, expiresAt time.Time) e
 }
 
 type Session struct {
-	UserID    string
-	CSRFToken string
-	ExpiresAt time.Time
+	UserID          string
+	CSRFToken       string
+	AuthMethod      string
+	AuthenticatorID string
+	AuthenticatedAt *time.Time
+	ElevatedUntil   *time.Time
+	ExpiresAt       time.Time
 }
 
 func (s *Store) Session(token string) (Session, error) {
 	var session Session
+	var authenticatedAt, elevatedUntil sql.NullString
 	var expiresAt string
-	err := s.db.QueryRow("SELECT user_id, csrf_token, expires_at FROM sessions WHERE token_hash = ?", hashToken(token)).Scan(&session.UserID, &session.CSRFToken, &expiresAt)
+	err := s.db.QueryRow(`SELECT user_id, csrf_token, auth_method, authenticator_id, authenticated_at, elevated_until, expires_at
+		FROM sessions WHERE token_hash = ?`, hashToken(token)).Scan(&session.UserID, &session.CSRFToken, &session.AuthMethod, &session.AuthenticatorID, &authenticatedAt, &elevatedUntil, &expiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Session{}, ErrNotFound
 	}
@@ -787,6 +826,20 @@ func (s *Store) Session(token string) (Session, error) {
 	if !session.ExpiresAt.After(now()) {
 		_ = s.DeleteSession(token)
 		return Session{}, ErrNotFound
+	}
+	if authenticatedAt.Valid {
+		value, parseErr := parseTime(authenticatedAt.String)
+		if parseErr != nil {
+			return Session{}, parseErr
+		}
+		session.AuthenticatedAt = &value
+	}
+	if elevatedUntil.Valid {
+		value, parseErr := parseTime(elevatedUntil.String)
+		if parseErr != nil {
+			return Session{}, parseErr
+		}
+		session.ElevatedUntil = &value
 	}
 	return session, nil
 }

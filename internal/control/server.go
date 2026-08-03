@@ -81,8 +81,6 @@ type Server struct {
 	machineStatuses           map[string]domain.MachineStatus
 	machineStatusSubscribers  map[string]map[uint64]chan domain.MachineStatus
 	machineStatusSubscriberID uint64
-	loginMu                   sync.Mutex
-	loginHits                 map[string][]time.Time
 	edgeSecurityRevisionMu    sync.Mutex
 	edgeSecurityRevision      string
 	edgeSecurityExpiresAt     time.Time
@@ -103,8 +101,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /downloads/cdn-nginx-linux-amd64.tar.gz", s.nginxBundle)
 	mux.HandleFunc("GET /api/setup/status", s.setupStatus)
 	mux.HandleFunc("GET /api/branding", s.getPublicBranding)
+	mux.HandleFunc("POST /api/setup/begin", s.beginSetup)
 	mux.HandleFunc("POST /api/setup", s.setup)
+	mux.HandleFunc("POST /api/setup/finish", s.setup)
 	mux.HandleFunc("POST /api/login", s.login)
+	mux.HandleFunc("POST /api/auth/passkey/begin", s.beginPasskeyLogin)
+	mux.HandleFunc("POST /api/auth/passkey/finish", s.finishPasskeyLogin)
 	mux.HandleFunc("POST /api/logout", s.requireAdmin(s.logout))
 	mux.HandleFunc("GET /api/session", s.requireAdmin(s.session))
 	mux.HandleFunc("GET /api/system/info", s.requireAdmin(s.systemInfo))
@@ -117,6 +119,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/logs", s.requireAdmin(s.searchLogs))
 	mux.HandleFunc("GET /api/logs/{id}", s.requireAdmin(s.getLog))
 	mux.HandleFunc("GET /api/settings", s.requireAdmin(s.getSettings))
+	mux.HandleFunc("GET /api/settings/authentication", s.requireAdmin(s.getAuthenticationSettings))
+	mux.HandleFunc("POST /api/settings/authentication/reauthenticate", s.requireAdmin(s.reauthenticate))
+	mux.HandleFunc("POST /api/settings/authentication/totp/begin", s.requireRecentAdmin(s.beginTOTPReplacement))
+	mux.HandleFunc("PUT /api/settings/authentication/totp", s.requireRecentAdmin(s.replaceTOTP))
+	mux.HandleFunc("POST /api/settings/authentication/passkeys/begin", s.requireRecentAdmin(s.beginPasskeyRegistration))
+	mux.HandleFunc("POST /api/settings/authentication/passkeys/finish", s.requireRecentAdmin(s.finishPasskeyRegistration))
+	mux.HandleFunc("PUT /api/settings/authentication/passkeys", s.requireRecentAdmin(s.updatePasskeyEnabled))
+	mux.HandleFunc("DELETE /api/settings/authentication/passkeys/{id}", s.requireRecentAdmin(s.deletePasskey))
 	mux.HandleFunc("PUT /api/settings/branding", s.requireAdmin(s.updateBrandingSettings))
 	mux.HandleFunc("PUT /api/settings/cache", s.requireAdmin(s.updateCacheSettings))
 	mux.HandleFunc("PUT /api/settings/dns", s.requireAdmin(s.updateDNSSettings))
@@ -303,65 +313,44 @@ func (s *Server) setupStatus(response http.ResponseWriter, request *http.Request
 		writeError(response, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(response, http.StatusOK, map[string]bool{"initialized": hasAdmin})
+	passkeyEnabled := false
+	if hasAdmin {
+		admin, adminErr := s.Store.Admin()
+		if adminErr == nil {
+			passkeyEnabled = s.passkeyLoginEnabled(request, admin)
+		}
+	}
+	writeJSON(response, http.StatusOK, map[string]bool{"initialized": hasAdmin, "passkey_enabled": passkeyEnabled})
+}
+
+type setupBeginRequest struct {
+	InitializationToken string `json:"initialization_token"`
+	Password            string `json:"password"`
 }
 
 type setupRequest struct {
-	InitializationToken string `json:"initialization_token"`
-	Password            string `json:"password"`
-	TOTPSecret          string `json:"totp_secret"`
+	InitializationToken string   `json:"initialization_token"`
+	Password            string   `json:"password"`
+	TOTPSecret          string   `json:"totp_secret"`
+	TOTPCode            string   `json:"totp_code"`
+	RecoveryCodes       []string `json:"recovery_codes"`
 }
 
-func (s *Server) setup(response http.ResponseWriter, request *http.Request) {
-	if len(s.SetupAllowCIDRs) > 0 && !s.setupIPAllowed(s.requestIP(request)) {
-		writeError(response, http.StatusForbidden, errors.New("setup is not allowed from this address"))
-		return
-	}
-	hasAdmin, err := s.Store.HasAdmin()
-	if err != nil {
-		writeError(response, http.StatusInternalServerError, err)
-		return
-	}
-	if hasAdmin {
-		writeError(response, http.StatusConflict, errors.New("control plane is already initialized"))
-		return
-	}
-	var input setupRequest
+func (s *Server) beginSetup(response http.ResponseWriter, request *http.Request) {
+	var input setupBeginRequest
 	if !readJSON(response, request, &input) {
 		return
 	}
-	if strings.TrimSpace(s.InitializationTokenPath) == "" {
-		writeError(response, http.StatusServiceUnavailable, errors.New("initialization token is not configured"))
+	if !s.authorizeSetup(response, request, input.InitializationToken) {
 		return
 	}
-	if err := VerifyInitializationToken(s.InitializationTokenPath, input.InitializationToken); err != nil {
-		if s.Logger != nil {
-			s.Logger.Warn("initialization token rejected", "remote", s.requestIP(request))
-		}
-		writeError(response, http.StatusForbidden, errors.New("invalid initialization token"))
-		return
-	}
-	if input.TOTPSecret == "" {
-		input.TOTPSecret, err = auth.NewTOTPSecret()
-		if err != nil {
-			writeError(response, http.StatusInternalServerError, err)
-			return
-		}
-	} else {
-		input.TOTPSecret = auth.NormalizeTOTPSecret(input.TOTPSecret)
-		if !auth.ValidTOTPSecret(input.TOTPSecret) {
-			writeError(response, http.StatusBadRequest, errors.New("invalid TOTP secret"))
-			return
-		}
-	}
-	passwordHash, err := auth.HashPassword(input.Password)
-	if err != nil {
+	if _, err := auth.HashPassword(input.Password); err != nil {
 		writeError(response, http.StatusBadRequest, err)
 		return
 	}
-	encryptedTOTPSecret, err := s.encryptTOTPSecret(input.TOTPSecret)
+	secret, err := auth.NewTOTPSecret()
 	if err != nil {
-		writeError(response, http.StatusInternalServerError, errors.New("encrypt TOTP secret"))
+		writeError(response, http.StatusInternalServerError, err)
 		return
 	}
 	recoveryCodes, err := newRecoveryCodes(10)
@@ -369,23 +358,116 @@ func (s *Server) setup(response http.ResponseWriter, request *http.Request) {
 		writeError(response, http.StatusInternalServerError, err)
 		return
 	}
+	writeJSON(response, http.StatusOK, map[string]any{
+		"totp_secret":    secret,
+		"otpauth_url":    totpProvisioningURL(secret, "simple_cdn", "admin"),
+		"recovery_codes": recoveryCodes,
+	})
+}
+
+func (s *Server) setup(response http.ResponseWriter, request *http.Request) {
+	var input setupRequest
+	if !readJSON(response, request, &input) {
+		return
+	}
+	if !s.authorizeSetup(response, request, input.InitializationToken) {
+		return
+	}
+	secret := auth.NormalizeTOTPSecret(input.TOTPSecret)
+	if !auth.ValidTOTPSecret(secret) {
+		writeError(response, http.StatusBadRequest, errors.New("invalid TOTP secret"))
+		return
+	}
+	counter, valid := auth.MatchTOTP(secret, strings.TrimSpace(input.TOTPCode), time.Now())
+	if !valid {
+		writeError(response, http.StatusBadRequest, errors.New("TOTP confirmation code is invalid"))
+		return
+	}
+	recoveryCodes, err := normalizeSetupRecoveryCodes(input.RecoveryCodes)
+	if err != nil {
+		writeError(response, http.StatusBadRequest, err)
+		return
+	}
+	passwordHash, err := auth.HashPassword(input.Password)
+	if err != nil {
+		writeError(response, http.StatusBadRequest, err)
+		return
+	}
+	encryptedTOTPSecret, err := s.encryptTOTPSecret(secret)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, errors.New("encrypt TOTP secret"))
+		return
+	}
 	hashes := make([]string, 0, len(recoveryCodes))
 	for _, code := range recoveryCodes {
 		hashes = append(hashes, auth.RecoveryCodeHash(code))
 	}
-	if err := s.Store.CreateInitialAdminWithRecoveryCodes(passwordHash, encryptedTOTPSecret, hashes); err != nil {
+	if err := s.Store.CreateInitialAdminWithRecoveryCodesAndTOTPCounter(passwordHash, encryptedTOTPSecret, hashes, counter); err != nil {
 		writeError(response, http.StatusInternalServerError, err)
 		return
 	}
-	if err := ConsumeInitializationToken(s.InitializationTokenPath, input.InitializationToken); err != nil {
-		if s.Logger != nil {
-			s.Logger.Error("remove initialization token", "error", err)
-		}
-		writeError(response, http.StatusInternalServerError, errors.New("initialization token could not be removed"))
-		return
+	if err := ConsumeInitializationToken(s.InitializationTokenPath, input.InitializationToken); err != nil && s.Logger != nil {
+		s.Logger.Error("remove initialization token after administrator activation", "error", err)
 	}
-	s.audit(request, "bootstrap", "admin", "admin", "admin", "created initial admin")
-	writeJSON(response, http.StatusCreated, map[string]any{"totp_secret": input.TOTPSecret, "otpauth_url": "otpauth://totp/CDN%20Platform:admin?secret=" + input.TOTPSecret + "&issuer=CDN%20Platform", "recovery_codes": recoveryCodes})
+	s.audit(request, "bootstrap", "admin", "admin", "admin", "created initial admin after TOTP confirmation")
+	writeJSON(response, http.StatusCreated, map[string]bool{"ok": true})
+}
+
+func (s *Server) authorizeSetup(response http.ResponseWriter, request *http.Request, initializationToken string) bool {
+	if len(s.SetupAllowCIDRs) > 0 && !s.setupIPAllowed(s.requestIP(request)) {
+		writeError(response, http.StatusForbidden, errors.New("setup is not allowed from this address"))
+		return false
+	}
+	hasAdmin, err := s.Store.HasAdmin()
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, err)
+		return false
+	}
+	if hasAdmin {
+		writeError(response, http.StatusConflict, errors.New("control plane is already initialized"))
+		return false
+	}
+	if strings.TrimSpace(s.InitializationTokenPath) == "" {
+		writeError(response, http.StatusServiceUnavailable, errors.New("initialization token is not configured"))
+		return false
+	}
+	if err := VerifyInitializationToken(s.InitializationTokenPath, initializationToken); err != nil {
+		if s.Logger != nil {
+			s.Logger.Warn("initialization token rejected", "remote", s.requestIP(request))
+		}
+		writeError(response, http.StatusForbidden, errors.New("invalid initialization token"))
+		return false
+	}
+	return true
+}
+
+func normalizeSetupRecoveryCodes(codes []string) ([]string, error) {
+	if len(codes) != 10 {
+		return nil, errors.New("exactly 10 recovery codes are required")
+	}
+	normalized := make([]string, 0, len(codes))
+	seen := make(map[string]struct{}, len(codes))
+	for _, value := range codes {
+		code := strings.ToUpper(strings.TrimSpace(value))
+		if len(code) != 17 || code[8] != '-' {
+			return nil, errors.New("invalid recovery code set")
+		}
+		for index := 0; index < len(code); index++ {
+			if index == 8 {
+				continue
+			}
+			character := code[index]
+			if !((character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') || character == '-' || character == '_') {
+				return nil, errors.New("invalid recovery code set")
+			}
+		}
+		if _, exists := seen[code]; exists {
+			return nil, errors.New("recovery codes must be unique")
+		}
+		seen[code] = struct{}{}
+		normalized = append(normalized, code)
+	}
+	return normalized, nil
 }
 
 func (s *Server) setupIPAllowed(address string) bool {
@@ -408,8 +490,8 @@ type loginRequest struct {
 }
 
 func (s *Server) login(response http.ResponseWriter, request *http.Request) {
-	if !s.allowLogin(s.requestIP(request)) {
-		writeError(response, http.StatusTooManyRequests, errors.New("too many login attempts"))
+	var input loginRequest
+	if !readJSON(response, request, &input) {
 		return
 	}
 	admin, err := s.Store.Admin()
@@ -417,48 +499,71 @@ func (s *Server) login(response http.ResponseWriter, request *http.Request) {
 		writeError(response, http.StatusUnauthorized, errors.New("invalid credentials"))
 		return
 	}
-	var input loginRequest
-	if !readJSON(response, request, &input) {
+	limits, allowed, err := s.reserveAuthenticationAttempt(request, "login", admin.ID, 8, 20)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, errors.New("authentication rate limit is unavailable"))
+		return
+	}
+	if !allowed {
+		writeError(response, http.StatusTooManyRequests, errors.New("too many login attempts"))
 		return
 	}
 	if !auth.VerifyPassword(admin.PasswordHash, input.Password) {
 		writeError(response, http.StatusUnauthorized, errors.New("invalid credentials"))
 		return
 	}
-	totpSecret, err := s.adminTOTPSecret(admin)
+	method, validSecondFactor, err := s.verifyCurrentSecondFactor(admin, input.TOTP, input.RecoveryCode)
 	if err != nil {
 		if s.Logger != nil {
-			s.Logger.Error("load administrator TOTP secret", "error", err)
+			s.Logger.Error("verify administrator second factor", "error", err)
 		}
 		writeError(response, http.StatusInternalServerError, errors.New("two-factor authentication is unavailable"))
 		return
-	}
-	validSecondFactor := auth.VerifyTOTP(totpSecret, input.TOTP, time.Now())
-	if !validSecondFactor && input.RecoveryCode != "" {
-		userID, recoveryErr := s.Store.ConsumeRecoveryCode(auth.RecoveryCodeHash(input.RecoveryCode))
-		validSecondFactor = recoveryErr == nil && userID == admin.ID
 	}
 	if !validSecondFactor {
 		writeError(response, http.StatusUnauthorized, errors.New("invalid second factor"))
 		return
 	}
-	token, err := auth.NewOpaqueToken(32)
+	csrf, err := s.createAdminSession(response, request, admin.ID, method, "")
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, err)
 		return
+	}
+	_ = s.Store.ClearAuthenticationAttempts(limits)
+	s.audit(request, admin.ID, "login", "session", "", "method="+method)
+	writeJSON(response, http.StatusOK, map[string]string{"csrf_token": csrf})
+}
+
+func (s *Server) createAdminSession(response http.ResponseWriter, request *http.Request, userID, method, authenticatorID string) (string, error) {
+	token, err := auth.NewOpaqueToken(32)
+	if err != nil {
+		return "", err
 	}
 	csrf, err := auth.NewOpaqueToken(24)
 	if err != nil {
-		writeError(response, http.StatusInternalServerError, err)
-		return
+		return "", err
 	}
-	if err := s.Store.CreateSession(admin.ID, token, csrf, time.Now().UTC().Add(12*time.Hour)); err != nil {
-		writeError(response, http.StatusInternalServerError, err)
-		return
+	now := time.Now().UTC()
+	if err := s.Store.CreateAuthenticatedSession(userID, token, csrf, method, authenticatorID, now, now.Add(recentAuthenticationLifetime), now.Add(adminSessionLifetime)); err != nil {
+		return "", err
 	}
-	http.SetCookie(response, &http.Cookie{Name: "cdn_session", Value: token, Path: "/", HttpOnly: true, Secure: request.TLS != nil, SameSite: http.SameSiteStrictMode, MaxAge: int((12 * time.Hour).Seconds())})
-	s.audit(request, admin.ID, "login", "session", "", "")
-	writeJSON(response, http.StatusOK, map[string]string{"csrf_token": csrf})
+	s.setAdminSessionCookie(response, request, token)
+	return csrf, nil
+}
+
+func (s *Server) setAdminSessionCookie(response http.ResponseWriter, request *http.Request, token string) {
+	http.SetCookie(response, &http.Cookie{
+		Name: "cdn_session", Value: token, Path: "/", HttpOnly: true, Secure: s.secureCookie(request),
+		SameSite: http.SameSiteStrictMode, MaxAge: int(adminSessionLifetime.Seconds()),
+	})
+}
+
+func (s *Server) secureCookie(request *http.Request) bool {
+	if request.TLS != nil {
+		return true
+	}
+	parsed, err := url.Parse(strings.TrimSpace(s.ControlURL))
+	return err == nil && strings.EqualFold(parsed.Scheme, "https")
 }
 
 func (s *Server) logout(response http.ResponseWriter, request *http.Request) {
@@ -471,17 +576,12 @@ func (s *Server) logout(response http.ResponseWriter, request *http.Request) {
 }
 
 func (s *Server) session(response http.ResponseWriter, request *http.Request) {
-	cookie, err := request.Cookie("cdn_session")
-	if err != nil {
-		writeError(response, http.StatusUnauthorized, errors.New("authentication required"))
-		return
-	}
-	session, err := s.Store.Session(cookie.Value)
-	if err != nil {
-		writeError(response, http.StatusUnauthorized, errors.New("authentication required"))
-		return
-	}
-	writeJSON(response, http.StatusOK, map[string]string{"user": adminID(request.Context()), "csrf_token": session.CSRFToken})
+	session := currentAdminSession(request.Context())
+	writeJSON(response, http.StatusOK, map[string]any{
+		"user": adminID(request.Context()), "csrf_token": session.CSRFToken,
+		"auth_method": session.AuthMethod, "authenticated_at": session.AuthenticatedAt,
+		"elevated_until": session.ElevatedUntil,
+	})
 }
 
 func (s *Server) listNodes(response http.ResponseWriter, request *http.Request) {
@@ -1807,8 +1907,22 @@ func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 				return
 			}
 		}
-		next(response, request.WithContext(context.WithValue(request.Context(), adminContextKey{}, session.UserID)))
+		ctx := context.WithValue(request.Context(), adminContextKey{}, session.UserID)
+		ctx = context.WithValue(ctx, adminSessionContextKey{}, session)
+		next(response, request.WithContext(ctx))
 	}
+}
+
+func (s *Server) requireRecentAdmin(next http.HandlerFunc) http.HandlerFunc {
+	return s.requireAdmin(func(response http.ResponseWriter, request *http.Request) {
+		if !sessionRecentlyAuthenticated(currentAdminSession(request.Context()), time.Now()) {
+			writeJSON(response, http.StatusPreconditionRequired, map[string]string{
+				"error": "recent authentication is required", "code": "reauthentication_required",
+			})
+			return
+		}
+		next(response, request)
+	})
 }
 
 func (s *Server) requireEdge(next http.HandlerFunc) http.HandlerFunc {
@@ -1912,35 +2026,16 @@ func (s *Server) audit(request *http.Request, actor, action, resourceType, resou
 	_ = s.Store.Audit(actor, action, resourceType, resourceID, s.requestIP(request), detail)
 }
 
-func (s *Server) allowLogin(remoteAddr string) bool {
-	s.loginMu.Lock()
-	defer s.loginMu.Unlock()
-	if s.loginHits == nil {
-		s.loginHits = make(map[string][]time.Time)
-	}
-	key := remoteIP(remoteAddr)
-	now := time.Now()
-	window := now.Add(-10 * time.Minute)
-	hits := s.loginHits[key]
-	filtered := hits[:0]
-	for _, hit := range hits {
-		if hit.After(window) {
-			filtered = append(filtered, hit)
-		}
-	}
-	if len(filtered) >= 8 {
-		s.loginHits[key] = filtered
-		return false
-	}
-	s.loginHits[key] = append(filtered, now)
-	return true
-}
-
 type adminContextKey struct{}
+type adminSessionContextKey struct{}
 type edgeContextKey struct{}
 
 func adminID(context context.Context) string {
 	value, _ := context.Value(adminContextKey{}).(string)
+	return value
+}
+func currentAdminSession(context context.Context) store.Session {
+	value, _ := context.Value(adminSessionContextKey{}).(store.Session)
 	return value
 }
 func edgeNodeID(context context.Context) string {

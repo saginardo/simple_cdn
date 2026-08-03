@@ -1,5 +1,9 @@
 import { useQueryClient } from "@tanstack/react-query";
 import {
+  startAuthentication,
+  type PublicKeyCredentialRequestOptionsJSON,
+} from "@simplewebauthn/browser";
+import {
   createContext,
   useCallback,
   useContext,
@@ -33,6 +37,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState("");
   const [bootError, setBootError] = useState("");
   const [setupResult, setSetupResult] = useState<SetupResult | null>(null);
+  const [passkeyEnabled, setPasskeyEnabled] = useState(false);
   const bootstrap = useCallback(async () => {
     setStage("boot");
     setBootError("");
@@ -52,7 +57,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       const status = await api<{
         initialized: boolean;
+        passkey_enabled?: boolean;
       }>("/api/setup/status");
+      setPasskeyEnabled(Boolean(status.passkey_enabled));
       setStage(status.initialized ? "login" : "setup");
     } catch (error) {
       setBootError(
@@ -70,6 +77,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser("");
       queryClient.clear();
       setStage("login");
+      void api<{ passkey_enabled?: boolean }>("/api/setup/status")
+        .then((status) => setPasskeyEnabled(Boolean(status.passkey_enabled)))
+        .catch(() => setPasskeyEnabled(false));
     };
     window.addEventListener("cdn:unauthorized", unauthorized);
     return () => window.removeEventListener("cdn:unauthorized", unauthorized);
@@ -92,6 +102,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     },
     [],
   );
+  const loginWithPasskey = useCallback(async () => {
+    const options = await api<PublicKeyCredentialRequestOptionsJSON>(
+      "/api/auth/passkey/begin",
+      {
+        method: "POST",
+        body: "{}",
+      },
+    );
+    const credential = await startAuthentication({ optionsJSON: options });
+    const result = await api<{
+      csrf_token: string;
+    }>("/api/auth/passkey/finish", {
+      method: "POST",
+      body: JSON.stringify(credential),
+    });
+    setCsrfToken(result.csrf_token ?? "");
+    setUser("admin");
+    setStage("authenticated");
+  }, []);
   const logout = useCallback(async () => {
     try {
       await api<{
@@ -104,12 +133,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setCsrfToken("");
       setUser("");
       queryClient.clear();
+      const status = await api<{ passkey_enabled?: boolean }>(
+        "/api/setup/status",
+      ).catch(() => null);
+      setPasskeyEnabled(Boolean(status?.passkey_enabled));
       setStage("login");
     }
   }, [queryClient]);
   const setup = useCallback(
     async (initializationToken: string, password: string) => {
-      const result = await api<SetupResult>("/api/setup", {
+      const result = await api<SetupResult>("/api/setup/begin", {
         method: "POST",
         body: JSON.stringify({
           initialization_token: initializationToken,
@@ -119,6 +152,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSetupResult(result);
     },
     [],
+  );
+  const confirmSetup = useCallback(
+    async (initializationToken: string, password: string, totpCode: string) => {
+      if (!setupResult) throw new Error(t("初始化材料已失效"));
+      await api<{ ok: true }>("/api/setup/finish", {
+        method: "POST",
+        body: JSON.stringify({
+          initialization_token: initializationToken,
+          password,
+          totp_secret: setupResult.totp_secret,
+          totp_code: totpCode,
+          recovery_codes: setupResult.recovery_codes,
+        }),
+      });
+      setSetupResult(null);
+      setStage("login");
+    },
+    [setupResult],
   );
   const value = useMemo(
     () => ({
@@ -137,13 +188,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           stage={stage}
           error={bootError}
           setupResult={setupResult}
+          passkeyEnabled={passkeyEnabled}
           onRetry={bootstrap}
           onSetup={setup}
-          onSetupComplete={() => {
-            setSetupResult(null);
-            setStage("login");
-          }}
+          onSetupConfirm={confirmSetup}
           onLogin={login}
+          onPasskeyLogin={loginWithPasskey}
         />
       )}
     </AuthContext.Provider>
