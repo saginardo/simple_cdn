@@ -834,6 +834,8 @@ type siteRequest struct {
 	Passthrough                   *bool                `json:"passthrough"`
 	RequestBodyBuffering          *bool                `json:"request_body_buffering"`
 	OriginResponseBuffering       *bool                `json:"origin_response_buffering"`
+	DynamicCompressionEnabled     *bool                `json:"dynamic_compression_enabled"`
+	CompressionExcludedMIMETypes  *[]string            `json:"compression_excluded_mime_types"`
 	HTTP3Enabled                  *bool                `json:"http3_enabled"`
 	ClientMaxBodySizeMB           *int                 `json:"client_max_body_size_mb"`
 	ClientKeepaliveTimeoutSeconds *int                 `json:"client_keepalive_timeout_seconds"`
@@ -864,6 +866,18 @@ func (input siteRequest) site(id string, current *domain.Site) domain.Site {
 	originResponseBuffering := true
 	if input.OriginResponseBuffering != nil {
 		originResponseBuffering = *input.OriginResponseBuffering
+	}
+	dynamicCompressionEnabled := true
+	compressionExcludedMIMETypes := domain.DefaultCompressionExcludedMIMETypes()
+	if current != nil {
+		dynamicCompressionEnabled = current.DynamicCompressionEnabled
+		compressionExcludedMIMETypes = append([]string(nil), current.CompressionExcludedMIMETypes...)
+	}
+	if input.DynamicCompressionEnabled != nil {
+		dynamicCompressionEnabled = *input.DynamicCompressionEnabled
+	}
+	if input.CompressionExcludedMIMETypes != nil {
+		compressionExcludedMIMETypes = append([]string(nil), (*input.CompressionExcludedMIMETypes)...)
 	}
 	http3Enabled := false
 	if input.HTTP3Enabled != nil {
@@ -911,7 +925,13 @@ func (input siteRequest) site(id string, current *domain.Site) domain.Site {
 	if input.TCPForwards != nil {
 		tcpForwards = append([]domain.TCPForward(nil), (*input.TCPForwards)...)
 	}
-	return domain.Site{ID: id, Name: input.Name, Domains: input.Domains, Nodes: input.NodeIDs, PrimaryOrigin: input.PrimaryOrigin.origin(currentPrimary), BackupOrigin: backupOrigin, StreamPaths: streamPaths, Passthrough: passthrough, RequestBodyBuffering: requestBodyBuffering, OriginResponseBuffering: originResponseBuffering, HTTP3Enabled: http3Enabled, ClientMaxBodySizeMB: clientMaxBodySizeMB, ClientKeepaliveTimeoutSeconds: clientKeepaliveTimeoutSeconds, ReadWriteTimeoutSeconds: readWriteTimeoutSeconds, DNSTTLSeconds: dnsTTLSeconds, TCPOnly: tcpOnly, TCPForwards: tcpForwards, Enabled: enabled}
+	var cacheInvalidations []domain.CacheInvalidationRule
+	var cacheWarmups []domain.CacheWarmup
+	if current != nil {
+		cacheInvalidations = append(cacheInvalidations, current.CacheInvalidations...)
+		cacheWarmups = append(cacheWarmups, current.CacheWarmups...)
+	}
+	return domain.Site{ID: id, Name: input.Name, Domains: input.Domains, Nodes: input.NodeIDs, PrimaryOrigin: input.PrimaryOrigin.origin(currentPrimary), BackupOrigin: backupOrigin, StreamPaths: streamPaths, Passthrough: passthrough, RequestBodyBuffering: requestBodyBuffering, OriginResponseBuffering: originResponseBuffering, DynamicCompressionEnabled: dynamicCompressionEnabled, CompressionExcludedMIMETypes: compressionExcludedMIMETypes, HTTP3Enabled: http3Enabled, ClientMaxBodySizeMB: clientMaxBodySizeMB, ClientKeepaliveTimeoutSeconds: clientKeepaliveTimeoutSeconds, ReadWriteTimeoutSeconds: readWriteTimeoutSeconds, DNSTTLSeconds: dnsTTLSeconds, TCPOnly: tcpOnly, TCPForwards: tcpForwards, CacheInvalidations: cacheInvalidations, CacheWarmups: cacheWarmups, Enabled: enabled}
 }
 
 func (input siteRequest) validateClientMaxBodySize() error {
@@ -1160,8 +1180,44 @@ func (s *Server) publishStatus(response http.ResponseWriter, request *http.Reque
 	writeJSON(response, http.StatusOK, status)
 }
 
+type cacheInvalidationRequest struct {
+	Scope        domain.CacheInvalidationScope `json:"scope"`
+	Value        string                        `json:"value"`
+	Prewarm      bool                          `json:"prewarm"`
+	PrewarmPaths []string                      `json:"prewarm_paths"`
+}
+
 func (s *Server) invalidateCache(response http.ResponseWriter, request *http.Request) {
-	site, err := s.Store.InvalidateSiteCache(request.PathValue("id"))
+	input := cacheInvalidationRequest{Scope: domain.CacheInvalidationFull}
+	if request.ContentLength != 0 {
+		decoder := json.NewDecoder(io.LimitReader(request.Body, 1<<20))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&input); err != nil {
+			writeError(response, http.StatusBadRequest, err)
+			return
+		}
+	}
+	if input.Scope == "" {
+		input.Scope = domain.CacheInvalidationFull
+	}
+	value := ""
+	var err error
+	if input.Scope != domain.CacheInvalidationFull {
+		value, err = domain.NormalizeCacheInvalidationTarget(input.Scope, input.Value)
+		if err != nil {
+			writeError(response, http.StatusBadRequest, err)
+			return
+		}
+	} else if strings.TrimSpace(input.Value) != "" {
+		writeError(response, http.StatusBadRequest, errors.New("full cache invalidation does not accept a target"))
+		return
+	}
+	prewarmPaths, err := s.cachePrewarmPaths(request.Context(), request.PathValue("id"), input, value)
+	if err != nil {
+		writeError(response, http.StatusBadRequest, err)
+		return
+	}
+	site, err := s.Store.InvalidateSiteCacheScope(request.PathValue("id"), input.Scope, value, prewarmPaths)
 	if err != nil {
 		if errors.Is(err, store.ErrCacheDisabled) {
 			writeError(response, http.StatusConflict, err)
@@ -1175,8 +1231,81 @@ func (s *Server) invalidateCache(response http.ResponseWriter, request *http.Req
 		writeError(response, http.StatusInternalServerError, err)
 		return
 	}
-	s.audit(request, adminID(request.Context()), "invalidate_cache", "site", site.ID, fmt.Sprintf("generation=%d task=%s", site.CacheGeneration, task.ID))
+	s.audit(request, adminID(request.Context()), "invalidate_cache", "site", site.ID, fmt.Sprintf("scope=%s target=%q generation=%d prewarm_urls=%d task=%s", input.Scope, value, site.CacheGeneration, len(prewarmPaths), task.ID))
 	writeJSON(response, http.StatusAccepted, task)
+}
+
+func (s *Server) cachePrewarmPaths(ctx context.Context, siteID string, input cacheInvalidationRequest, target string) ([]string, error) {
+	if !input.Prewarm {
+		if len(input.PrewarmPaths) != 0 {
+			return nil, errors.New("prewarm_paths requires prewarm=true")
+		}
+		return nil, nil
+	}
+	paths, err := domain.NormalizeCacheWarmupPaths(input.PrewarmPaths)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{}, len(paths)+1)
+	for _, path := range paths {
+		seen[path] = struct{}{}
+	}
+	prepend := func(path string) error {
+		if _, found := seen[path]; found {
+			return nil
+		}
+		if len(paths) >= domain.MaxCacheWarmupPaths {
+			return errors.New("too many cache prewarm URLs")
+		}
+		paths = append([]string{path}, paths...)
+		seen[path] = struct{}{}
+		return nil
+	}
+	switch input.Scope {
+	case domain.CacheInvalidationURL:
+		if err := prepend(target); err != nil {
+			return nil, err
+		}
+	case domain.CacheInvalidationPrefix:
+		if s.Logs != nil {
+			if events, err := s.Logs.Recent(ctx, siteID, 500); err == nil {
+				for _, event := range events {
+					if (event.Method == http.MethodGet || event.Method == http.MethodHead) && event.Status >= 200 && event.Status < 400 && strings.HasPrefix(event.Path, target) {
+						path, pathErr := domain.NormalizeCacheInvalidationTarget(domain.CacheInvalidationURL, event.Path)
+						if pathErr != nil {
+							continue
+						}
+						if _, found := seen[path]; found {
+							continue
+						}
+						if len(paths) >= domain.MaxCacheWarmupPaths {
+							break
+						}
+						paths = append(paths, path)
+						seen[path] = struct{}{}
+					}
+				}
+			}
+		}
+		if len(paths) == 0 {
+			paths = append(paths, target)
+		}
+	case domain.CacheInvalidationFull:
+		if len(paths) == 0 {
+			return nil, errors.New("full-site prewarm requires at least one prewarm URL")
+		}
+	default:
+		return nil, errors.New("cache invalidation scope must be full, url, or prefix")
+	}
+	if input.Scope == domain.CacheInvalidationPrefix {
+		for _, path := range paths {
+			parsed, _ := url.ParseRequestURI(path)
+			if !strings.HasPrefix(parsed.Path, target) {
+				return nil, errors.New("prefix prewarm URLs must be under the invalidated prefix")
+			}
+		}
+	}
+	return paths, nil
 }
 
 func (s *Server) issueCertificate(response http.ResponseWriter, request *http.Request) {

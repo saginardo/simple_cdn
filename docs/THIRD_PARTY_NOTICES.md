@@ -56,6 +56,6 @@ The console self-hosts Geist through `@fontsource-variable/geist` 5.2.9. The fon
 
 ## Managed Nginx Bundle
 
-The edge bundle contains Nginx 1.30.4 (2-clause BSD-like license), ngx_devel_kit 0.3.4 (3-clause BSD license), lua-nginx-module 0.10.29 (2-clause BSD license), lua-resty-core 0.1.32 (2-clause BSD license), lua-resty-lrucache 0.15 (2-clause BSD license), and OpenResty LuaJIT 2.1-20260724 (MIT license, including the Lua 5.1/5.2 notice).
+The edge bundle contains Nginx 1.30.4 (2-clause BSD-like license), ngx_devel_kit 0.3.4 (3-clause BSD license), lua-nginx-module 0.10.29 (2-clause BSD license), lua-resty-core 0.1.32 (2-clause BSD license), lua-resty-lrucache 0.15 (2-clause BSD license), OpenResty LuaJIT 2.1-20260724 (MIT license, including the Lua 5.1/5.2 notice), ngx_brotli plus Brotli (2-clause MIT-style licenses), zstd-nginx-module (2-clause BSD license), and the Zstandard library (dual BSD/GPLv2 license; this bundle uses it under the BSD terms).
 
 The complete upstream copyright and license text for every bundled component is installed with the binary under `/opt/cdn-edge/nginx/licenses` and is also present inside `cdn-nginx-linux-amd64.tar.gz`.

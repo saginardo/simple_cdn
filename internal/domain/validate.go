@@ -14,6 +14,26 @@ func NormalizeAndValidateSite(site *Site) error {
 	if site.Name == "" || len(site.Name) > 100 {
 		return fmt.Errorf("site name must be between 1 and 100 characters")
 	}
+	exclusions, err := NormalizeCompressionExcludedMIMETypes(site.CompressionExcludedMIMETypes)
+	if err != nil {
+		return err
+	}
+	site.CompressionExcludedMIMETypes = exclusions
+	cacheInvalidations, err := NormalizeCacheInvalidationRules(site.CacheInvalidations)
+	if err != nil {
+		return err
+	}
+	site.CacheInvalidations = cacheInvalidations
+	cacheWarmups, err := NormalizeCacheWarmups(site.CacheWarmups)
+	if err != nil {
+		return err
+	}
+	for _, warmup := range cacheWarmups {
+		if site.ID != "" && warmup.SiteID != site.ID {
+			return fmt.Errorf("cache prewarm job belongs to another site")
+		}
+	}
+	site.CacheWarmups = cacheWarmups
 	clientMaxBodySizeMB, err := NormalizeClientMaxBodySizeMB(site.ClientMaxBodySizeMB)
 	if err != nil {
 		return err

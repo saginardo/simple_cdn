@@ -20,6 +20,9 @@ func TestNewLoadsManagedNginxMetadataAndCapability(t *testing.T) {
 	if err := os.WriteFile(digestPath, []byte(strings.ToUpper(digest)+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(directory, "BUILD.json"), []byte(`{"ngx_brotli_commit":"`+strings.Repeat("c", 40)+`","brotli_commit":"`+strings.Repeat("d", 40)+`","zstd_nginx_commit":"`+strings.Repeat("e", 40)+`"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	configDir := filepath.Join(directory, "config")
 	agent, err := New(Config{
 		ControlURL: "https://control.example.test", StateDir: filepath.Join(directory, "data"),
@@ -33,7 +36,7 @@ func TestNewLoadsManagedNginxMetadataAndCapability(t *testing.T) {
 	if agent.Config.NginxVersion != "1.30.4" || agent.Config.NginxSHA256 != digest {
 		t.Fatalf("managed Nginx metadata = version %q digest %q", agent.Config.NginxVersion, agent.Config.NginxSHA256)
 	}
-	found, foundOriginHTTP2 := false, false
+	found, foundOriginHTTP2, foundCompression, foundCacheControl := false, false, false, false
 	for _, capability := range agent.Config.Capabilities {
 		if capability == domain.EdgeCapabilityNginxBundle {
 			found = true
@@ -41,8 +44,14 @@ func TestNewLoadsManagedNginxMetadataAndCapability(t *testing.T) {
 		if capability == domain.EdgeCapabilityOriginHTTP2 {
 			foundOriginHTTP2 = true
 		}
+		if capability == domain.EdgeCapabilityCompression {
+			foundCompression = true
+		}
+		if capability == domain.EdgeCapabilityCacheControl {
+			foundCacheControl = true
+		}
 	}
-	if !found || !foundOriginHTTP2 {
+	if !found || !foundOriginHTTP2 || !foundCompression || !foundCacheControl {
 		t.Fatalf("managed Nginx capability missing from %#v", agent.Config.Capabilities)
 	}
 }

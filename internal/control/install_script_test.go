@@ -98,7 +98,7 @@ func TestInstallEdgeScriptCreatesManagedOptLayout(t *testing.T) {
 		"NGINX_VERSION_PATH=/opt/cdn-edge/nginx/VERSION",
 		"NGINX_SHA256_PATH=/opt/cdn-edge/nginx/.bundle-sha256",
 		"EDGE_STATIC_ASSET_DIR=/opt/cdn-edge/static/objects",
-		"EDGE_CAPABILITIES=tcp_stream_v1,edge_rate_limit_v1,waf_chain_v1,pow_challenge_v1,static_assets_v1,nginx_capacity_v1,nginx_bundle_v1",
+		"EDGE_CAPABILITIES=tcp_stream_v1,edge_rate_limit_v1,waf_chain_v1,pow_challenge_v1,static_assets_v1,cache_control_v1,nginx_capacity_v1,nginx_bundle_v1",
 	} {
 		if !strings.Contains(environment, expected) {
 			t.Fatalf("edge.env does not contain %q:\n%s", expected, environment)
@@ -124,6 +124,18 @@ func TestInstallEdgeScriptAdvertisesHTTP3FromManagedBinary(t *testing.T) {
 	}
 	if environment := harness.read(t, "opt/cdn-edge/config/edge.env"); !strings.Contains(environment, "nginx_bundle_v1,http3_v1") {
 		t.Fatalf("HTTP/3-capable managed Nginx was not advertised:\n%s", environment)
+	}
+}
+
+func TestInstallEdgeScriptAdvertisesCompressionModulesFromManagedBinary(t *testing.T) {
+	harness := newInstallHarness(t)
+	harness.nginxFlags = "--add-module=/build/ngx_brotli-commit --add-module=/build/zstd-nginx-module-commit"
+	output, err := harness.run(t, "first-token", "edge-binary-v1", "")
+	if err != nil {
+		t.Fatalf("install failed: %v\n%s", err, output)
+	}
+	if environment := harness.read(t, "opt/cdn-edge/config/edge.env"); !strings.Contains(environment, "nginx_bundle_v1,compression_v1") {
+		t.Fatalf("compression-capable managed Nginx was not advertised:\n%s", environment)
 	}
 }
 
@@ -558,8 +570,12 @@ exit 0
 		{"nginx/licenses/lua-nginx-module.txt", 0o644, "lua nginx license\n", tar.TypeReg},
 		{"nginx/licenses/lua-resty-core.txt", 0o644, "resty core license\n", tar.TypeReg},
 		{"nginx/licenses/lua-resty-lrucache.txt", 0o644, "lrucache license\n", tar.TypeReg},
+		{"nginx/licenses/ngx_brotli.txt", 0o644, "ngx brotli license\n", tar.TypeReg},
+		{"nginx/licenses/brotli.txt", 0o644, "brotli license\n", tar.TypeReg},
+		{"nginx/licenses/zstd-nginx-module.txt", 0o644, "zstd nginx license\n", tar.TypeReg},
+		{"nginx/licenses/zstd-library.txt", 0o644, "zstd license\n", tar.TypeReg},
 		{"nginx/VERSION", 0o644, version + "\n", tar.TypeReg},
-		{"nginx/BUILD.json", 0o644, fmt.Sprintf(`{"nginx_version":%q,"architecture":"amd64"}`+"\n", version), tar.TypeReg},
+		{"nginx/BUILD.json", 0o644, testNginxBuildJSON(version, "amd64") + "\n", tar.TypeReg},
 	}
 	if unsafe {
 		entries = append(entries, struct {

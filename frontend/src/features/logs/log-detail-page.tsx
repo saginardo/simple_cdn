@@ -245,6 +245,22 @@ function LogDetails({
               label={t("响应 Content-Type")}
               value={entry.response_content_type || "--"}
             />
+            <DetailRow
+              label="Content-Encoding"
+              value={entry.content_encoding || "identity"}
+            />
+            <DetailRow
+              label={t("压缩比")}
+              value={
+                entry.compression_ratio
+                  ? `${formatNumber(entry.compression_ratio)}x`
+                  : "--"
+              }
+            />
+            <DetailRow
+              label={t("压缩节省")}
+              value={formatBytes(entry.compression_saved_bytes ?? 0)}
+            />
           </CardContent>
         </Card>
       </div>

@@ -21,7 +21,8 @@ container_smoke_test() {
   chmod 0755 /opt/cdn-edge/nginx/sbin/nginx
   for notice in \
     nginx.txt ngx_devel_kit.txt openresty-luajit.txt lua-nginx-module.txt \
-    lua-resty-core.txt lua-resty-lrucache.txt; do
+    lua-resty-core.txt lua-resty-lrucache.txt ngx_brotli.txt brotli.txt \
+    zstd-nginx-module.txt zstd-library.txt; do
     test -s "/opt/cdn-edge/nginx/licenses/$notice"
   done
   install -d -m 0755 \
@@ -46,6 +47,15 @@ container_smoke_test() {
   printf '%s\n' \
     'server {' \
     '    listen 127.0.0.1:18080;' \
+    '    gzip on;' \
+    '    gzip_min_length 20;' \
+    '    gzip_types text/plain;' \
+    '    brotli on;' \
+    '    brotli_min_length 20;' \
+    '    brotli_types text/plain;' \
+    '    zstd on;' \
+    '    zstd_min_length 20;' \
+    '    zstd_types text/plain;' \
     '    location = /__artifact_smoke {' \
     '        content_by_lua_block {' \
     '            local lrucache = require "resty.lrucache"' \
@@ -54,6 +64,10 @@ container_smoke_test() {
     '            local result = cache:get("result")' \
     '            ngx.say(result)' \
     '        }' \
+    '    }' \
+    '    location = /__compression_smoke {' \
+    '        default_type text/plain;' \
+    '        return 200 "simple_cdn compression module smoke response simple_cdn compression module smoke response simple_cdn compression module smoke response\n";' \
     '    }' \
     '}' \
     >/opt/cdn-edge/config/nginx/cdn-platform.conf
@@ -72,12 +86,22 @@ container_smoke_test() {
   local version_output
   version_output=$("$nginx" -V 2>&1)
   grep -Fq 'nginx version: nginx/1.30.4' <<<"$version_output"
+  grep -Fq -- '--add-module=/build/ngx_brotli-' <<<"$version_output"
+  grep -Fq -- '--add-module=/build/zstd-nginx-module-' <<<"$version_output"
   "$nginx" -t
 
   trap '/opt/cdn-edge/nginx/sbin/nginx -s quit >/dev/null 2>&1 || true' EXIT
   "$nginx"
   test "$(curl --fail --silent --show-error \
     http://127.0.0.1:18080/__artifact_smoke)" = 'managed-nginx-ok'
+  for encoding in gzip br zstd; do
+    test "$(curl --fail --silent --show-error \
+      --header "Accept-Encoding: $encoding" \
+      --dump-header - --output /dev/null \
+      http://127.0.0.1:18080/__compression_smoke \
+      | tr -d '\r' \
+      | awk 'tolower($1) == "content-encoding:" { print tolower($2) }')" = "$encoding"
+  done
   "$nginx" -s quit
   trap - EXIT
 }

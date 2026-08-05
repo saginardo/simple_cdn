@@ -77,6 +77,10 @@ const site = {
   },
   stream_paths: [],
   passthrough: false,
+  request_body_buffering: true,
+  origin_response_buffering: true,
+  dynamic_compression_enabled: true,
+  compression_excluded_mime_types: ["text/event-stream"],
   http3_enabled: false,
   client_max_body_size_mb: 128,
   client_keepalive_timeout_seconds: 120,
@@ -92,6 +96,28 @@ const site = {
   created_at: now.toISOString(),
   updated_at: now.toISOString(),
 };
+
+const siteMetrics = [
+  {
+    minute: now.toISOString(),
+    requests: 20,
+    bytes: 120_000,
+    errors: 0,
+    cache_hits: 15,
+    upstream_samples: 5,
+    upstream_header_samples: 5,
+    upstream_response_samples: 5,
+    upstream_reused: 4,
+    upstream_connect_ms: 2.5,
+    upstream_header_ms: 15,
+    upstream_response_ms: 30,
+    compressed_requests: 12,
+    gzip_requests: 3,
+    brotli_requests: 5,
+    zstd_requests: 4,
+    compression_saved_bytes: 12_288,
+  },
+];
 
 const staticAssetOverview = {
   assets: [
@@ -733,6 +759,9 @@ const accessLogs = [
     referer: "https://cdn.example.com/releases",
     content_type: "application/json",
     response_content_type: "text/html; charset=utf-8",
+    content_encoding: "br",
+    compression_ratio: 2.4,
+    compression_saved_bytes: 12_288,
     accept: "text/html,application/xhtml+xml",
     range: "bytes=0-4095",
   },
@@ -1057,6 +1086,7 @@ async function mockAPI(page: Page, overrides: Record<string, unknown> = {}) {
         site_id: "site-1",
         nodes: [],
       },
+      "/api/sites/site-1/metrics": siteMetrics,
       "/api/nodes": [],
       "/api/wireguard/tunnels": [],
       "/api/wireguard/performance-tests": [],
@@ -1591,6 +1621,88 @@ test("HTTP/3 is opt-in per site and saved explicitly", async ({
   await page.getByRole("button", { name: "创建站点" }).click();
   const request = await createRequest;
   expect(request.postDataJSON()).toMatchObject({ http3_enabled: true });
+});
+
+test("site configures compression and submits scoped cache prewarm", async ({
+  page,
+}, testInfo) => {
+  const errors = trackPageErrors(page);
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await mockAPI(page, {
+    "/api/sites/site-1": site,
+    "/api/sites/site-1/invalidate-cache": {
+      id: "invalidate-prefix",
+      kind: "publish_site",
+      site_id: "site-1",
+      status: "queued",
+      created_at: now.toISOString(),
+      updated_at: now.toISOString(),
+    },
+  });
+  await page.goto("/#/sites/site-1");
+
+  const compressionToggle = page.getByRole("switch", { name: "动态压缩" });
+  await expect(compressionToggle).toBeChecked();
+  await expect(page.getByLabel("不压缩的 MIME 类型")).toHaveValue(
+    "text/event-stream",
+  );
+  await expect(page.getByText("压缩统计", { exact: true })).toBeVisible();
+  await expect(page.getByText("节省流量", { exact: true })).toBeVisible();
+  await expect(page.getByText("压缩命中率", { exact: true })).toBeVisible();
+
+  await compressionToggle.click();
+  await page
+    .getByLabel("不压缩的 MIME 类型")
+    .fill("text/event-stream\napplication/json");
+  const saveRequest = page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === "/api/sites/site-1" &&
+      request.method() === "PUT",
+  );
+  await page.getByRole("button", { name: "保存更改" }).click();
+  expect((await saveRequest).postDataJSON()).toMatchObject({
+    dynamic_compression_enabled: false,
+    compression_excluded_mime_types: ["text/event-stream", "application/json"],
+  });
+
+  await page.getByRole("button", { name: "缓存失效与预热" }).click();
+  const dialog = page.getByRole("dialog", { name: "缓存失效与预热" });
+  await dialog.getByRole("combobox", { name: "失效范围" }).click();
+  await page.getByRole("option", { name: "路径前缀" }).click();
+  await dialog.getByLabel("路径前缀").fill("/assets/");
+  await dialog.getByRole("switch", { name: "配置生效后预热" }).click();
+  await dialog
+    .getByLabel("补充预热 URL（可选）")
+    .fill("/assets/app.js\n/assets/styles.css");
+  await page.screenshot({
+    path: testInfo.outputPath("site-compression-cache-prewarm.png"),
+    fullPage: true,
+  });
+
+  const invalidateRequest = page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname ===
+        "/api/sites/site-1/invalidate-cache" && request.method() === "POST",
+  );
+  await dialog.getByRole("button", { name: "失效并预热" }).click();
+  expect((await invalidateRequest).postDataJSON()).toEqual({
+    scope: "prefix",
+    value: "/assets/",
+    prewarm: true,
+    prewarm_paths: ["/assets/app.js", "/assets/styles.css"],
+  });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth + 1,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: testInfo.outputPath("site-compression-mobile.png"),
+    fullPage: true,
+  });
+  expect(errors).toEqual([]);
 });
 
 test("site publish waits while automatic TLS issuance is active", async ({
@@ -2565,6 +2677,14 @@ test("log rows truncate long paths, color errors, and open request details", asy
   await expect(page.getByText("边缘传输已完成", { exact: true })).toBeVisible();
   await expect(page.getByText("回源发送大小", { exact: true })).toBeVisible();
   await expect(page.getByText("2.3 KiB", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("Content-Encoding", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("br", { exact: true })).toBeVisible();
+  await expect(page.getByText("压缩比", { exact: true })).toBeVisible();
+  await expect(page.getByText("2.4x", { exact: true })).toBeVisible();
+  await expect(page.getByText("压缩节省", { exact: true })).toBeVisible();
+  await expect(page.getByText("12.0 KiB", { exact: true })).toBeVisible();
 });
 
 test("node machine status updates from the realtime event stream", async ({

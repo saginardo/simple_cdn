@@ -13,9 +13,10 @@
 - 支持从管理界面对单个节点或全部节点执行在线升级，包括资格检查、mTLS 任务下发、所有制品的 SHA-256 校验、独立 systemd 更新器、新代理心跳就绪检查和事务式回滚。
 - 按能力启用的 WAF 处理链：可按站点配置优先级和 AND 条件，检查路径、查询字符串、请求头、请求体、User-Agent 与客户端 IP；支持立即放行、仅记录、拦截和 IPv4 封禁，并内置敏感文件、恶意 PHP、路径穿越、SQL 注入、XSS 和扫描器 UA 六类规则。安全工作区同时提供按站点的浏览器 PoW、边缘本地客户端 IP 限速、持久安全事件和全节点 nftables 封禁对账。详见 [docs/SECURITY_POLICIES.md](docs/SECURITY_POLICIES.md)。
 - 边缘代理以原子方式暂存版本化 Nginx 基础配置、每站点 HTTP 和 `stream` 配置片段及证书；检查本机公网 TCP 与 UDP 端口占用，校验 `/opt/cdn-edge/nginx/sbin/nginx`，重新加载健康的 Nginx，或拉起已失败/停止的 Nginx。代理会确认重新加载确实创建了新一代 worker 进程；失败时恢复最后一份正常配置和 TLS 文件，并在不阻塞心跳循环的前提下上报 Linux 主机状态和 `/opt/cdn-edge/cache` 磁盘用量。
-- 可复现的 AMD64 Nginx 1.30.4 bundle：固定所有源码 SHA-256，启用加固参数、HTTP/2、HTTP/3、stream、NDK、lua-nginx-module，并私有携带 OpenResty LuaJIT/runtime。事务安装器记录并卸载 Debian Nginx 软件包，把二进制、配置、运行目录、日志、缓存和服务统一安装到 `/opt/cdn-edge`；失败时恢复准确的软件包版本和 `/etc/nginx`。
+- 可复现的 AMD64 Nginx 1.30.4 bundle：固定所有源码 SHA-256，启用加固参数、HTTP/2、HTTP/3、stream、NDK、lua-nginx-module、ngx_brotli 和 zstd-nginx-module，并私有携带 OpenResty LuaJIT/runtime。事务安装器记录并卸载 Debian Nginx 软件包，把二进制、配置、运行目录、日志、缓存和服务统一安装到 `/opt/cdn-edge`；失败时恢复准确的软件包版本和 `/etc/nginx`。
 - Nginx OSS 静态资源缓存策略：每个边缘节点共享一个缓存区，默认总磁盘上限为 1 GiB。全局节点默认值可被单个节点覆盖，站点共享该节点配额。只有常见 CSS、JavaScript、字体、图片、WebAssembly 和 Web Manifest 后缀会选择缓存，其他 URI 均使用 `proxy_cache off`。携带 Authorization 或 Cookie 的请求不会读取或写入共享缓存，但这些请求头仍会原样回源。策略包括规范化缓存代际、缓存锁、重新验证、后台刷新、`STALE` 回退，以及 HTTP(S) 主备源站故障切换。HTTP(S) 站点会自动对 WebSocket Upgrade、SSE Accept、`X-CDN-Stream: 1` 和 POST 响应关闭缓存与响应缓冲；整站透传模式会对整个主机名禁用缓存和缓冲，同时转发字节范围。`grpc://` 和 `grpcs://` 源站通过客户端 HTTP/2 监听器使用原生 gRPC 代理。
-- 托管静态资源：单文件最大 32 MiB，在控制面按内容寻址保存，经 mTLS 授权同步到相关边缘并校验大小与 SHA-256；同一资源可绑定到一个或多个站点的精确 URL。Nginx 直接返回文件，并应用可选缓存头、MIME、ETag、GET/HEAD 限制以及 WAF、PoW 和限速处理；资源不再被引用后由边缘原子清理。详见 [docs/STATIC_ASSETS.md](docs/STATIC_ASSETS.md)。
+- 每站点动态 gzip、Brotli 与 Zstandard 压缩默认开启，可配置不压缩 MIME 列表，默认排除 `text/event-stream`。缓存支持整站、精确 URL 与路径前缀三级失效，并可在失效发布后向每个已分配边缘下发有界预热任务。访问日志和保留 30 天的分钟聚合会记录 `Content-Encoding`、压缩响应数、估算或精确的节省字节及各编码命中数。详见 [docs/COMPRESSION_AND_CACHE_CONTROL.md](docs/COMPRESSION_AND_CACHE_CONTROL.md)。
+- 托管静态资源：单文件最大 32 MiB，在控制面按内容寻址保存，经 mTLS 授权同步到相关边缘并校验大小与 SHA-256；同一资源可绑定到一个或多个站点的精确 URL。符合条件的公开文件会原子生成 `.gz`、`.br` 和 `.zst` 预压缩副本；Nginx 直接返回文件，并应用可选缓存头、MIME、ETag、GET/HEAD 限制以及 WAF、PoW 和限速处理。资源不再被引用后由边缘原子清理。详见 [docs/STATIC_ASSETS.md](docs/STATIC_ASSETS.md)。
 - 按能力下发共享回源连接池：相同协议、地址、Host 和 SNI 的站点复用同一 upstream，池容量按节点 `worker_connections` 和引用权重自动分配。边缘以约 5 秒的复用服务探测持续确认应用路径，并以 32-48 秒的低频冷探测验证新建 TCP/TLS；任一层连续 2 次失败会熔断，恢复需两层分别确认。Nginx include 切换与站点发布串行、可回滚。访问日志和 30 天分钟聚合提供真实请求的回源建连、首字节、完整响应及连接复用率，节点详情实时展示当前 Nginx 回源 TCP 连接数与最新双层探测状态，且不持久化历史。详见 [docs/ORIGIN_CONNECTIONS.md](docs/ORIGIN_CONNECTIONS.md)。
 - 按能力启用 WireGuard 专用回源隧道：主机私钥本地生成，控制面管理修订收敛、私网地址发布、源站一次性安装、nftables 规则，以及公网 TCP 与隧道 TCP/UDP 对照测试。站点可在加密隧道内使用 HTTP/H2C 或明文 gRPC 以取消源站 TLS 证书管理，也可保留原 Host/SNI 继续使用 HTTPS/GRPCS。详见 [docs/WIREGUARD_ORIGIN.md](docs/WIREGUARD_ORIGIN.md)。
 - 按站点、按能力启用基于 UDP 443 的 HTTP/3/QUIC，默认关闭。安装器仅在 Nginx 报告 `--with-http_v3_module` 时声明 `http3_v1`；主动开启的站点在兼容节点上会增加 QUIC 监听、`Alt-Svc`、地址验证重试、UDP 冲突检查、重载后监听确认和能力自动对账，同时保留 TCP 443 上的 HTTP/1.1 与 HTTP/2 回退。IP 封禁同时覆盖 UDP 443 和 TCP 80/443。
@@ -28,12 +29,12 @@
 
 ## 明确边界
 
-- 单管理员、仅 IPv4、Cloudflare DNS-only、单一 Cloudflare 账户；不提供租户/RBAC、GeoDNS、URL 级缓存清理、托管机器人信誉/CAPTCHA、流量型 DDoS 防护或控制面高可用。
+- 单管理员、仅 IPv4、Cloudflare DNS-only、单一 Cloudflare 账户；不提供租户/RBAC、GeoDNS、托管机器人信誉/CAPTCHA、流量型 DDoS 防护或控制面高可用。
 - 控制面中断不会影响已经发布的边缘流量，但在恢复之前无法执行新的发布、DNS 变更和证书续期。
 - “发布”有意与“创建站点”分离。站点在获得有效证书前保持暂存状态；只有所有受影响的活跃边缘节点都确认加载目标配置后，发布任务才会成功。
 - 站点编辑和替换证书只更新草稿，不会直接改变已发布的站点快照。发布时会原子提升该站点的草稿和证书，只重建其新旧分配节点，并继续使用其他站点各自的已发布快照渲染配置。
 - 承载 HTTPS 站点的节点通过专用默认 `server` 拒绝未知 TLS SNI，不会错误返回其他站点的证书。
-- 站点级缓存失效通过递增缓存键中的代际实现。旧对象由 Nginx 的 `inactive` 和 `max_size` 自动回收，无需不受支持的 OSS 缓存清理模块。
+- 缓存失效通过修改缓存键中的整站、精确 URL 或路径前缀代际实现。旧对象由 Nginx 的 `inactive` 和 `max_size` 自动回收，无需不受支持的 OSS 缓存清理模块，也不会同步释放磁盘空间。
 
 将现有数据库升级到包含已发布快照的版本前，请发布或撤销每个待处理站点。旧数据行不包含重建历史已发布快照所需的上一份在线配置。若控制器发现历史发布记录缺少快照，会拒绝在这种不明确状态下重建其他站点。
 

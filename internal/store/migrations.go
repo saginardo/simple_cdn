@@ -47,6 +47,26 @@ var schemaMigrations = []schemaMigration{
 	{Version: 28, Name: "static-assets", Apply: migrateStaticAssets},
 	{Version: 29, Name: "passkey-authentication", Apply: migratePasskeyAuthentication},
 	{Version: 30, Name: "authentication-hardening", Apply: migrateAuthenticationHardening},
+	{Version: 31, Name: "compression-and-cache-control", Apply: migrateCompressionAndCacheControl},
+}
+
+func migrateCompressionAndCacheControl(tx *sql.Tx) error {
+	for _, column := range []struct {
+		table      string
+		name       string
+		definition string
+	}{
+		{"sites", "dynamic_compression_enabled", "dynamic_compression_enabled INTEGER NOT NULL DEFAULT 1"},
+		{"sites", "compression_excluded_mime_types_json", "compression_excluded_mime_types_json TEXT NOT NULL DEFAULT '[\"text/event-stream\"]'"},
+		{"sites", "cache_invalidations_json", "cache_invalidations_json TEXT NOT NULL DEFAULT '[]'"},
+		{"sites", "cache_warmups_json", "cache_warmups_json TEXT NOT NULL DEFAULT '[]'"},
+		{"node_states", "cache_warmups_json", "cache_warmups_json TEXT NOT NULL DEFAULT '[]'"},
+	} {
+		if err := addColumnIfMissing(tx, column.table, column.name, column.definition); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func migrateAuthenticationHardening(tx *sql.Tx) error {
@@ -882,6 +902,19 @@ func migrateTaskInvariants(tx *sql.Tx) error {
 func migratePublishedState(tx *sql.Tx) error {
 	// A partially migrated legacy database may reach this migration before the
 	// later site migrations. The publication scanner needs these columns now.
+	for _, column := range []struct {
+		name       string
+		definition string
+	}{
+		{"dynamic_compression_enabled", "dynamic_compression_enabled INTEGER NOT NULL DEFAULT 1"},
+		{"compression_excluded_mime_types_json", "compression_excluded_mime_types_json TEXT NOT NULL DEFAULT '[\"text/event-stream\"]'"},
+		{"cache_invalidations_json", "cache_invalidations_json TEXT NOT NULL DEFAULT '[]'"},
+		{"cache_warmups_json", "cache_warmups_json TEXT NOT NULL DEFAULT '[]'"},
+	} {
+		if err := addColumnIfMissing(tx, "sites", column.name, column.definition); err != nil {
+			return err
+		}
+	}
 	if err := addColumnIfMissing(tx, "sites", "client_keepalive_timeout_seconds", "client_keepalive_timeout_seconds INTEGER NOT NULL DEFAULT 120"); err != nil {
 		return err
 	}

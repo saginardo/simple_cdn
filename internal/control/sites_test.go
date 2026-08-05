@@ -14,8 +14,18 @@ import (
 
 	"simple_cdn/internal/domain"
 	"simple_cdn/internal/integrations"
+	"simple_cdn/internal/logstore"
 	"simple_cdn/internal/store"
 )
+
+type cachePrewarmLogStore struct {
+	logstore.Noop
+	events []domain.AccessLogEvent
+}
+
+func (s cachePrewarmLogStore) Recent(context.Context, string, int) ([]domain.AccessLogEvent, error) {
+	return append([]domain.AccessLogEvent(nil), s.events...), nil
+}
 
 type recordingZoneResolver struct {
 	zoneID  string
@@ -706,6 +716,79 @@ func TestSitePassthroughAPICompatibilityAndCacheInvalidation(t *testing.T) {
 	}
 	if afterInvalidation.CacheGeneration != passthrough.CacheGeneration {
 		t.Fatalf("rejected cache invalidation changed generation: before=%d after=%d", passthrough.CacheGeneration, afterInvalidation.CacheGeneration)
+	}
+}
+
+func TestScopedCacheInvalidationAPIPublishesPrefixRuleAndPrewarmPaths(t *testing.T) {
+	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.CreateInitialAdmin("hash", "secret"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CreateSession("admin", "session-token", "csrf-token", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	node, err := database.CreateNode("edge-prewarm", "203.0.113.83")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetNodeCapabilities(node.ID, []string{domain.EdgeCapabilityCacheControl}); err != nil {
+		t.Fatal(err)
+	}
+	site, err := database.CreateSite(domain.Site{
+		Name: "prewarm", Domains: []string{"cdn.example.test"}, Nodes: []string{node.ID},
+		PrimaryOrigin:        domain.Origin{URL: "https://origin.example.test", Enabled: true},
+		RequestBodyBuffering: true, OriginResponseBuffering: true, Enabled: true,
+	}, "zone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := NewEncryptionKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := NewCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publisher := Publisher{Store: database, Cipher: cipher}
+	certificate, privateKey, notAfter := testCertificate(t, "cdn.example.test")
+	if err := publisher.StoreCertificate(site.ID, certificate, privateKey, notAfter); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{
+		Store: database, Publisher: publisher,
+		Logs: cachePrewarmLogStore{events: []domain.AccessLogEvent{
+			{Method: http.MethodGet, Path: "/assets/app.js", Status: 200},
+			{Method: http.MethodHead, Path: "/assets/manual.js", Status: 304},
+			{Method: http.MethodGet, Path: "/outside.js", Status: 200},
+			{Method: http.MethodPost, Path: "/assets/upload", Status: 201},
+		}},
+	}
+	response := requestSiteResponse(t, server, http.MethodPost, "/api/sites/"+site.ID+"/invalidate-cache", map[string]any{
+		"scope": "prefix", "value": "/assets/", "prewarm": true,
+		"prewarm_paths": []string{"/assets/manual.js"},
+	})
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("scoped invalidation = %d %s", response.Code, response.Body.String())
+	}
+	loaded, _, err := database.GetSite(site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.CacheInvalidations) != 1 || loaded.CacheInvalidations[0].Scope != domain.CacheInvalidationPrefix || loaded.CacheInvalidations[0].Value != "/assets/" || len(loaded.CacheWarmups) != 1 {
+		t.Fatalf("persisted cache operation = %#v", loaded)
+	}
+	paths := loaded.CacheWarmups[0].Paths
+	if len(paths) != 2 || paths[0] != "/assets/manual.js" || paths[1] != "/assets/app.js" {
+		t.Fatalf("prewarm paths = %#v", paths)
+	}
+	state, _, err := database.NodeState(node.ID)
+	if err != nil || len(state.CacheWarmups) != 1 || state.CacheWarmups[0].ID != loaded.CacheWarmups[0].ID {
+		t.Fatalf("published node warmups = %#v, %v", state.CacheWarmups, err)
 	}
 }
 

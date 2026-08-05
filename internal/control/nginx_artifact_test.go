@@ -54,7 +54,15 @@ func TestResolveNginxBundleRejectsUnsafeOrMalformedArchives(t *testing.T) {
 		"wrong architecture": func(entries []testNginxArchiveEntry) []testNginxArchiveEntry {
 			for index := range entries {
 				if entries[index].name == "nginx/BUILD.json" {
-					entries[index].contents = `{"nginx_version":"1.30.4","architecture":"arm64"}`
+					entries[index].contents = testNginxBuildJSON("1.30.4", "arm64")
+				}
+			}
+			return entries
+		},
+		"invalid compression metadata": func(entries []testNginxArchiveEntry) []testNginxArchiveEntry {
+			for index := range entries {
+				if entries[index].name == "nginx/BUILD.json" {
+					entries[index].contents = strings.Replace(testNginxBuildJSON("1.30.4", "amd64"), strings.Repeat("a", 40), "not-a-commit", 1)
 				}
 			}
 			return entries
@@ -117,9 +125,18 @@ func validTestNginxEntries(version string) []testNginxArchiveEntry {
 		{name: "nginx/licenses/lua-nginx-module.txt", mode: 0o644, typeflag: tar.TypeReg, contents: "lua nginx license"},
 		{name: "nginx/licenses/lua-resty-core.txt", mode: 0o644, typeflag: tar.TypeReg, contents: "resty core license"},
 		{name: "nginx/licenses/lua-resty-lrucache.txt", mode: 0o644, typeflag: tar.TypeReg, contents: "lrucache license"},
+		{name: "nginx/licenses/ngx_brotli.txt", mode: 0o644, typeflag: tar.TypeReg, contents: "ngx brotli license"},
+		{name: "nginx/licenses/brotli.txt", mode: 0o644, typeflag: tar.TypeReg, contents: "brotli license"},
+		{name: "nginx/licenses/zstd-nginx-module.txt", mode: 0o644, typeflag: tar.TypeReg, contents: "zstd nginx license"},
+		{name: "nginx/licenses/zstd-library.txt", mode: 0o644, typeflag: tar.TypeReg, contents: "zstd license"},
 		{name: "nginx/VERSION", mode: 0o644, typeflag: tar.TypeReg, contents: version + "\n"},
-		{name: "nginx/BUILD.json", mode: 0o644, typeflag: tar.TypeReg, contents: fmt.Sprintf(`{"nginx_version":%q,"architecture":"amd64"}`, version)},
+		{name: "nginx/BUILD.json", mode: 0o644, typeflag: tar.TypeReg, contents: testNginxBuildJSON(version, "amd64")},
 	}
+}
+
+func testNginxBuildJSON(version, architecture string) string {
+	return fmt.Sprintf(`{"nginx_version":%q,"architecture":%q,"ngx_brotli_commit":%q,"brotli_commit":%q,"zstd_nginx_commit":%q}`,
+		version, architecture, strings.Repeat("a", 40), strings.Repeat("b", 40), strings.Repeat("c", 40))
 }
 
 func writeTestNginxArchive(t *testing.T, pathname string, entries []testNginxArchiveEntry) {

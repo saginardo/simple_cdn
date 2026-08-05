@@ -26,10 +26,32 @@ func (s *Server) reconcileEdgeRuntimeCapabilities(nodeID string, capabilities []
 	if err != nil {
 		return err
 	}
-	if !http3StateNeedsRebuild(state, http3Wanted) && !originPoolStateNeedsRebuild(state, capabilities) && !originHTTP2StateNeedsRebuild(state, capabilities) && !requestTracingStateNeedsRebuild(state, capabilities) && !securityRuntimeStateNeedsRebuild(state, capabilities) && !staticAssetsNeedRebuild && !runtimeOptimizationStateNeedsRebuild(state) {
+	cacheWarmupsNeedRebuild, err := s.cacheWarmupStateNeedsRebuild(nodeID, state, capabilities)
+	if err != nil {
+		return err
+	}
+	if !http3StateNeedsRebuild(state, http3Wanted) && !originPoolStateNeedsRebuild(state, capabilities) && !originHTTP2StateNeedsRebuild(state, capabilities) && !requestTracingStateNeedsRebuild(state, capabilities) && !securityRuntimeStateNeedsRebuild(state, capabilities) && !compressionRuntimeStateNeedsRebuild(state, capabilities) && !staticAssetsNeedRebuild && !cacheWarmupsNeedRebuild && !runtimeOptimizationStateNeedsRebuild(state) {
 		return nil
 	}
 	return s.Publisher.PublishNode(nodeID)
+}
+
+func (s *Server) cacheWarmupStateNeedsRebuild(nodeID string, state domain.DesiredState, capabilities []string) (bool, error) {
+	publications, err := s.Store.ListSitePublications()
+	if err != nil {
+		return false, err
+	}
+	sites := make([]domain.Site, 0)
+	for _, publication := range publications {
+		if siteHasNode(publication.Site, nodeID) {
+			sites = append(sites, publication.Site)
+		}
+	}
+	expected, err := cacheWarmupsForNode(sites, capabilities)
+	if err != nil {
+		return false, err
+	}
+	return !cacheWarmupsEqual(state.CacheWarmups, expected), nil
 }
 
 func (s *Server) staticAssetStateNeedsRebuild(nodeID string, state domain.DesiredState, capabilities []string) (bool, error) {
@@ -63,6 +85,12 @@ func securityRuntimeStateNeedsRebuild(state domain.DesiredState, capabilities []
 	wafConfigured := strings.Contains(state.NginxConfig, nginx.WAFRuntimeMarker)
 	powConfigured := strings.Contains(state.NginxConfig, nginx.POWRuntimeMarker)
 	return wafWanted != wafConfigured || powWanted != powConfigured
+}
+
+func compressionRuntimeStateNeedsRebuild(state domain.DesiredState, capabilities []string) bool {
+	wanted := slices.Contains(capabilities, domain.EdgeCapabilityCompression) && strings.Contains(state.NginxConfig, "log_format cdn_json")
+	configured := strings.Contains(state.NginxConfig, nginx.CompressionRuntimeMarker)
+	return wanted != configured
 }
 
 func requestTracingStateNeedsRebuild(state domain.DesiredState, capabilities []string) bool {

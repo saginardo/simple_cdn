@@ -138,6 +138,84 @@ func TestCleanupStaticAssetsOnlyRemovesUnreferencedContentObjects(t *testing.T) 
 	}
 }
 
+func TestSyncStaticAssetsCreatesRepairsAndCleansCompressionSidecars(t *testing.T) {
+	contents := bytes.Repeat([]byte("function edgeCompressionFixture(){return 'compressible';}\n"), 128)
+	digest := fmt.Sprintf("%x", sha256.Sum256(contents))
+	client := &http.Client{Transport: staticAssetRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header),
+			Body: io.NopCloser(bytes.NewReader(contents)), ContentLength: int64(len(contents)),
+		}, nil
+	})}
+	directory := t.TempDir()
+	agent := &Agent{Config: Config{
+		ControlURL: "https://control.example.test", HTTPClient: client, StaticAssetDirectory: directory,
+	}}
+	reference := staticAssetTestReference(digest, int64(len(contents)))
+	if err := agent.syncStaticAssets([]domain.StaticAssetReference{reference}); err != nil {
+		t.Fatal(err)
+	}
+	for _, compression := range staticAssetCompressions {
+		path := filepath.Join(directory, digest+compression.suffix)
+		file, err := os.Open(path)
+		if err != nil {
+			t.Fatalf("open %s sidecar: %v", compression.suffix, err)
+		}
+		reader, closeReader, err := openStaticAssetCompressionReader(file, compression.suffix)
+		if err != nil {
+			file.Close()
+			t.Fatalf("open %s decoder: %v", compression.suffix, err)
+		}
+		decoded, readErr := io.ReadAll(reader)
+		closeReader()
+		file.Close()
+		if readErr != nil || !bytes.Equal(decoded, contents) {
+			t.Fatalf("decoded %s sidecar = %d bytes, err=%v", compression.suffix, len(decoded), readErr)
+		}
+	}
+
+	corruptPath := filepath.Join(directory, digest+".br")
+	if err := os.WriteFile(corruptPath, []byte("corrupt"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.syncStaticAssets([]domain.StaticAssetReference{reference}); err != nil {
+		t.Fatal(err)
+	}
+	if matches, err := compressedStaticAssetMatches(corruptPath, reference, ".br"); err != nil || !matches {
+		t.Fatalf("repaired Brotli sidecar matches = %v, %v", matches, err)
+	}
+
+	nonCompressible := reference
+	nonCompressible.ContentType = "image/png"
+	if err := agent.cleanupStaticAssets([]domain.StaticAssetReference{nonCompressible}); err != nil {
+		t.Fatal(err)
+	}
+	for _, compression := range staticAssetCompressions {
+		if _, err := os.Stat(filepath.Join(directory, digest+compression.suffix)); !os.IsNotExist(err) {
+			t.Fatalf("non-compressible %s sidecar remains: %v", compression.suffix, err)
+		}
+	}
+}
+
+func TestNormalizeDesiredStaticAssetsRequiresEveryDigestBindingToBeCompressible(t *testing.T) {
+	digest := strings.Repeat("d", 64)
+	compressible := staticAssetTestReference(digest, 1024)
+	nonCompressible := compressible
+	nonCompressible.BindingID = "image-binding"
+	nonCompressible.SiteID = "image-site"
+	nonCompressible.URLPath = "/image.png"
+	nonCompressible.ContentType = "image/png"
+	for _, references := range [][]domain.StaticAssetReference{{compressible, nonCompressible}, {nonCompressible, compressible}} {
+		desired, err := normalizeDesiredStaticAssets(references)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if domain.PrecompressibleStaticAsset(desired[digest].ContentType, desired[digest].SizeBytes) {
+			t.Fatalf("mixed MIME bindings selected a compressible reference: %#v", desired[digest])
+		}
+	}
+}
+
 func staticAssetTestReference(digest string, size int64) domain.StaticAssetReference {
 	return domain.StaticAssetReference{
 		AssetID: "asset", BindingID: "binding", SiteID: "site", URLPath: "/app.js",

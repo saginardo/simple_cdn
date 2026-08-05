@@ -17,11 +17,13 @@ Paths are normalized clean absolute paths and are limited to 1,024 characters. `
 
 The generated Nginx configuration uses an exact-match location. Only GET and HEAD are allowed. The response includes the stored MIME type, `X-Content-Type-Options: nosniff`, the selected `Cache-Control`, an Nginx ETag, and exact `If-Modified-Since` handling. WAF, PoW, rate limits, normal access logging, TLS, and request IDs still apply before the file is served.
 
+For eligible public text, JavaScript, JSON, XML, SVG, font, WebAssembly, and manifest objects of at least 256 bytes, the Agent creates `.gz`, `.br`, and `.zst` sidecars next to the verified identity object. A sidecar is kept only when it is smaller than the original and decompresses back to the expected SHA-256 content. If the same digest has bindings with incompatible MIME types, no sidecars are exposed for that digest. Nginx selects a sidecar through normal `Accept-Encoding` negotiation; the identity object remains available to clients that do not advertise a supported encoding. `text/event-stream` is never precompressed.
+
 ## Edge synchronization
 
 Static resources require the `static_assets_v1` edge capability. Before a binding is accepted, every node assigned to the site must advertise the capability; this prevents a URL from working on only part of the site's DNS pool.
 
-Desired state contains only the digest, size, MIME type, and binding metadata. An authorized edge can download only digests referenced by its own current desired state over its existing mTLS identity. The Agent downloads into a temporary file, verifies both byte length and SHA-256, fsyncs it, and atomically renames it into `/opt/cdn-edge/static/objects`. Existing symbolic links are replaced instead of trusted. The object directory is root-owned and read-only to Nginx workers. A configuration is not applied until all referenced objects are valid locally.
+Desired state contains only the digest, size, MIME type, and binding metadata. An authorized edge can download only digests referenced by its own current desired state over its existing mTLS identity. The Agent downloads into a temporary file, verifies both byte length and SHA-256, fsyncs it, atomically renames it into `/opt/cdn-edge/static/objects`, and then creates or repairs eligible compressed sidecars atomically. Existing symbolic links are replaced instead of trusted. The object directory is root-owned and read-only to Nginx workers. A configuration is not applied until all referenced objects and required sidecar checks are valid locally.
 
 After a successful apply, the Agent removes content-addressed objects no longer referenced by that node. The controller removes an object from its own store only after its bindings have been withdrawn and all replacement desired states have been rendered and saved successfully. A render or state-save failure restores the binding metadata instead of leaving a partially removed URL; individual edges remove their local copy only after they successfully apply the new state.
 
@@ -41,8 +43,11 @@ After assigning a resource, wait for the normal publish task to finish, then ver
 curl --resolve static.example.com:443:203.0.113.10 \
   -I https://static.example.com/assets/app.js
 
+curl --resolve static.example.com:443:203.0.113.10 \
+  -H 'Accept-Encoding: br' -I https://static.example.com/assets/app.js
+
 sudo find /opt/cdn-edge/static/objects -maxdepth 1 -type f -printf '%f %s bytes\n'
 sudo /opt/cdn-edge/nginx/sbin/nginx -T 2>/dev/null | grep -F 'location = "/assets/app.js"'
 ```
 
-The response should have the configured MIME type and cache policy, and repeated requests should return the same ETag. A POST to the same exact path must not serve the object.
+The response should have the configured MIME type and cache policy, and repeated requests should return the same ETag. The second request should return `Content-Encoding: br` when the object is eligible and its Brotli sidecar is smaller. A POST to the same exact path must not serve the object.

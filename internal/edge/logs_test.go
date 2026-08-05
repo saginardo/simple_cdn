@@ -63,6 +63,33 @@ func TestDecodeNginxLogMarksEmptyCompletionAsInterrupted(t *testing.T) {
 	}
 }
 
+func TestDecodeNginxLogCalculatesDynamicAndStaticCompressionSavings(t *testing.T) {
+	tests := []struct {
+		name       string
+		fields     string
+		encoding   string
+		ratio      float64
+		savedBytes int64
+	}{
+		{name: "gzip dynamic", fields: `"method":"GET","status":200,"bytes":400,"content_encoding":"gzip","gzip_ratio":"2.50"`, encoding: "gzip", ratio: 2.5, savedBytes: 600},
+		{name: "brotli dynamic", fields: `"method":"GET","status":200,"bytes":500,"content_encoding":"br","brotli_ratio":"2"`, encoding: "br", ratio: 2, savedBytes: 500},
+		{name: "zstd static", fields: `"method":"GET","status":200,"bytes":300,"content_encoding":"zstd","zstd_ratio":"-","static_uncompressed_bytes":1000,"range":"-"`, encoding: "zstd", ratio: 1000.0 / 300.0, savedBytes: 700},
+		{name: "range excluded", fields: `"method":"GET","status":206,"bytes":300,"content_encoding":"gzip","gzip_ratio":"-","static_uncompressed_bytes":1000,"range":"bytes=0-299"`, encoding: "gzip"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			line := []byte(`{"timestamp":"2026-08-05T10:20:30Z","duration_seconds":0,` + test.fields + `}`)
+			event, err := decodeNginxLog(line)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if event.ContentEncoding != test.encoding || event.CompressionSavedBytes != test.savedBytes || event.CompressionRatio != test.ratio {
+				t.Fatalf("compression event = encoding %q ratio %v saved %d", event.ContentEncoding, event.CompressionRatio, event.CompressionSavedBytes)
+			}
+		})
+	}
+}
+
 func TestLogForwarderMigratesLegacyQueueAndFlushes(t *testing.T) {
 	directory := t.TempDir()
 	forwarder := NewLogForwarder(directory, filepath.Join(directory, "access.json"))

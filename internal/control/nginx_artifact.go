@@ -21,7 +21,10 @@ const (
 	nginxBundleEntryLimit        = 4096
 )
 
-var nginxVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
+var (
+	nginxVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
+	gitCommitPattern    = regexp.MustCompile(`^[0-9a-f]{40}$`)
+)
 
 type NginxBundleMetadata struct {
 	SHA256  string
@@ -29,8 +32,11 @@ type NginxBundleMetadata struct {
 }
 
 type nginxBundleBuild struct {
-	NginxVersion string `json:"nginx_version"`
-	Architecture string `json:"architecture"`
+	NginxVersion    string `json:"nginx_version"`
+	Architecture    string `json:"architecture"`
+	NGXBrotliCommit string `json:"ngx_brotli_commit"`
+	BrotliCommit    string `json:"brotli_commit"`
+	ZstdNginxCommit string `json:"zstd_nginx_commit"`
 }
 
 func ResolveNginxBundle(pathname string) (NginxBundleMetadata, error) {
@@ -78,6 +84,10 @@ func ResolveNginxBundle(pathname string) (NginxBundleMetadata, error) {
 		"nginx/licenses/lua-nginx-module.txt":   false,
 		"nginx/licenses/lua-resty-core.txt":     false,
 		"nginx/licenses/lua-resty-lrucache.txt": false,
+		"nginx/licenses/ngx_brotli.txt":         false,
+		"nginx/licenses/brotli.txt":             false,
+		"nginx/licenses/zstd-nginx-module.txt":  false,
+		"nginx/licenses/zstd-library.txt":       false,
 		"nginx/VERSION":                         false,
 		"nginx/BUILD.json":                      false,
 	}
@@ -155,6 +165,11 @@ func ResolveNginxBundle(pathname string) (NginxBundleMetadata, error) {
 	}
 	if build.NginxVersion != version || build.Architecture != "amd64" {
 		return NginxBundleMetadata{}, errors.New("Nginx bundle BUILD.json does not match VERSION or amd64 architecture")
+	}
+	for _, commit := range []string{build.NGXBrotliCommit, build.BrotliCommit, build.ZstdNginxCommit} {
+		if !gitCommitPattern.MatchString(strings.ToLower(strings.TrimSpace(commit))) {
+			return NginxBundleMetadata{}, errors.New("Nginx bundle BUILD.json has invalid compression module metadata")
+		}
 	}
 	return NginxBundleMetadata{SHA256: hex.EncodeToString(hash.Sum(nil)), Version: version}, nil
 }

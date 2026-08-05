@@ -126,6 +126,8 @@ CREATE TABLE IF NOT EXISTS sites (
 	passthrough INTEGER NOT NULL DEFAULT 0,
 	request_body_buffering INTEGER NOT NULL DEFAULT 1,
 	origin_response_buffering INTEGER NOT NULL DEFAULT 1,
+	dynamic_compression_enabled INTEGER NOT NULL DEFAULT 1,
+	compression_excluded_mime_types_json TEXT NOT NULL DEFAULT '["text/event-stream"]',
 	http3_enabled INTEGER NOT NULL DEFAULT 0,
 	client_max_body_size_mb INTEGER NOT NULL DEFAULT 128,
 	client_keepalive_timeout_seconds INTEGER NOT NULL DEFAULT 120,
@@ -135,6 +137,8 @@ CREATE TABLE IF NOT EXISTS sites (
 	tcp_forwards_json TEXT NOT NULL DEFAULT '[]',
 	cache_max_size_gb INTEGER,
   cache_generation INTEGER NOT NULL DEFAULT 1,
+	cache_invalidations_json TEXT NOT NULL DEFAULT '[]',
+	cache_warmups_json TEXT NOT NULL DEFAULT '[]',
   config_version INTEGER NOT NULL DEFAULT 1,
   published INTEGER NOT NULL DEFAULT 0,
   enabled INTEGER NOT NULL DEFAULT 1,
@@ -173,6 +177,7 @@ CREATE TABLE IF NOT EXISTS node_states (
 	public_udp_ports_json TEXT NOT NULL DEFAULT '[]',
 	origin_pools_json TEXT NOT NULL DEFAULT '[]',
 	static_assets_json TEXT NOT NULL DEFAULT '[]',
+	cache_warmups_json TEXT NOT NULL DEFAULT '[]',
 	cache_max_bytes INTEGER NOT NULL DEFAULT 1073741824,
   certificate_ciphertext BLOB,
   private_key_ciphertext BLOB,
@@ -1438,6 +1443,14 @@ func (s *Store) setNodeStatus(nodeID string, status domain.NodeStatus, manual bo
 	return smartRoutingDisabled, nil
 }
 
+const siteSelectColumns = `id, name, zone_id, domains_json, node_ids_json, primary_origin_json,
+	backup_origin_json, stream_paths_json, passthrough, request_body_buffering,
+	origin_response_buffering, dynamic_compression_enabled, compression_excluded_mime_types_json,
+	http3_enabled, client_max_body_size_mb, client_keepalive_timeout_seconds,
+	read_write_timeout_seconds, dns_ttl_seconds, tcp_only, tcp_forwards_json,
+	cache_max_size_gb, cache_generation, cache_invalidations_json, cache_warmups_json,
+	config_version, published, enabled, deleting, created_at, updated_at`
+
 func (s *Store) CreateSite(site domain.Site, zoneID string) (domain.Site, error) {
 	zoneID = strings.TrimSpace(zoneID)
 	if zoneID == "" {
@@ -1485,6 +1498,18 @@ func (s *Store) insertSite(site domain.Site, zoneID string) error {
 	if err != nil {
 		return err
 	}
+	compressionExclusions, err := json.Marshal(site.CompressionExcludedMIMETypes)
+	if err != nil {
+		return err
+	}
+	cacheInvalidations, err := json.Marshal(site.CacheInvalidations)
+	if err != nil {
+		return err
+	}
+	cacheWarmups, err := json.Marshal(site.CacheWarmups)
+	if err != nil {
+		return err
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -1496,8 +1521,8 @@ func (s *Store) insertSite(site domain.Site, zoneID string) error {
 	if err := validateSiteWireGuardTunnels(tx, site); err != nil {
 		return err
 	}
-	_, err = tx.Exec(`INSERT INTO sites(id, name, zone_id, domains_json, node_ids_json, primary_origin_json, backup_origin_json, stream_paths_json, passthrough, request_body_buffering, origin_response_buffering, http3_enabled, client_max_body_size_mb, client_keepalive_timeout_seconds, read_write_timeout_seconds, dns_ttl_seconds, tcp_only, tcp_forwards_json, cache_max_size_gb, cache_generation, config_version, published, enabled, deleting, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		site.ID, site.Name, zoneID, string(domains), string(nodes), string(primary), backup, string(streamPaths), boolInt(site.Passthrough), boolInt(site.RequestBodyBuffering), boolInt(site.OriginResponseBuffering), boolInt(site.HTTP3Enabled), site.ClientMaxBodySizeMB, site.ClientKeepaliveTimeoutSeconds, site.ReadWriteTimeoutSeconds, site.DNSTTLSeconds, boolInt(site.TCPOnly), string(tcpForwards), site.CacheMaxSizeGB, site.CacheGeneration, site.ConfigVersion, boolInt(site.Published), boolInt(site.Enabled), boolInt(site.Deleting), stamp(site.CreatedAt), stamp(site.UpdatedAt))
+	_, err = tx.Exec(`INSERT INTO sites(id, name, zone_id, domains_json, node_ids_json, primary_origin_json, backup_origin_json, stream_paths_json, passthrough, request_body_buffering, origin_response_buffering, dynamic_compression_enabled, compression_excluded_mime_types_json, http3_enabled, client_max_body_size_mb, client_keepalive_timeout_seconds, read_write_timeout_seconds, dns_ttl_seconds, tcp_only, tcp_forwards_json, cache_max_size_gb, cache_generation, cache_invalidations_json, cache_warmups_json, config_version, published, enabled, deleting, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		site.ID, site.Name, zoneID, string(domains), string(nodes), string(primary), backup, string(streamPaths), boolInt(site.Passthrough), boolInt(site.RequestBodyBuffering), boolInt(site.OriginResponseBuffering), boolInt(site.DynamicCompressionEnabled), string(compressionExclusions), boolInt(site.HTTP3Enabled), site.ClientMaxBodySizeMB, site.ClientKeepaliveTimeoutSeconds, site.ReadWriteTimeoutSeconds, site.DNSTTLSeconds, boolInt(site.TCPOnly), string(tcpForwards), site.CacheMaxSizeGB, site.CacheGeneration, string(cacheInvalidations), string(cacheWarmups), site.ConfigVersion, boolInt(site.Published), boolInt(site.Enabled), boolInt(site.Deleting), stamp(site.CreatedAt), stamp(site.UpdatedAt))
 	if err != nil {
 		return err
 	}
@@ -1508,11 +1533,11 @@ func (s *Store) insertSite(site domain.Site, zoneID string) error {
 }
 
 func (s *Store) GetSite(id string) (domain.Site, string, error) {
-	return scanSite(s.db.QueryRow(`SELECT id, name, zone_id, domains_json, node_ids_json, primary_origin_json, backup_origin_json, stream_paths_json, passthrough, request_body_buffering, origin_response_buffering, http3_enabled, client_max_body_size_mb, client_keepalive_timeout_seconds, read_write_timeout_seconds, dns_ttl_seconds, tcp_only, tcp_forwards_json, cache_max_size_gb, cache_generation, config_version, published, enabled, deleting, created_at, updated_at FROM sites WHERE id = ?`, id))
+	return scanSite(s.db.QueryRow(`SELECT `+siteSelectColumns+` FROM sites WHERE id = ?`, id))
 }
 
 func (s *Store) ListSites() ([]domain.Site, error) {
-	rows, err := s.db.Query(`SELECT id, name, zone_id, domains_json, node_ids_json, primary_origin_json, backup_origin_json, stream_paths_json, passthrough, request_body_buffering, origin_response_buffering, http3_enabled, client_max_body_size_mb, client_keepalive_timeout_seconds, read_write_timeout_seconds, dns_ttl_seconds, tcp_only, tcp_forwards_json, cache_max_size_gb, cache_generation, config_version, published, enabled, deleting, created_at, updated_at FROM sites ORDER BY name`)
+	rows, err := s.db.Query(`SELECT ` + siteSelectColumns + ` FROM sites ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -1530,12 +1555,12 @@ func (s *Store) ListSites() ([]domain.Site, error) {
 
 func scanSite(row scanner) (domain.Site, string, error) {
 	var site domain.Site
-	var zoneID, domains, nodes, primary, streamPaths, tcpForwards string
+	var zoneID, domains, nodes, primary, streamPaths, tcpForwards, compressionExclusions, cacheInvalidations, cacheWarmups string
 	var backup sql.NullString
 	var dnsTTL, cacheMaxSizeGB sql.NullInt64
-	var passthrough, requestBodyBuffering, originResponseBuffering, http3Enabled, tcpOnly, published, enabled, deleting int
+	var passthrough, requestBodyBuffering, originResponseBuffering, dynamicCompressionEnabled, http3Enabled, tcpOnly, published, enabled, deleting int
 	var createdAt, updatedAt string
-	err := row.Scan(&site.ID, &site.Name, &zoneID, &domains, &nodes, &primary, &backup, &streamPaths, &passthrough, &requestBodyBuffering, &originResponseBuffering, &http3Enabled, &site.ClientMaxBodySizeMB, &site.ClientKeepaliveTimeoutSeconds, &site.ReadWriteTimeoutSeconds, &dnsTTL, &tcpOnly, &tcpForwards, &cacheMaxSizeGB, &site.CacheGeneration, &site.ConfigVersion, &published, &enabled, &deleting, &createdAt, &updatedAt)
+	err := row.Scan(&site.ID, &site.Name, &zoneID, &domains, &nodes, &primary, &backup, &streamPaths, &passthrough, &requestBodyBuffering, &originResponseBuffering, &dynamicCompressionEnabled, &compressionExclusions, &http3Enabled, &site.ClientMaxBodySizeMB, &site.ClientKeepaliveTimeoutSeconds, &site.ReadWriteTimeoutSeconds, &dnsTTL, &tcpOnly, &tcpForwards, &cacheMaxSizeGB, &site.CacheGeneration, &cacheInvalidations, &cacheWarmups, &site.ConfigVersion, &published, &enabled, &deleting, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.Site{}, "", ErrNotFound
 	}
@@ -1565,6 +1590,15 @@ func scanSite(row scanner) (domain.Site, string, error) {
 	if err := json.Unmarshal([]byte(tcpForwards), &site.TCPForwards); err != nil {
 		return domain.Site{}, "", err
 	}
+	if err := json.Unmarshal([]byte(compressionExclusions), &site.CompressionExcludedMIMETypes); err != nil {
+		return domain.Site{}, "", err
+	}
+	if err := json.Unmarshal([]byte(cacheInvalidations), &site.CacheInvalidations); err != nil {
+		return domain.Site{}, "", err
+	}
+	if err := json.Unmarshal([]byte(cacheWarmups), &site.CacheWarmups); err != nil {
+		return domain.Site{}, "", err
+	}
 	var parseErr error
 	site.CreatedAt, parseErr = parseTime(createdAt)
 	if parseErr != nil {
@@ -1577,6 +1611,7 @@ func scanSite(row scanner) (domain.Site, string, error) {
 	site.Passthrough = passthrough != 0
 	site.RequestBodyBuffering = requestBodyBuffering != 0
 	site.OriginResponseBuffering = originResponseBuffering != 0
+	site.DynamicCompressionEnabled = dynamicCompressionEnabled != 0
 	site.HTTP3Enabled = http3Enabled != 0
 	site.TCPOnly = tcpOnly != 0
 	if dnsTTL.Valid {
@@ -1609,6 +1644,10 @@ func (s *Store) UpdateSite(site domain.Site, zoneID string) (domain.Site, error)
 		return domain.Site{}, errors.New("Cloudflare zone ID cannot be changed after site creation; create a new site instead")
 	}
 	site.ZoneID = currentZoneID
+	// Cache-control rules and prewarm jobs are mutated only through the cache
+	// operation API, not through general site edits.
+	site.CacheInvalidations = append([]domain.CacheInvalidationRule(nil), current.CacheInvalidations...)
+	site.CacheWarmups = append([]domain.CacheWarmup(nil), current.CacheWarmups...)
 	if err := domain.NormalizeAndValidateSite(&site); err != nil {
 		return domain.Site{}, err
 	}
@@ -1626,6 +1665,9 @@ func (s *Store) UpdateSite(site domain.Site, zoneID string) (domain.Site, error)
 	primary, _ := json.Marshal(site.PrimaryOrigin)
 	streamPaths, _ := json.Marshal(site.StreamPaths)
 	tcpForwards, _ := json.Marshal(site.TCPForwards)
+	compressionExclusions, _ := json.Marshal(site.CompressionExcludedMIMETypes)
+	cacheInvalidations, _ := json.Marshal(site.CacheInvalidations)
+	cacheWarmups, _ := json.Marshal(site.CacheWarmups)
 	var backup any
 	if site.BackupOrigin != nil {
 		backup, _ = json.Marshal(site.BackupOrigin)
@@ -1650,7 +1692,7 @@ func (s *Store) UpdateSite(site domain.Site, zoneID string) (domain.Site, error)
 	if err := replaceSiteDomainClaims(tx, site.ID, reservedDomains); err != nil {
 		return domain.Site{}, err
 	}
-	_, err = tx.Exec(`UPDATE sites SET name=?, zone_id=?, domains_json=?, node_ids_json=?, primary_origin_json=?, backup_origin_json=?, stream_paths_json=?, passthrough=?, request_body_buffering=?, origin_response_buffering=?, http3_enabled=?, client_max_body_size_mb=?, client_keepalive_timeout_seconds=?, read_write_timeout_seconds=?, dns_ttl_seconds=?, tcp_only=?, tcp_forwards_json=?, cache_max_size_gb=?, cache_generation=?, config_version=?, published=?, enabled=?, deleting=?, updated_at=? WHERE id=?`, site.Name, zoneID, string(domains), string(nodes), string(primary), backup, string(streamPaths), boolInt(site.Passthrough), boolInt(site.RequestBodyBuffering), boolInt(site.OriginResponseBuffering), boolInt(site.HTTP3Enabled), site.ClientMaxBodySizeMB, site.ClientKeepaliveTimeoutSeconds, site.ReadWriteTimeoutSeconds, site.DNSTTLSeconds, boolInt(site.TCPOnly), string(tcpForwards), site.CacheMaxSizeGB, site.CacheGeneration, site.ConfigVersion, boolInt(site.Published), boolInt(site.Enabled), boolInt(site.Deleting), stamp(site.UpdatedAt), site.ID)
+	_, err = tx.Exec(`UPDATE sites SET name=?, zone_id=?, domains_json=?, node_ids_json=?, primary_origin_json=?, backup_origin_json=?, stream_paths_json=?, passthrough=?, request_body_buffering=?, origin_response_buffering=?, dynamic_compression_enabled=?, compression_excluded_mime_types_json=?, http3_enabled=?, client_max_body_size_mb=?, client_keepalive_timeout_seconds=?, read_write_timeout_seconds=?, dns_ttl_seconds=?, tcp_only=?, tcp_forwards_json=?, cache_max_size_gb=?, cache_generation=?, cache_invalidations_json=?, cache_warmups_json=?, config_version=?, published=?, enabled=?, deleting=?, updated_at=? WHERE id=?`, site.Name, zoneID, string(domains), string(nodes), string(primary), backup, string(streamPaths), boolInt(site.Passthrough), boolInt(site.RequestBodyBuffering), boolInt(site.OriginResponseBuffering), boolInt(site.DynamicCompressionEnabled), string(compressionExclusions), boolInt(site.HTTP3Enabled), site.ClientMaxBodySizeMB, site.ClientKeepaliveTimeoutSeconds, site.ReadWriteTimeoutSeconds, site.DNSTTLSeconds, boolInt(site.TCPOnly), string(tcpForwards), site.CacheMaxSizeGB, site.CacheGeneration, string(cacheInvalidations), string(cacheWarmups), site.ConfigVersion, boolInt(site.Published), boolInt(site.Enabled), boolInt(site.Deleting), stamp(site.UpdatedAt), site.ID)
 	if err != nil {
 		return domain.Site{}, err
 	}
@@ -1707,7 +1749,27 @@ func (s *Store) MarkSitePublished(siteID string) (domain.Site, error) {
 }
 
 func (s *Store) InvalidateSiteCache(siteID string) (domain.Site, error) {
-	site, _, err := s.GetSite(siteID)
+	return s.InvalidateSiteCacheScope(siteID, domain.CacheInvalidationFull, "", nil)
+}
+
+func (s *Store) InvalidateSiteCacheScope(siteID string, scope domain.CacheInvalidationScope, value string, prewarmPaths []string) (domain.Site, error) {
+	if scope != domain.CacheInvalidationFull {
+		var err error
+		value, err = domain.NormalizeCacheInvalidationTarget(scope, value)
+		if err != nil {
+			return domain.Site{}, err
+		}
+	}
+	prewarmPaths, err := domain.NormalizeCacheWarmupPaths(prewarmPaths)
+	if err != nil {
+		return domain.Site{}, err
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return domain.Site{}, err
+	}
+	defer tx.Rollback()
+	site, _, err := scanSite(tx.QueryRow(`SELECT `+siteSelectColumns+` FROM sites WHERE id = ?`, siteID))
 	if err != nil {
 		return domain.Site{}, err
 	}
@@ -1717,7 +1779,48 @@ func (s *Store) InvalidateSiteCache(siteID string) (domain.Site, error) {
 	if site.Passthrough || site.TCPOnly || !site.OriginResponseBuffering {
 		return domain.Site{}, ErrCacheDisabled
 	}
-	result, err := s.db.Exec(`UPDATE sites SET cache_generation = cache_generation + 1, config_version = config_version + 1, published = 0, updated_at = ? WHERE id = ?`, stamp(now()), siteID)
+	nextConfigVersion := site.ConfigVersion + 1
+	if scope == domain.CacheInvalidationFull {
+		site.CacheGeneration++
+		site.CacheInvalidations = []domain.CacheInvalidationRule{}
+	} else {
+		filtered := make([]domain.CacheInvalidationRule, 0, len(site.CacheInvalidations))
+		for _, rule := range site.CacheInvalidations {
+			if rule.Scope != scope || rule.Value != value {
+				filtered = append(filtered, rule)
+			}
+		}
+		if len(filtered) >= domain.MaxCacheInvalidationRules {
+			// Advancing the whole-site generation makes it safe to compact old
+			// scoped rules without reviving an older cache key.
+			site.CacheGeneration++
+			filtered = nil
+		}
+		site.CacheInvalidations = append(filtered, domain.CacheInvalidationRule{
+			Scope: scope, Value: value, Generation: nextConfigVersion,
+		})
+	}
+	if len(prewarmPaths) != 0 {
+		warmup := domain.CacheWarmup{
+			ID: uuid.NewString(), SiteID: site.ID, Host: site.Domains[0], Paths: prewarmPaths, CreatedAt: now(),
+		}
+		if len(site.CacheWarmups) >= domain.MaxCacheWarmups {
+			site.CacheWarmups = append([]domain.CacheWarmup(nil), site.CacheWarmups[len(site.CacheWarmups)-domain.MaxCacheWarmups+1:]...)
+		}
+		site.CacheWarmups = append(site.CacheWarmups, warmup)
+	}
+	site.ConfigVersion = nextConfigVersion
+	site.Published = false
+	site.UpdatedAt = now()
+	cacheInvalidations, err := json.Marshal(site.CacheInvalidations)
+	if err != nil {
+		return domain.Site{}, err
+	}
+	cacheWarmups, err := json.Marshal(site.CacheWarmups)
+	if err != nil {
+		return domain.Site{}, err
+	}
+	result, err := tx.Exec(`UPDATE sites SET cache_generation = ?, cache_invalidations_json = ?, cache_warmups_json = ?, config_version = ?, published = 0, updated_at = ? WHERE id = ?`, site.CacheGeneration, string(cacheInvalidations), string(cacheWarmups), site.ConfigVersion, stamp(site.UpdatedAt), siteID)
 	if err != nil {
 		return domain.Site{}, err
 	}
@@ -1728,8 +1831,10 @@ func (s *Store) InvalidateSiteCache(siteID string) (domain.Site, error) {
 	if changed != 1 {
 		return domain.Site{}, ErrNotFound
 	}
-	site, _, err = s.GetSite(siteID)
-	return site, err
+	if err := tx.Commit(); err != nil {
+		return domain.Site{}, err
+	}
+	return site, nil
 }
 
 func boolInt(value bool) int {
@@ -2153,26 +2258,31 @@ func saveNodeStatesTx(tx *sql.Tx, updates []NodeStateUpdate, updatedAt string) e
 		if err != nil {
 			return err
 		}
+		cacheWarmups, err := json.Marshal(update.State.CacheWarmups)
+		if err != nil {
+			return err
+		}
 		fragments, err := json.Marshal(update.State.NginxFragments)
 		if err != nil {
 			return err
 		}
 		if _, err := tx.Exec(`INSERT INTO node_states(node_id, version, nginx_config, nginx_stream_config,
 			nginx_main_config, nginx_events_config, nginx_fragments_json, public_ports_json,
-			public_udp_ports_json, origin_pools_json, static_assets_json, cache_max_bytes,
+			public_udp_ports_json, origin_pools_json, static_assets_json, cache_warmups_json, cache_max_bytes,
 			certificate_ciphertext, private_key_ciphertext, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
 			ON CONFLICT(node_id) DO UPDATE SET version=excluded.version,
 			nginx_config=excluded.nginx_config, nginx_stream_config=excluded.nginx_stream_config,
 			nginx_main_config=excluded.nginx_main_config, nginx_events_config=excluded.nginx_events_config,
 			nginx_fragments_json=excluded.nginx_fragments_json, public_ports_json=excluded.public_ports_json,
 			public_udp_ports_json=excluded.public_udp_ports_json, origin_pools_json=excluded.origin_pools_json,
-			static_assets_json=excluded.static_assets_json, cache_max_bytes=excluded.cache_max_bytes,
+			static_assets_json=excluded.static_assets_json, cache_warmups_json=excluded.cache_warmups_json,
+			cache_max_bytes=excluded.cache_max_bytes,
 			certificate_ciphertext=excluded.certificate_ciphertext, private_key_ciphertext=NULL,
 			updated_at=excluded.updated_at`, update.NodeID, update.State.Version, update.State.NginxConfig,
 			update.State.NginxStreamConfig, update.State.NginxMainConfig, update.State.NginxEventsConfig,
 			string(fragments), string(ports), string(udpPorts), string(originPools), string(staticAssets),
-			update.State.CacheMaxBytes, update.CertificatesCiphertext, updatedAt); err != nil {
+			string(cacheWarmups), update.State.CacheMaxBytes, update.CertificatesCiphertext, updatedAt); err != nil {
 			return err
 		}
 	}
@@ -2182,13 +2292,13 @@ func saveNodeStatesTx(tx *sql.Tx, updates []NodeStateUpdate, updatedAt string) e
 func (s *Store) NodeState(nodeID string) (domain.DesiredState, []byte, error) {
 	var state domain.DesiredState
 	var certificates []byte
-	var fragments, ports, udpPorts, originPools, staticAssets string
+	var fragments, ports, udpPorts, originPools, staticAssets, cacheWarmups string
 	err := s.db.QueryRow(`SELECT version, nginx_config, nginx_stream_config, nginx_main_config,
 		nginx_events_config, nginx_fragments_json, public_ports_json, public_udp_ports_json,
-		origin_pools_json, static_assets_json, cache_max_bytes, certificate_ciphertext
+		origin_pools_json, static_assets_json, cache_warmups_json, cache_max_bytes, certificate_ciphertext
 		FROM node_states WHERE node_id = ?`, nodeID).Scan(&state.Version, &state.NginxConfig,
 		&state.NginxStreamConfig, &state.NginxMainConfig, &state.NginxEventsConfig, &fragments,
-		&ports, &udpPorts, &originPools, &staticAssets, &state.CacheMaxBytes, &certificates)
+		&ports, &udpPorts, &originPools, &staticAssets, &cacheWarmups, &state.CacheMaxBytes, &certificates)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.DesiredState{}, nil, ErrNotFound
 	}
@@ -2206,6 +2316,9 @@ func (s *Store) NodeState(nodeID string) (domain.DesiredState, []byte, error) {
 	}
 	if err := json.Unmarshal([]byte(staticAssets), &state.StaticAssets); err != nil {
 		return domain.DesiredState{}, nil, fmt.Errorf("decode desired static assets: %w", err)
+	}
+	if err := json.Unmarshal([]byte(cacheWarmups), &state.CacheWarmups); err != nil {
+		return domain.DesiredState{}, nil, fmt.Errorf("decode desired cache prewarm jobs: %w", err)
 	}
 	if err := json.Unmarshal([]byte(fragments), &state.NginxFragments); err != nil {
 		return domain.DesiredState{}, nil, fmt.Errorf("decode desired Nginx fragments: %w", err)

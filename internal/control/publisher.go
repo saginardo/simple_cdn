@@ -324,6 +324,10 @@ func (p Publisher) renderNodeStateUpdates(materials []publicationMaterial, affec
 		if err != nil {
 			return nil, nil, fmt.Errorf("node %s static assets: %w", node.Name, err)
 		}
+		nodeCacheWarmups, err := cacheWarmupsForNode(nodeSites, node.Capabilities)
+		if err != nil {
+			return nil, nil, fmt.Errorf("node %s cache prewarm jobs: %w", node.Name, err)
+		}
 		http3Capable := slices.Contains(node.Capabilities, domain.EdgeCapabilityHTTP3)
 		managedOriginPools := slices.Contains(node.Capabilities, domain.EdgeCapabilityOriginConnection)
 		cacheSizeGB, err := domain.EffectiveNodeCacheMaxSizeGB(node, settings.CacheDefaultSizeGB)
@@ -340,6 +344,7 @@ func (p Publisher) renderNodeStateUpdates(materials []publicationMaterial, affec
 			POWCapable:             slices.Contains(node.Capabilities, domain.EdgeCapabilityPOWChallenge),
 			POWPolicies:            nodePOWPolicies,
 			StaticAssets:           nodeStaticAssets,
+			CompressionCapable:     slices.Contains(node.Capabilities, domain.EdgeCapabilityCompression),
 		})
 		if err != nil {
 			return nil, nil, err
@@ -363,7 +368,7 @@ func (p Publisher) renderNodeStateUpdates(materials []publicationMaterial, affec
 		}
 		version := int64(1)
 		if stateErr == nil {
-			if p.nodeStateMatches(previous, previousCertificates, config, streamConfig, mainConfig, eventsConfig, fragments, ports, udpPorts, originPools, nodeStaticAssets, cacheMaxBytes, certificates) {
+			if p.nodeStateMatches(previous, previousCertificates, config, streamConfig, mainConfig, eventsConfig, fragments, ports, udpPorts, originPools, nodeStaticAssets, nodeCacheWarmups, cacheMaxBytes, certificates) {
 				continue
 			}
 			version = previous.Version + 1
@@ -372,7 +377,7 @@ func (p Publisher) renderNodeStateUpdates(materials []publicationMaterial, affec
 			Version: version, NginxConfig: config, NginxStreamConfig: streamConfig,
 			NginxMainConfig: mainConfig, NginxEventsConfig: eventsConfig, NginxFragments: fragments,
 			PublicPorts: ports, PublicUDPPorts: udpPorts, OriginPools: originPools,
-			StaticAssets: nodeStaticAssets, CacheMaxBytes: cacheMaxBytes, Certificates: certificates,
+			StaticAssets: nodeStaticAssets, CacheWarmups: nodeCacheWarmups, CacheMaxBytes: cacheMaxBytes, Certificates: certificates,
 		}
 		serialized, err := json.Marshal(state.Certificates)
 		if err != nil {
@@ -467,6 +472,30 @@ func staticAssetsForNode(references []domain.StaticAssetReference, sites []domai
 		}
 		result = append(result, normalized)
 	}
+	return result, nil
+}
+
+func cacheWarmupsForNode(sites []domain.Site, capabilities []string) ([]domain.CacheWarmup, error) {
+	if !slices.Contains(capabilities, domain.EdgeCapabilityCacheControl) {
+		return nil, nil
+	}
+	result := make([]domain.CacheWarmup, 0)
+	for _, site := range sites {
+		if !site.Enabled || site.TCPOnly {
+			continue
+		}
+		warmups, err := domain.NormalizeCacheWarmups(site.CacheWarmups)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, warmups...)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].ID < result[j].ID
+		}
+		return result[i].CreatedAt.Before(result[j].CreatedAt)
+	})
 	return result, nil
 }
 
@@ -634,10 +663,10 @@ func (p Publisher) decryptPublicationMaterials(materials []publicationMaterial, 
 	return rendered, nil
 }
 
-func (p Publisher) nodeStateMatches(previous domain.DesiredState, encryptedCertificates []byte, config, streamConfig, mainConfig, eventsConfig string, fragments *domain.NginxConfigFragments, ports, udpPorts []int, originPools []domain.OriginPool, staticAssets []domain.StaticAssetReference, cacheMaxBytes int64, certificates map[string]domain.TLSBundle) bool {
+func (p Publisher) nodeStateMatches(previous domain.DesiredState, encryptedCertificates []byte, config, streamConfig, mainConfig, eventsConfig string, fragments *domain.NginxConfigFragments, ports, udpPorts []int, originPools []domain.OriginPool, staticAssets []domain.StaticAssetReference, cacheWarmups []domain.CacheWarmup, cacheMaxBytes int64, certificates map[string]domain.TLSBundle) bool {
 	if previous.NginxConfig != config || previous.NginxStreamConfig != streamConfig || previous.NginxMainConfig != mainConfig || previous.NginxEventsConfig != eventsConfig ||
 		!nginxConfigFragmentsEqual(previous.NginxFragments, fragments) || !slices.Equal(previous.PublicPorts, ports) || !slices.Equal(previous.PublicUDPPorts, udpPorts) ||
-		!originPoolsEqual(previous.OriginPools, originPools) || !slices.Equal(previous.StaticAssets, staticAssets) || previous.CacheMaxBytes != cacheMaxBytes {
+		!originPoolsEqual(previous.OriginPools, originPools) || !slices.Equal(previous.StaticAssets, staticAssets) || !cacheWarmupsEqual(previous.CacheWarmups, cacheWarmups) || previous.CacheMaxBytes != cacheMaxBytes {
 		return false
 	}
 	previousBundles := make(map[string]domain.TLSBundle)
@@ -648,6 +677,12 @@ func (p Publisher) nodeStateMatches(previous domain.DesiredState, encryptedCerti
 		}
 	}
 	return maps.Equal(previousBundles, certificates)
+}
+
+func cacheWarmupsEqual(left, right []domain.CacheWarmup) bool {
+	return slices.EqualFunc(left, right, func(a, b domain.CacheWarmup) bool {
+		return a.ID == b.ID && a.SiteID == b.SiteID && a.Host == b.Host && a.CreatedAt.Equal(b.CreatedAt) && slices.Equal(a.Paths, b.Paths)
+	})
 }
 
 func originPoolsEqual(left, right []domain.OriginPool) bool {

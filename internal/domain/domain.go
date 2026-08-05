@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 type NodeStatus string
 
@@ -171,6 +174,8 @@ type Site struct {
 	Passthrough                   bool         `json:"passthrough"`
 	RequestBodyBuffering          bool         `json:"request_body_buffering"`
 	OriginResponseBuffering       bool         `json:"origin_response_buffering"`
+	DynamicCompressionEnabled     bool         `json:"dynamic_compression_enabled"`
+	CompressionExcludedMIMETypes  []string     `json:"compression_excluded_mime_types"`
 	HTTP3Enabled                  bool         `json:"http3_enabled"`
 	ClientMaxBodySizeMB           int          `json:"client_max_body_size_mb"`
 	ClientKeepaliveTimeoutSeconds int          `json:"client_keepalive_timeout_seconds"`
@@ -180,14 +185,29 @@ type Site struct {
 	TCPForwards                   []TCPForward `json:"tcp_forwards"`
 	// CacheMaxSizeGB is retained only for reading legacy database rows. Cache
 	// quotas are node-scoped and this value is no longer exposed or rendered.
-	CacheMaxSizeGB  *int      `json:"-"`
-	CacheGeneration int64     `json:"cache_generation"`
-	ConfigVersion   int64     `json:"config_version"`
-	Published       bool      `json:"published"`
-	Enabled         bool      `json:"enabled"`
-	Deleting        bool      `json:"deleting"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	CacheMaxSizeGB     *int                    `json:"-"`
+	CacheGeneration    int64                   `json:"cache_generation"`
+	CacheInvalidations []CacheInvalidationRule `json:"cache_invalidations"`
+	CacheWarmups       []CacheWarmup           `json:"cache_warmups"`
+	ConfigVersion      int64                   `json:"config_version"`
+	Published          bool                    `json:"published"`
+	Enabled            bool                    `json:"enabled"`
+	Deleting           bool                    `json:"deleting"`
+	CreatedAt          time.Time               `json:"created_at"`
+	UpdatedAt          time.Time               `json:"updated_at"`
+}
+
+func (site *Site) UnmarshalJSON(contents []byte) error {
+	type siteAlias Site
+	decoded := siteAlias{
+		DynamicCompressionEnabled:    true,
+		CompressionExcludedMIMETypes: DefaultCompressionExcludedMIMETypes(),
+	}
+	if err := json.Unmarshal(contents, &decoded); err != nil {
+		return err
+	}
+	*site = Site(decoded)
+	return nil
 }
 
 type EnrollmentToken struct {
@@ -270,6 +290,7 @@ type DesiredState struct {
 	PublicUDPPorts    []int                  `json:"public_udp_ports,omitempty"`
 	OriginPools       []OriginPool           `json:"origin_pools,omitempty"`
 	StaticAssets      []StaticAssetReference `json:"static_assets,omitempty"`
+	CacheWarmups      []CacheWarmup          `json:"cache_warmups,omitempty"`
 	CacheMaxBytes     int64                  `json:"cache_max_bytes,omitempty"`
 	Certificates      map[string]TLSBundle   `json:"certificates,omitempty"`
 }
@@ -372,6 +393,9 @@ type AccessLogEvent struct {
 	Referer               string    `json:"referer"`
 	ContentType           string    `json:"content_type"`
 	ResponseContentType   string    `json:"response_content_type"`
+	ContentEncoding       string    `json:"content_encoding"`
+	CompressionRatio      float64   `json:"compression_ratio"`
+	CompressionSavedBytes int64     `json:"compression_saved_bytes"`
 	Accept                string    `json:"accept"`
 	Range                 string    `json:"range"`
 }

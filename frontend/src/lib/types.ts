@@ -477,6 +477,8 @@ export interface Site {
   passthrough: boolean;
   request_body_buffering: boolean;
   origin_response_buffering: boolean;
+  dynamic_compression_enabled?: boolean;
+  compression_excluded_mime_types?: string[];
   http3_enabled: boolean;
   client_max_body_size_mb: number;
   client_keepalive_timeout_seconds: number;
@@ -485,6 +487,11 @@ export interface Site {
   tcp_only: boolean;
   tcp_forwards: TCPForward[];
   cache_generation: number;
+  cache_invalidations?: Array<{
+    scope: "url" | "prefix";
+    value: string;
+    generation: number;
+  }>;
   config_version: number;
   published: boolean;
   enabled: boolean;
@@ -615,6 +622,9 @@ export interface AccessLog {
   referer: string;
   content_type: string;
   response_content_type: string;
+  content_encoding?: string;
+  compression_ratio?: number;
+  compression_saved_bytes?: number;
   accept: string;
   range: string;
 }
@@ -632,6 +642,11 @@ export interface SiteMinuteMetric {
   upstream_connect_ms: number;
   upstream_header_ms: number;
   upstream_response_ms: number;
+  compressed_requests?: number;
+  gzip_requests?: number;
+  brotli_requests?: number;
+  zstd_requests?: number;
+  compression_saved_bytes?: number;
 }
 
 export interface LogPage {

@@ -83,6 +83,7 @@ type Config struct {
 	OriginProbeWorkers           int
 	OriginProber                 OriginProber
 	WireGuardManager             WireGuardManager
+	CacheWarmer                  func(context.Context, domain.CacheWarmup) error
 }
 
 type Agent struct {
@@ -261,6 +262,10 @@ func New(config Config) (*Agent, error) {
 	if err := loadManagedNginxMetadata(&config); err != nil {
 		return nil, err
 	}
+	compressionCapable, err := managedNginxCompressionCapable(config.NginxVersionPath)
+	if err != nil {
+		return nil, err
+	}
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityOnlineUpgrade)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityCacheUsage)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityMachineStatus)
@@ -270,6 +275,10 @@ func New(config Config) (*Agent, error) {
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityControlManifest)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityOriginConnection)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityStaticAssets)
+	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityCacheControl)
+	if compressionCapable {
+		config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityCompression)
+	}
 	wireGuardAvailable, wireGuardPerformanceAvailable := config.WireGuardManager.Available()
 	if wireGuardAvailable {
 		config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityWireGuard)
@@ -836,6 +845,62 @@ func loadManagedNginxMetadata(config *Config) error {
 	return nil
 }
 
+type managedNginxBuildMetadata struct {
+	NGXBrotliCommit string `json:"ngx_brotli_commit"`
+	BrotliCommit    string `json:"brotli_commit"`
+	ZstdNginxCommit string `json:"zstd_nginx_commit"`
+}
+
+func managedNginxCompressionCapable(versionPath string) (bool, error) {
+	buildPath := filepath.Join(filepath.Dir(versionPath), "BUILD.json")
+	contents, err := os.ReadFile(buildPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read managed Nginx build metadata: %w", err)
+	}
+	if len(contents) > 16<<10 {
+		return false, errors.New("managed Nginx build metadata is too large")
+	}
+	var metadata managedNginxBuildMetadata
+	if err := json.Unmarshal(contents, &metadata); err != nil {
+		return false, errors.New("managed Nginx build metadata is invalid")
+	}
+	commits := []string{metadata.NGXBrotliCommit, metadata.BrotliCommit, metadata.ZstdNginxCommit}
+	allEmpty := true
+	for _, commit := range commits {
+		commit = strings.ToLower(strings.TrimSpace(commit))
+		if commit != "" {
+			allEmpty = false
+		}
+		if commit != "" && !validGitCommit(commit) {
+			return false, errors.New("managed Nginx compression module commit is invalid")
+		}
+	}
+	if allEmpty {
+		return false, nil
+	}
+	for _, commit := range commits {
+		if strings.TrimSpace(commit) == "" {
+			return false, errors.New("managed Nginx compression build metadata is incomplete")
+		}
+	}
+	return true, nil
+}
+
+func validGitCommit(value string) bool {
+	if len(value) != 40 {
+		return false
+	}
+	for _, character := range value {
+		if !(character >= '0' && character <= '9' || character >= 'a' && character <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 func managedNginxVersionAtLeast(version string, wantedMajor, wantedMinor, wantedPatch int) bool {
 	var major, minor, patch int
 	if count, err := fmt.Sscanf(strings.TrimSpace(version), "%d.%d.%d", &major, &minor, &patch); err != nil || count != 3 {
@@ -888,6 +953,16 @@ func (a *Agent) applyLocked(state domain.DesiredState) error {
 	if err := a.validateDesiredOriginPools(state); err != nil {
 		return a.applyFailed(state.Version, "invalid_desired_state", err, nil)
 	}
+	cacheWarmups, err := domain.NormalizeDesiredCacheWarmups(state.CacheWarmups)
+	if err != nil {
+		return a.applyFailed(state.Version, "invalid_desired_state", err, nil)
+	}
+	for _, warmup := range cacheWarmups {
+		if _, err := uuid.Parse(warmup.ID); err != nil {
+			return a.applyFailed(state.Version, "invalid_desired_state", errors.New("cache prewarm job ID is invalid"), nil)
+		}
+	}
+	state.CacheWarmups = cacheWarmups
 	udpPorts, err := desiredPublicUDPPorts(state)
 	if err != nil {
 		return a.applyFailed(state.Version, "invalid_desired_state", err, nil)
@@ -1038,6 +1113,7 @@ func (a *Agent) applyLocked(state domain.DesiredState) error {
 		return a.applyFailed(state.Version, "nginx_not_listening", fmt.Errorf("Nginx did not retain all required public listeners after applying configuration: %s", formatPublicPorts(ports, udpPorts)), nil)
 	}
 	cacheCleanupErr := reconcileInstalledCacheLayout(nginx.DefaultCachePath, state.NginxConfig)
+	warmupDetail, cacheWarmupErr := a.runCacheWarmups(state.CacheWarmups)
 	if err := originStage.Persist(); err != nil {
 		restoreBackups(backups)
 		originStage.Rollback()
@@ -1066,6 +1142,12 @@ func (a *Agent) applyLocked(state domain.DesiredState) error {
 	}
 	if staticAssetCleanupErr != nil {
 		detail += "; static resource cleanup warning: " + staticAssetCleanupErr.Error()
+	}
+	if warmupDetail != "" {
+		detail += "; " + warmupDetail
+	}
+	if cacheWarmupErr != nil {
+		detail += "; cache prewarm warning: " + cacheWarmupErr.Error()
 	}
 	a.setApplyReport(&domain.ApplyReport{Version: state.Version, Status: domain.ApplySucceeded, Detail: detail})
 	return nil

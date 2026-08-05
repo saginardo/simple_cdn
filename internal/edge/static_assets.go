@@ -1,6 +1,7 @@
 package edge
 
 import (
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -13,8 +14,25 @@ import (
 	"strings"
 	"time"
 
+	"github.com/andybalholm/brotli"
+	"github.com/klauspost/compress/zstd"
 	"simple_cdn/internal/domain"
 )
+
+var staticAssetCompressions = []struct {
+	suffix string
+	open   func(io.Writer) (io.WriteCloser, error)
+}{
+	{suffix: ".gz", open: func(destination io.Writer) (io.WriteCloser, error) {
+		return gzip.NewWriterLevel(destination, gzip.BestCompression)
+	}},
+	{suffix: ".br", open: func(destination io.Writer) (io.WriteCloser, error) {
+		return brotli.NewWriterLevel(destination, 9), nil
+	}},
+	{suffix: ".zst", open: func(destination io.Writer) (io.WriteCloser, error) {
+		return zstd.NewWriter(destination, zstd.WithEncoderLevel(zstd.SpeedBestCompression), zstd.WithEncoderConcurrency(1))
+	}},
+}
 
 func (a *Agent) syncStaticAssets(references []domain.StaticAssetReference) error {
 	desired, err := normalizeDesiredStaticAssets(references)
@@ -33,11 +51,15 @@ func (a *Agent) syncStaticAssets(references []domain.StaticAssetReference) error
 		if err != nil {
 			return fmt.Errorf("inspect static resource %s: %w", digest, err)
 		}
-		if matches {
-			continue
+		if !matches {
+			if err := a.downloadStaticAsset(reference, destination); err != nil {
+				return err
+			}
 		}
-		if err := a.downloadStaticAsset(reference, destination); err != nil {
-			return err
+		if domain.PrecompressibleStaticAsset(reference.ContentType, reference.SizeBytes) {
+			if err := ensureStaticAssetCompressions(destination, reference); err != nil {
+				return fmt.Errorf("precompress static resource %s: %w", digest, err)
+			}
 		}
 	}
 	return nil
@@ -56,12 +78,160 @@ func normalizeDesiredStaticAssets(references []domain.StaticAssetReference) (map
 			return nil, fmt.Errorf("duplicate static resource URL %s for site %s", normalized.URLPath, normalized.SiteID)
 		}
 		paths[pathKey] = struct{}{}
-		if existing, found := desired[normalized.SHA256]; found && existing.SizeBytes != normalized.SizeBytes {
-			return nil, fmt.Errorf("static resource %s has inconsistent sizes", normalized.SHA256)
+		if existing, found := desired[normalized.SHA256]; found {
+			if existing.SizeBytes != normalized.SizeBytes {
+				return nil, fmt.Errorf("static resource %s has inconsistent sizes", normalized.SHA256)
+			}
+			// A digest can be exposed through more than one binding. Only create
+			// sidecars when every binding has a compressible content type.
+			if !domain.PrecompressibleStaticAsset(normalized.ContentType, normalized.SizeBytes) &&
+				domain.PrecompressibleStaticAsset(existing.ContentType, existing.SizeBytes) {
+				desired[normalized.SHA256] = normalized
+			}
+			continue
 		}
 		desired[normalized.SHA256] = normalized
 	}
 	return desired, nil
+}
+
+func ensureStaticAssetCompressions(sourcePath string, reference domain.StaticAssetReference) error {
+	for _, compression := range staticAssetCompressions {
+		destination := sourcePath + compression.suffix
+		matches, err := compressedStaticAssetMatches(destination, reference, compression.suffix)
+		if err != nil {
+			return err
+		}
+		if matches {
+			continue
+		}
+		if err := writeCompressedStaticAsset(sourcePath, destination, reference.SizeBytes, compression.open); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeCompressedStaticAsset(sourcePath, destination string, sourceSize int64, openWriter func(io.Writer) (io.WriteCloser, error)) error {
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+	temporary, err := os.CreateTemp(filepath.Dir(destination), ".static-compression-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	committed := false
+	defer func() {
+		_ = temporary.Close()
+		if !committed {
+			_ = os.Remove(temporaryPath)
+		}
+	}()
+	if err := temporary.Chmod(0o644); err != nil {
+		return err
+	}
+	compressed, err := openWriter(temporary)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(compressed, source); err != nil {
+		_ = compressed.Close()
+		return err
+	}
+	if err := compressed.Close(); err != nil {
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		return err
+	}
+	info, err := temporary.Stat()
+	if err != nil {
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	if info.Size() <= 0 || info.Size() >= sourceSize {
+		if err := removeRegularOrSymlink(destination); err != nil {
+			return err
+		}
+		return nil
+	}
+	if err := os.Rename(temporaryPath, destination); err != nil {
+		return err
+	}
+	if err := syncDirectory(filepath.Dir(destination)); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+func compressedStaticAssetMatches(path string, reference domain.StaticAssetReference, suffix string) (bool, error) {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() >= reference.SizeBytes {
+		return false, nil
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer file.Close()
+	reader, closeReader, err := openStaticAssetCompressionReader(file, suffix)
+	if err != nil {
+		return false, nil
+	}
+	defer closeReader()
+	hash := sha256.New()
+	written, err := io.Copy(hash, io.LimitReader(reader, reference.SizeBytes+1))
+	if err != nil || written != reference.SizeBytes {
+		return false, nil
+	}
+	return hex.EncodeToString(hash.Sum(nil)) == reference.SHA256, nil
+}
+
+func openStaticAssetCompressionReader(source io.Reader, suffix string) (io.Reader, func(), error) {
+	switch suffix {
+	case ".gz":
+		reader, err := gzip.NewReader(source)
+		if err != nil {
+			return nil, func() {}, err
+		}
+		return reader, func() { _ = reader.Close() }, nil
+	case ".br":
+		return brotli.NewReader(source), func() {}, nil
+	case ".zst":
+		reader, err := zstd.NewReader(source)
+		if err != nil {
+			return nil, func() {}, err
+		}
+		return reader, reader.Close, nil
+	default:
+		return nil, func() {}, errors.New("unsupported static compression suffix")
+	}
+}
+
+func removeRegularOrSymlink(path string) error {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0 {
+		return fmt.Errorf("managed static compression path is not a regular file")
+	}
+	return os.Remove(path)
 }
 
 func staticAssetFileMatches(path string, reference domain.StaticAssetReference) (bool, error) {
@@ -175,11 +345,14 @@ func (a *Agent) cleanupStaticAssets(references []domain.StaticAssetReference) er
 	var failures []error
 	for _, entry := range entries {
 		name := entry.Name()
-		if !domain.ValidStaticAssetSHA256(name) {
+		digest, suffix, managed := managedStaticAssetName(name)
+		if !managed {
 			continue
 		}
-		if _, found := desired[name]; found {
-			continue
+		if reference, found := desired[digest]; found {
+			if suffix == "" || domain.PrecompressibleStaticAsset(reference.ContentType, reference.SizeBytes) {
+				continue
+			}
 		}
 		info, infoErr := entry.Info()
 		if infoErr != nil {
@@ -197,4 +370,16 @@ func (a *Agent) cleanupStaticAssets(references []domain.StaticAssetReference) er
 		return syncDirectory(a.Config.StaticAssetDirectory)
 	}
 	return errors.Join(failures...)
+}
+
+func managedStaticAssetName(name string) (string, string, bool) {
+	if domain.ValidStaticAssetSHA256(name) {
+		return name, "", true
+	}
+	for _, compression := range staticAssetCompressions {
+		if digest := strings.TrimSuffix(name, compression.suffix); digest != name && domain.ValidStaticAssetSHA256(digest) {
+			return digest, compression.suffix, true
+		}
+	}
+	return "", "", false
 }

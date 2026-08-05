@@ -63,7 +63,12 @@ import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { api, ApiError, errorMessage } from "@/lib/api";
-import { formatDateTime, formatNumber, formatPercent } from "@/lib/format";
+import {
+  formatBytes,
+  formatDateTime,
+  formatNumber,
+  formatPercent,
+} from "@/lib/format";
 import { useListPagination } from "@/hooks/use-list-pagination";
 import type {
   DeploymentTask,
@@ -97,6 +102,8 @@ interface SiteDraft {
   passthrough: boolean;
   request_body_buffering: boolean;
   origin_response_buffering: boolean;
+  dynamic_compression_enabled: boolean;
+  compression_excluded_mime_types: string;
   http3_enabled: boolean;
   client_max_body_size_mb: number;
   client_keepalive_timeout_seconds: number;
@@ -106,6 +113,12 @@ interface SiteDraft {
   tcp_only: boolean;
   tcp_forwards: TCPForward[];
   enabled: boolean;
+}
+interface CacheOperationDraft {
+  scope: "full" | "url" | "prefix";
+  value: string;
+  prewarm: boolean;
+  prewarm_paths: string;
 }
 interface TLSStatus {
   certificate_task: DeploymentTask | null;
@@ -152,6 +165,13 @@ export function SiteDetailPage() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [allowlistOpen, setAllowlistOpen] = useState(false);
   const [tlsPendingOpen, setTlsPendingOpen] = useState(false);
+  const [cacheOperationOpen, setCacheOperationOpen] = useState(false);
+  const [cacheOperation, setCacheOperation] = useState<CacheOperationDraft>({
+    scope: "url",
+    value: "",
+    prewarm: false,
+    prewarm_paths: "",
+  });
   const [checkingTLS, setCheckingTLS] = useState(false);
   const globalTTL = settings.data?.dns.default_ttl_seconds ?? 60;
   const dirty = Boolean(baseline && JSON.stringify(draft) !== baseline);
@@ -270,9 +290,10 @@ export function SiteDetailPage() {
     onError: (error) => toast.error(errorMessage(error)),
   });
   const operation = useMutation({
-    mutationFn: ({ path }: { path: string }) =>
+    mutationFn: ({ path, body }: { path: string; body?: unknown }) =>
       api<DeploymentTask>(path, {
         method: "POST",
+        body: body === undefined ? undefined : JSON.stringify(body),
       }),
     onSuccess: (_, input) => {
       toast.success(
@@ -291,6 +312,9 @@ export function SiteDetailPage() {
       void queryClient.invalidateQueries({
         queryKey: ["sites"],
       });
+      if (input.path.endsWith("invalidate-cache")) {
+        setCacheOperationOpen(false);
+      }
     },
     onError: (error, input) => {
       if (
@@ -504,6 +528,14 @@ export function SiteDetailPage() {
                         label="HTTP/3 / QUIC"
                         value={draft.http3_enabled ? t("已开启") : t("已关闭")}
                       />
+                      <Fact
+                        label={t("动态压缩")}
+                        value={
+                          draft.dynamic_compression_enabled
+                            ? t("已开启")
+                            : t("已关闭")
+                        }
+                      />
                     </>
                   ) : null}
                   <Fact
@@ -547,6 +579,7 @@ export function SiteDetailPage() {
                   </Button>
                 </CardContent>
               </Card>
+              <CompressionPerformance metrics={metrics.data} />
               <OriginPerformance metrics={metrics.data} />
               {site ? (
                 <SiteOperations
@@ -562,11 +595,7 @@ export function SiteDetailPage() {
                       path: `/api/sites/${encodedID}/certificate`,
                     })
                   }
-                  onInvalidate={() =>
-                    operation.mutate({
-                      path: `/api/sites/${encodedID}/invalidate-cache`,
-                    })
-                  }
+                  onInvalidate={() => setCacheOperationOpen(true)}
                   onAllowlist={() => setAllowlistOpen(true)}
                   onDelete={() => setDeleteOpen(true)}
                 />
@@ -616,6 +645,27 @@ export function SiteDetailPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <CacheOperationDialog
+        open={cacheOperationOpen}
+        onOpenChange={setCacheOperationOpen}
+        value={cacheOperation}
+        onChange={setCacheOperation}
+        pending={operation.isPending}
+        onSubmit={() =>
+          operation.mutate({
+            path: `/api/sites/${encodedID}/invalidate-cache`,
+            body: {
+              scope: cacheOperation.scope,
+              value:
+                cacheOperation.scope === "full"
+                  ? ""
+                  : cacheOperation.value.trim(),
+              prewarm: cacheOperation.prewarm,
+              prewarm_paths: splitList(cacheOperation.prewarm_paths),
+            },
+          })
+        }
+      />
       <AllowlistDialog
         open={allowlistOpen}
         onOpenChange={setAllowlistOpen}
@@ -720,6 +770,53 @@ function SiteOriginConnections({
             )}
           </section>
         ))}
+      </CardContent>
+    </Card>
+  );
+}
+
+function CompressionPerformance({ metrics }: { metrics?: SiteMinuteMetric[] }) {
+  if (!metrics) return null;
+  const requests = metrics.reduce(
+    (total, metric) => total + metric.requests,
+    0,
+  );
+  const compressed = metrics.reduce(
+    (total, metric) => total + (metric.compressed_requests ?? 0),
+    0,
+  );
+  const saved = metrics.reduce(
+    (total, metric) => total + (metric.compression_saved_bytes ?? 0),
+    0,
+  );
+  const gzip = metrics.reduce(
+    (total, metric) => total + (metric.gzip_requests ?? 0),
+    0,
+  );
+  const brotli = metrics.reduce(
+    (total, metric) => total + (metric.brotli_requests ?? 0),
+    0,
+  );
+  const zstd = metrics.reduce(
+    (total, metric) => total + (metric.zstd_requests ?? 0),
+    0,
+  );
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{t("压缩统计")}</CardTitle>
+        <CardDescription>{t("最近 24 小时")}</CardDescription>
+      </CardHeader>
+      <CardContent className="grid grid-cols-2 gap-x-4 gap-y-3">
+        <Fact label={t("节省流量")} value={formatBytes(saved)} />
+        <Fact
+          label={t("压缩命中率")}
+          value={requests ? formatPercent(compressed / requests, 1) : "--"}
+        />
+        <Fact label="Zstandard" value={formatNumber(zstd)} />
+        <Fact label="Brotli" value={formatNumber(brotli)} />
+        <Fact label="Gzip" value={formatNumber(gzip)} />
+        <Fact label={t("压缩响应")} value={formatNumber(compressed)} />
       </CardContent>
     </Card>
   );
@@ -1064,6 +1161,43 @@ function TrafficSettings({
                   }
                 />
               </div>
+            </div>
+            <Separator />
+            <div className="flex items-start justify-between gap-4">
+              <div className="space-y-1">
+                <Label htmlFor="dynamic-compression">{t("动态压缩")}</Label>
+                <p className="text-xs leading-5 text-muted-foreground">
+                  Gzip / Brotli / Zstandard
+                </p>
+              </div>
+              <Switch
+                id="dynamic-compression"
+                className="mt-0.5 shrink-0"
+                checked={draft.dynamic_compression_enabled}
+                onCheckedChange={(dynamic_compression_enabled) =>
+                  setDraft({
+                    ...draft,
+                    dynamic_compression_enabled,
+                  })
+                }
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="compression-excluded-mime-types">
+                {t("不压缩的 MIME 类型")}
+              </Label>
+              <Textarea
+                id="compression-excluded-mime-types"
+                rows={3}
+                value={draft.compression_excluded_mime_types}
+                onChange={(event) =>
+                  setDraft({
+                    ...draft,
+                    compression_excluded_mime_types: event.target.value,
+                  })
+                }
+                placeholder="text/event-stream"
+              />
             </div>
             <div className="flex items-center justify-between">
               <div>
@@ -1552,6 +1686,129 @@ function TCPForwards({
     </Card>
   );
 }
+
+function CacheOperationDialog({
+  open,
+  onOpenChange,
+  value,
+  onChange,
+  pending,
+  onSubmit,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  value: CacheOperationDraft;
+  onChange: (value: CacheOperationDraft) => void;
+  pending: boolean;
+  onSubmit: () => void;
+}) {
+  const targetRequired = value.scope !== "full";
+  const pathsRequired = value.scope === "full" && value.prewarm;
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{t("缓存失效与预热")}</DialogTitle>
+          <DialogDescription>
+            {t("发布新的缓存键代际到边缘节点")}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-4 py-2">
+          <SelectField
+            label={t("失效范围")}
+            value={value.scope}
+            onChange={(scope) =>
+              onChange({
+                ...value,
+                scope: scope as CacheOperationDraft["scope"],
+                value: scope === "full" ? "" : value.value,
+              })
+            }
+            options={[
+              ["url", t("单个 URL")],
+              ["prefix", t("路径前缀")],
+              ["full", t("整个站点")],
+            ]}
+          />
+          {targetRequired ? (
+            <Field
+              label={value.scope === "url" ? t("URL 路径") : t("路径前缀")}
+              id="cache-invalidation-target"
+            >
+              <Input
+                id="cache-invalidation-target"
+                value={value.value}
+                onChange={(event) =>
+                  onChange({ ...value, value: event.target.value })
+                }
+                placeholder={
+                  value.scope === "url" ? "/assets/app.js" : "/assets/"
+                }
+              />
+            </Field>
+          ) : null}
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <Label htmlFor="cache-prewarm">{t("配置生效后预热")}</Label>
+              <p className="text-xs text-muted-foreground">
+                {t("由每个目标边缘节点本机发起")}
+              </p>
+            </div>
+            <Switch
+              id="cache-prewarm"
+              checked={value.prewarm}
+              onCheckedChange={(prewarm) => onChange({ ...value, prewarm })}
+            />
+          </div>
+          {value.prewarm && value.scope !== "url" ? (
+            <div className="grid gap-2">
+              <Label htmlFor="cache-prewarm-paths">
+                {value.scope === "full"
+                  ? t("预热 URL")
+                  : t("补充预热 URL（可选）")}
+              </Label>
+              <Textarea
+                id="cache-prewarm-paths"
+                rows={4}
+                value={value.prewarm_paths}
+                onChange={(event) =>
+                  onChange({ ...value, prewarm_paths: event.target.value })
+                }
+                placeholder="/assets/app.js"
+              />
+            </div>
+          ) : null}
+        </div>
+        <DialogFooter>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+          >
+            {t("取消")}
+          </Button>
+          <Button
+            type="button"
+            disabled={
+              pending ||
+              (targetRequired && !value.value.trim()) ||
+              (pathsRequired && !value.prewarm_paths.trim())
+            }
+            onClick={onSubmit}
+          >
+            {pending ? (
+              <LoaderCircle className="animate-spin" />
+            ) : (
+              <RefreshCw />
+            )}
+            {value.prewarm ? t("失效并预热") : t("执行失效")}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function SiteOperations({
   site,
   nodes,
@@ -1733,7 +1990,7 @@ function SiteOperations({
               onClick={onInvalidate}
             >
               <RefreshCw />
-              {t("全量缓存失效")}
+              {t("缓存失效与预热")}
             </Button>
           </div>
         ) : null}
@@ -2087,6 +2344,8 @@ function emptyDraft(ttl: number): SiteDraft {
     passthrough: false,
     request_body_buffering: true,
     origin_response_buffering: true,
+    dynamic_compression_enabled: true,
+    compression_excluded_mime_types: "text/event-stream",
     http3_enabled: false,
     client_max_body_size_mb: 128,
     client_keepalive_timeout_seconds: 120,
@@ -2130,6 +2389,10 @@ function draftFromSite(site: Site, ttl: number): SiteDraft {
     passthrough: site.passthrough,
     request_body_buffering: site.request_body_buffering ?? true,
     origin_response_buffering: site.origin_response_buffering ?? true,
+    dynamic_compression_enabled: site.dynamic_compression_enabled ?? true,
+    compression_excluded_mime_types: (
+      site.compression_excluded_mime_types ?? ["text/event-stream"]
+    ).join("\n"),
     http3_enabled: site.http3_enabled ?? false,
     client_max_body_size_mb: site.client_max_body_size_mb ?? 128,
     client_keepalive_timeout_seconds:
@@ -2172,6 +2435,10 @@ function sitePayload(draft: SiteDraft) {
     passthrough: draft.passthrough,
     request_body_buffering: draft.request_body_buffering,
     origin_response_buffering: draft.origin_response_buffering,
+    dynamic_compression_enabled: draft.dynamic_compression_enabled,
+    compression_excluded_mime_types: splitList(
+      draft.compression_excluded_mime_types,
+    ),
     http3_enabled: draft.tcp_only ? false : draft.http3_enabled,
     client_max_body_size_mb: draft.client_max_body_size_mb,
     client_keepalive_timeout_seconds: draft.client_keepalive_timeout_seconds,

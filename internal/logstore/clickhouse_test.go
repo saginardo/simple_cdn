@@ -38,7 +38,7 @@ func TestGetReturnsExtendedRequestDetails(t *testing.T) {
 		if !strings.Contains(query, "WHERE request_id = {request_id:String}") || request.URL.Query().Get("param_request_id") != "request-1" {
 			t.Fatalf("unexpected detail query: %s", request.URL.RawQuery)
 		}
-		_, _ = io.WriteString(response, `{"request_id":"request-1","client_request_id":"client-1","upstream_request_id":"origin-1","timestamp":"2026-07-18 10:20:30.123","node_id":"node-1","site_id":"site-1","client_ip":"203.0.113.5","host":"cdn.example.test","scheme":"https","protocol":"HTTP/2.0","method":"GET","path":"/asset.js","status":404,"request_bytes":512,"bytes":2048,"duration_ms":37,"request_completion":"OK","upstream":"192.0.2.10:443","upstream_status":"404","upstream_connect_time":"0.004","upstream_header_time":"0.020","upstream_response_time":"0.036","upstream_bytes_sent":"640","upstream_bytes_received":"2304","cache_status":"MISS","user_agent":"test-agent","referer":"https://example.test/","request_content_type":"application/json","response_content_type":"text/javascript","request_accept":"*/*","request_range":"bytes=0-1023"}`+"\n")
+		_, _ = io.WriteString(response, `{"request_id":"request-1","client_request_id":"client-1","upstream_request_id":"origin-1","timestamp":"2026-07-18 10:20:30.123","node_id":"node-1","site_id":"site-1","client_ip":"203.0.113.5","host":"cdn.example.test","scheme":"https","protocol":"HTTP/2.0","method":"GET","path":"/asset.js","status":404,"request_bytes":512,"bytes":2048,"duration_ms":37,"request_completion":"OK","upstream":"192.0.2.10:443","upstream_status":"404","upstream_connect_time":"0.004","upstream_header_time":"0.020","upstream_response_time":"0.036","upstream_bytes_sent":"640","upstream_bytes_received":"2304","cache_status":"MISS","user_agent":"test-agent","referer":"https://example.test/","request_content_type":"application/json","response_content_type":"text/javascript","content_encoding":"zstd","compression_ratio":2.25,"compression_saved_bytes":2560,"request_accept":"*/*","request_range":"bytes=0-1023"}`+"\n")
 	}))
 	defer server.Close()
 
@@ -54,6 +54,9 @@ func TestGetReturnsExtendedRequestDetails(t *testing.T) {
 	}
 	if event.ClientRequestID != "client-1" || event.UpstreamRequestID != "origin-1" || event.RequestCompletion != "OK" || event.UpstreamBytesSent != "640" || event.UpstreamBytesReceived != "2304" {
 		t.Fatalf("unexpected trace details: %#v", event)
+	}
+	if event.ContentEncoding != "zstd" || event.CompressionRatio != 2.25 || event.CompressionSavedBytes != 2560 {
+		t.Fatalf("unexpected compression details: %#v", event)
 	}
 }
 
@@ -136,12 +139,12 @@ func TestSearchUsesDefaultsAndNeverEmitsNegativeOffset(t *testing.T) {
 func TestMetricsDecodesJSONEachRow(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		query := request.URL.Query().Get("query")
-		for _, expected := range []string{"cdn_site_minute", "cdn_origin_minute", "LEFT JOIN", "sum(connect_samples)", "upstream_connect_ms"} {
+		for _, expected := range []string{"cdn_site_minute", "cdn_origin_minute", "cdn_compression_minute", "LEFT JOIN", "sum(connect_samples)", "upstream_connect_ms", "compressed_requests", "compression_saved_bytes"} {
 			if !strings.Contains(query, expected) {
 				t.Fatalf("metrics query does not contain %q: %s", expected, query)
 			}
 		}
-		_, _ = io.WriteString(response, "{\"minute\":\"2026-01-02T03:04:00Z\",\"requests\":12,\"bytes\":1200,\"errors\":1,\"cache_hits\":9,\"upstream_samples\":10,\"upstream_header_samples\":9,\"upstream_response_samples\":8,\"upstream_reused\":8,\"upstream_connect_ms\":1.5,\"upstream_header_ms\":12.5,\"upstream_response_ms\":25.5}\n")
+		_, _ = io.WriteString(response, "{\"minute\":\"2026-01-02T03:04:00Z\",\"requests\":12,\"bytes\":1200,\"errors\":1,\"cache_hits\":9,\"upstream_samples\":10,\"upstream_header_samples\":9,\"upstream_response_samples\":8,\"upstream_reused\":8,\"upstream_connect_ms\":1.5,\"upstream_header_ms\":12.5,\"upstream_response_ms\":25.5,\"compressed_requests\":7,\"gzip_requests\":2,\"brotli_requests\":3,\"zstd_requests\":2,\"compression_saved_bytes\":4096}\n")
 	}))
 	defer server.Close()
 	metrics, err := (ClickHouse{Endpoint: server.URL}).Metrics(context.Background(), "site", time.Now().Add(-time.Hour))
@@ -150,7 +153,8 @@ func TestMetricsDecodesJSONEachRow(t *testing.T) {
 	}
 	if len(metrics) != 1 || metrics[0].Requests != 12 || metrics[0].CacheHits != 9 || metrics[0].UpstreamSamples != 10 ||
 		metrics[0].UpstreamHeaderSamples != 9 || metrics[0].UpstreamResponseSamples != 8 || metrics[0].UpstreamReused != 8 ||
-		metrics[0].UpstreamConnectMS != 1.5 || metrics[0].UpstreamHeaderMS != 12.5 || metrics[0].UpstreamResponseMS != 25.5 {
+		metrics[0].UpstreamConnectMS != 1.5 || metrics[0].UpstreamHeaderMS != 12.5 || metrics[0].UpstreamResponseMS != 25.5 ||
+		metrics[0].CompressedRequests != 7 || metrics[0].GzipRequests != 2 || metrics[0].BrotliRequests != 3 || metrics[0].ZstdRequests != 2 || metrics[0].CompressionSavedBytes != 4096 {
 		t.Fatalf("unexpected metrics: %#v", metrics)
 	}
 }
@@ -171,6 +175,8 @@ func TestEnsureSchemaCreatesOriginTimingAggregate(t *testing.T) {
 		"client_request_id String", "upstream_request_id String",
 		"request_completion LowCardinality(String) DEFAULT 'UNKNOWN'",
 		"upstream_bytes_sent String", "upstream_bytes_received String",
+		"content_encoding LowCardinality(String)", "compression_ratio Float64", "compression_saved_bytes Int64",
+		"cdn_compression_minute", "cdn_access_to_compression_minute", "countIf(content_encoding = 'br')",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("origin timing schema is missing %q:\n%s", expected, joined)
@@ -289,6 +295,7 @@ func TestAppendUsesClickHouseDateTimeFormat(t *testing.T) {
 		ClientRequestID: "client-1", UpstreamRequestID: "origin-1", RequestCompletion: "OK",
 		RequestBytes: 512, UpstreamBytesSent: "640", UpstreamBytesReceived: "2304",
 		UserAgent: "test-agent", ContentType: "application/json", Range: "bytes=0-10",
+		ContentEncoding: "br", CompressionRatio: 2.75, CompressionSavedBytes: 896,
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -296,7 +303,7 @@ func TestAppendUsesClickHouseDateTimeFormat(t *testing.T) {
 	if !strings.Contains(body, `"timestamp":"2026-01-02 03:04:05.123"`) {
 		t.Fatalf("unexpected insert body: %s", body)
 	}
-	for _, expected := range []string{`"request_id":"request-1"`, `"client_request_id":"client-1"`, `"upstream_request_id":"origin-1"`, `"request_completion":"OK"`, `"request_bytes":512`, `"upstream_bytes_sent":"640"`, `"upstream_bytes_received":"2304"`, `"user_agent":"test-agent"`, `"request_content_type":"application/json"`, `"request_range":"bytes=0-10"`} {
+	for _, expected := range []string{`"request_id":"request-1"`, `"client_request_id":"client-1"`, `"upstream_request_id":"origin-1"`, `"request_completion":"OK"`, `"request_bytes":512`, `"upstream_bytes_sent":"640"`, `"upstream_bytes_received":"2304"`, `"user_agent":"test-agent"`, `"request_content_type":"application/json"`, `"content_encoding":"br"`, `"compression_ratio":2.75`, `"compression_saved_bytes":896`, `"request_range":"bytes=0-10"`} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("insert body is missing %s: %s", expected, body)
 		}

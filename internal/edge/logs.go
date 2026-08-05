@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -371,6 +372,11 @@ type nginxLog struct {
 	Referer               string  `json:"referer"`
 	ContentType           string  `json:"content_type"`
 	ResponseContentType   string  `json:"response_content_type"`
+	ContentEncoding       string  `json:"content_encoding"`
+	GzipRatio             string  `json:"gzip_ratio"`
+	BrotliRatio           string  `json:"brotli_ratio"`
+	ZstdRatio             string  `json:"zstd_ratio"`
+	StaticUncompressed    int64   `json:"static_uncompressed_bytes"`
 	Accept                string  `json:"accept"`
 	Range                 string  `json:"range"`
 }
@@ -398,6 +404,11 @@ func decodeNginxLog(line []byte) (domain.AccessLogEvent, error) {
 			requestCompletion = "INTERRUPTED"
 		}
 	}
+	contentEncoding := strings.ToLower(strings.TrimSpace(raw.ContentEncoding))
+	if contentEncoding == "-" {
+		contentEncoding = ""
+	}
+	compressionRatio, compressionSavedBytes := nginxCompressionSavings(raw, contentEncoding)
 	return domain.AccessLogEvent{
 		ID: requestID, ClientRequestID: raw.ClientRequestID, UpstreamRequestID: raw.UpstreamRequestID,
 		Timestamp: timestamp, SiteID: raw.SiteID, ClientIP: raw.ClientIP,
@@ -410,6 +421,35 @@ func decodeNginxLog(line []byte) (domain.AccessLogEvent, error) {
 		UpstreamBytesSent: raw.UpstreamBytesSent, UpstreamBytesReceived: raw.UpstreamBytesReceived,
 		CacheStatus: raw.CacheStatus, UserAgent: raw.UserAgent, Referer: raw.Referer,
 		ContentType: raw.ContentType, ResponseContentType: raw.ResponseContentType,
+		ContentEncoding: contentEncoding, CompressionRatio: compressionRatio, CompressionSavedBytes: compressionSavedBytes,
 		Accept: raw.Accept, Range: raw.Range,
 	}, nil
+}
+
+func nginxCompressionSavings(raw nginxLog, contentEncoding string) (float64, int64) {
+	if contentEncoding == "" || raw.Bytes <= 0 {
+		return 0, 0
+	}
+	if raw.Method == http.MethodGet && raw.Status == http.StatusOK && raw.StaticUncompressed > raw.Bytes &&
+		(strings.TrimSpace(raw.Range) == "" || strings.TrimSpace(raw.Range) == "-") {
+		return float64(raw.StaticUncompressed) / float64(raw.Bytes), raw.StaticUncompressed - raw.Bytes
+	}
+	ratioValue := ""
+	switch contentEncoding {
+	case "gzip":
+		ratioValue = raw.GzipRatio
+	case "br":
+		ratioValue = raw.BrotliRatio
+	case "zstd":
+		ratioValue = raw.ZstdRatio
+	}
+	ratio, err := strconv.ParseFloat(strings.TrimSpace(ratioValue), 64)
+	if err != nil || math.IsNaN(ratio) || math.IsInf(ratio, 0) || ratio <= 1 || ratio > 1000 {
+		return 0, 0
+	}
+	originalBytes := int64(math.Round(float64(raw.Bytes) * ratio))
+	if originalBytes <= raw.Bytes {
+		return ratio, 0
+	}
+	return ratio, originalBytes - raw.Bytes
 }

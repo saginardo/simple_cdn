@@ -666,9 +666,13 @@ systemctl enable nginx.service
 systemctl start nginx.service
 systemctl is-active --quiet nginx.service
 
-edge_capabilities="tcp_stream_v1,edge_rate_limit_v1,waf_chain_v1,pow_challenge_v1,static_assets_v1,nginx_capacity_v1,nginx_bundle_v1"
+edge_capabilities="tcp_stream_v1,edge_rate_limit_v1,waf_chain_v1,pow_challenge_v1,static_assets_v1,cache_control_v1,nginx_capacity_v1,nginx_bundle_v1"
 nginx_version_output=$("$nginx_binary" -V 2>&1)
 if grep -Fq -- '--with-http_v3_module' <<<"$nginx_version_output"; then edge_capabilities+=",http3_v1"; fi
+if grep -Fq -- '--add-module=/build/ngx_brotli-' <<<"$nginx_version_output" &&
+  grep -Fq -- '--add-module=/build/zstd-nginx-module-' <<<"$nginx_version_output"; then
+  edge_capabilities+=",compression_v1"
+fi
 cat >"$edge_root/config/edge.env" <<EOF
 CONTROL_URL=${CONTROL_URL}
 ENROLLMENT_TOKEN=${ENROLLMENT_TOKEN}
