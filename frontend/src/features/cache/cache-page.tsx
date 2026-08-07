@@ -287,7 +287,7 @@ export function CachePage() {
             <Tabs value={tab} onValueChange={updateTab}>
               <TabsList
                 variant="line"
-                className="max-w-full justify-start overflow-x-auto"
+                className="max-w-full justify-start flex-wrap group-data-horizontal/tabs:h-auto"
               >
                 <TabsTrigger value="operations">{t("操作历史")}</TabsTrigger>
                 <TabsTrigger value="sites">{t("站点缓存")}</TabsTrigger>
