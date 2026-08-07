@@ -40,6 +40,11 @@ const StaticAssetsPage = lazy(() =>
     default: module.StaticAssetsPage,
   })),
 );
+const CachePage = lazy(() =>
+  import("@/features/cache/cache-page").then((module) => ({
+    default: module.CachePage,
+  })),
+);
 const MonitoringPage = lazy(() =>
   import("@/features/monitoring/monitoring-page").then((module) => ({
     default: module.MonitoringPage,
@@ -139,6 +144,7 @@ export default function App() {
                         path="/static-assets"
                         element={<StaticAssetsPage />}
                       />
+                      <Route path="/cache" element={<CachePage />} />
                       <Route path="/monitoring" element={<MonitoringPage />} />
                       <Route path="/scheduling" element={<SchedulingPage />} />
                       <Route path="/wireguard" element={<WireGuardPage />} />

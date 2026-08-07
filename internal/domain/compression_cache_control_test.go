@@ -84,3 +84,36 @@ func TestCacheInvalidationTargetsAndWarmupLimits(t *testing.T) {
 		t.Fatalf("multi-site desired warmups = %d, %v", len(normalized), err)
 	}
 }
+
+func TestNormalizeCacheWarmupResults(t *testing.T) {
+	completedAt := time.Date(2026, 8, 5, 12, 0, 0, 123, time.FixedZone("CST", 8*60*60))
+	results, err := NormalizeCacheWarmupResults([]CacheWarmupResult{{
+		WarmupID: " job-1 ", SiteID: " site-1 ", Status: CacheWarmupPartial,
+		AttemptedURLs: 2, SucceededURLs: 1,
+		Failures:    []CacheWarmupFailure{{Path: " /failed.js ", Detail: " origin returned 503 "}},
+		CompletedAt: completedAt,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].WarmupID != "job-1" || results[0].SiteID != "site-1" ||
+		results[0].Failures[0].Path != "/failed.js" || results[0].Failures[0].Detail != "origin returned 503" ||
+		results[0].CompletedAt.Location() != time.UTC {
+		t.Fatalf("normalized cache warmup results = %#v", results)
+	}
+
+	invalid := []CacheWarmupResult{
+		{WarmupID: "job", SiteID: "site", Status: CacheWarmupSucceeded, AttemptedURLs: 2, SucceededURLs: 1, CompletedAt: completedAt},
+		{WarmupID: "job", SiteID: "site", Status: CacheWarmupFailed, AttemptedURLs: 1, CompletedAt: completedAt},
+		{WarmupID: "job", SiteID: "site", Status: CacheWarmupPartial, AttemptedURLs: 2, SucceededURLs: 1, Failures: []CacheWarmupFailure{{Path: "/../secret", Detail: "failed"}}, CompletedAt: completedAt},
+	}
+	for _, result := range invalid {
+		if _, err := NormalizeCacheWarmupResults([]CacheWarmupResult{result}); err == nil {
+			t.Fatalf("accepted invalid cache warmup result %#v", result)
+		}
+	}
+	duplicate := results[0]
+	if _, err := NormalizeCacheWarmupResults([]CacheWarmupResult{results[0], duplicate}); err == nil {
+		t.Fatal("accepted duplicate cache warmup result")
+	}
+}

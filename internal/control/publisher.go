@@ -32,6 +32,10 @@ var desiredStateMu sync.Mutex
 func (p Publisher) PublishSite(siteID string) (domain.DeploymentTask, error) {
 	desiredStateMu.Lock()
 	defer desiredStateMu.Unlock()
+	return p.publishSiteLocked(siteID)
+}
+
+func (p Publisher) publishSiteLocked(siteID string) (domain.DeploymentTask, error) {
 	site, _, err := p.Store.GetSite(siteID)
 	if err != nil {
 		return domain.DeploymentTask{}, err
@@ -62,6 +66,58 @@ func (p Publisher) PublishSite(siteID string) (domain.DeploymentTask, error) {
 		_ = p.Store.UpdateTask(task.ID, domain.TaskSucceeded, "configuration staged; no active assigned edge nodes to confirm")
 	}
 	return p.Store.GetTask(task.ID)
+}
+
+func (p Publisher) RunCacheInvalidation(input store.CacheOperationInput) (domain.CacheOperation, domain.DeploymentTask, error) {
+	if p.Store == nil {
+		return domain.CacheOperation{}, domain.DeploymentTask{}, errors.New("cache operation publisher is not configured")
+	}
+	desiredStateMu.Lock()
+	defer desiredStateMu.Unlock()
+	if err := p.Store.ReconcilePublishTasks(); err != nil {
+		return domain.CacheOperation{}, domain.DeploymentTask{}, err
+	}
+	operation, site, err := p.Store.CreateCacheInvalidationOperation(input)
+	if err != nil {
+		return domain.CacheOperation{}, domain.DeploymentTask{}, err
+	}
+	task, publishErr := p.publishSiteLocked(site.ID)
+	if publishErr != nil {
+		_ = p.Store.FailCacheOperation(operation.ID, task.ID, publishErr.Error())
+		return operation, task, publishErr
+	}
+	if err := p.Store.AttachCacheOperationTask(operation.ID, task.ID); err != nil {
+		_ = p.Store.FailCacheOperation(operation.ID, task.ID, err.Error())
+		return operation, task, err
+	}
+	operation, err = p.Store.GetCacheOperation(operation.ID)
+	return operation, task, err
+}
+
+func (p Publisher) RetryCachePrewarm(operationID, actor, remoteAddr string) (domain.CacheOperation, domain.DeploymentTask, error) {
+	if p.Store == nil {
+		return domain.CacheOperation{}, domain.DeploymentTask{}, errors.New("cache operation publisher is not configured")
+	}
+	desiredStateMu.Lock()
+	defer desiredStateMu.Unlock()
+	if err := p.Store.ReconcilePublishTasks(); err != nil {
+		return domain.CacheOperation{}, domain.DeploymentTask{}, err
+	}
+	operation, site, err := p.Store.CreateCachePrewarmRetryOperation(operationID, actor, remoteAddr)
+	if err != nil {
+		return domain.CacheOperation{}, domain.DeploymentTask{}, err
+	}
+	task, publishErr := p.publishSiteLocked(site.ID)
+	if publishErr != nil {
+		_ = p.Store.FailCacheOperation(operation.ID, task.ID, publishErr.Error())
+		return operation, task, publishErr
+	}
+	if err := p.Store.AttachCacheOperationTask(operation.ID, task.ID); err != nil {
+		_ = p.Store.FailCacheOperation(operation.ID, task.ID, err.Error())
+		return operation, task, err
+	}
+	operation, err = p.Store.GetCacheOperation(operation.ID)
+	return operation, task, err
 }
 
 func (p Publisher) PublishAll() error {

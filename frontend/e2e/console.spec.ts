@@ -97,6 +97,82 @@ const site = {
   updated_at: now.toISOString(),
 };
 
+const cacheOperation = {
+  id: "cache-operation-1",
+  site_id: site.id,
+  site_name: site.name,
+  kind: "invalidate",
+  scope: "prefix",
+  target: "/assets/",
+  prewarm_paths: ["/assets/app.js", "/assets/styles.css"],
+  cache_generation: 2,
+  config_version: 8,
+  status: "partial",
+  detail: "configuration applied by 2 active edge node(s)",
+  actor: "admin",
+  remote_addr: "203.0.113.8",
+  nodes: [
+    {
+      node_id: "node-1",
+      node_name: "edge-shanghai",
+      target_version: 9,
+      configuration_status: "succeeded",
+      warmup_status: "succeeded",
+      attempted_urls: 2,
+      succeeded_urls: 2,
+      failures: [],
+      reported_at: now.toISOString(),
+    },
+    {
+      node_id: "node-2",
+      node_name: "edge-singapore",
+      target_version: 12,
+      configuration_status: "succeeded",
+      warmup_status: "partial",
+      attempted_urls: 2,
+      succeeded_urls: 1,
+      failures: [
+        {
+          path: "/assets/styles.css",
+          detail: "origin returned 503 Service Unavailable",
+        },
+      ],
+      reported_at: now.toISOString(),
+    },
+  ],
+  created_at: now.toISOString(),
+  updated_at: now.toISOString(),
+  completed_at: now.toISOString(),
+};
+
+const cacheOperationsOverview = {
+  sites: [
+    {
+      site_id: site.id,
+      site_name: site.name,
+      domains: site.domains,
+      cacheable: true,
+      cache_generation: site.cache_generation,
+      rule_count: 1,
+      node_count: 2,
+      active_node_count: 2,
+      reporting_node_count: 2,
+      last_operation: cacheOperation,
+      pending_configuration: false,
+    },
+  ],
+  operations: [cacheOperation],
+  rules: [
+    {
+      site_id: site.id,
+      site_name: site.name,
+      scope: "prefix",
+      value: "/assets/",
+      generation: 8,
+    },
+  ],
+};
+
 const siteMetrics = [
   {
     minute: now.toISOString(),
@@ -1103,6 +1179,7 @@ async function mockAPI(page: Page, overrides: Record<string, unknown> = {}) {
       "/api/logs/request-502": accessLogs[1],
       "/api/security": securityOverview,
       "/api/static-assets": staticAssetOverview,
+      "/api/cache/overview": cacheOperationsOverview,
       "/api/monitoring": monitoring,
       "/api/monitoring/smart-routing": smartRouting,
       "/api/settings": {
@@ -1623,20 +1700,18 @@ test("HTTP/3 is opt-in per site and saved explicitly", async ({
   expect(request.postDataJSON()).toMatchObject({ http3_enabled: true });
 });
 
-test("site configures compression and submits scoped cache prewarm", async ({
+test("cache console manages scoped prewarm and exposes per-node results", async ({
   page,
 }, testInfo) => {
   const errors = trackPageErrors(page);
   await page.setViewportSize({ width: 1440, height: 1000 });
   await mockAPI(page, {
     "/api/sites/site-1": site,
-    "/api/sites/site-1/invalidate-cache": {
-      id: "invalidate-prefix",
-      kind: "publish_site",
-      site_id: "site-1",
-      status: "queued",
-      created_at: now.toISOString(),
-      updated_at: now.toISOString(),
+    "/api/cache/operations": {
+      ...cacheOperation,
+      id: "cache-operation-new",
+      status: "applying",
+      nodes: [],
     },
   });
   await page.goto("/#/sites/site-1");
@@ -1665,31 +1740,67 @@ test("site configures compression and submits scoped cache prewarm", async ({
     compression_excluded_mime_types: ["text/event-stream", "application/json"],
   });
 
-  await page.getByRole("button", { name: "缓存失效与预热" }).click();
-  const dialog = page.getByRole("dialog", { name: "缓存失效与预热" });
-  await dialog.getByRole("combobox", { name: "失效范围" }).click();
-  await page.getByRole("option", { name: "路径前缀" }).click();
+  await page.getByRole("button", { name: "打开缓存运维台" }).click();
+  await expect(page).toHaveURL(/#\/cache\?site_id=site-1$/);
+  await expect(
+    page.getByRole("heading", { name: "缓存运维台", level: 1 }),
+  ).toBeVisible();
+  await expect(page.getByRole("link", { name: "缓存" }).first()).toBeVisible();
+  await expect(
+    page.getByText("edge-shanghai", { exact: true }),
+  ).not.toBeVisible();
+  await expect(page.locator("[data-sonner-toast]")).toHaveCount(0, {
+    timeout: 10_000,
+  });
+  await page.getByRole("button", { name: "查看节点结果" }).click();
+  const resultDialog = page.getByRole("dialog", { name: site.name });
+  await expect(
+    resultDialog.getByText("edge-shanghai", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    resultDialog.getByText("edge-singapore", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    resultDialog.getByText("origin returned 503 Service Unavailable"),
+  ).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("cache-console-node-results.png"),
+    fullPage: true,
+  });
+  await resultDialog.getByRole("button", { name: "完成" }).click();
+
+  await page.screenshot({
+    path: testInfo.outputPath("cache-console-desktop.png"),
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "新建操作" }).click();
+  const dialog = page.getByRole("dialog", { name: "新建缓存操作" });
+  await dialog.getByRole("tab", { name: "路径前缀" }).click();
   await dialog.getByLabel("路径前缀").fill("/assets/");
-  await dialog.getByRole("switch", { name: "配置生效后预热" }).click();
+  await dialog.getByRole("switch", { name: "同步预热" }).click();
   await dialog
     .getByLabel("补充预热 URL（可选）")
     .fill("/assets/app.js\n/assets/styles.css");
   await page.screenshot({
-    path: testInfo.outputPath("site-compression-cache-prewarm.png"),
+    path: testInfo.outputPath("cache-console-prewarm-dialog.png"),
     fullPage: true,
   });
 
   const invalidateRequest = page.waitForRequest(
     (request) =>
-      new URL(request.url()).pathname ===
-        "/api/sites/site-1/invalidate-cache" && request.method() === "POST",
+      new URL(request.url()).pathname === "/api/cache/operations" &&
+      request.method() === "POST",
   );
   await dialog.getByRole("button", { name: "失效并预热" }).click();
   expect((await invalidateRequest).postDataJSON()).toEqual({
+    site_id: "site-1",
     scope: "prefix",
     value: "/assets/",
     prewarm: true,
     prewarm_paths: ["/assets/app.js", "/assets/styles.css"],
+  });
+  await expect(page.locator("[data-sonner-toast]")).toHaveCount(0, {
+    timeout: 10_000,
   });
 
   await page.setViewportSize({ width: 390, height: 844 });
@@ -1699,7 +1810,7 @@ test("site configures compression and submits scoped cache prewarm", async ({
     ),
   ).toBe(true);
   await page.screenshot({
-    path: testInfo.outputPath("site-compression-mobile.png"),
+    path: testInfo.outputPath("cache-console-mobile.png"),
     fullPage: true,
   });
   expect(errors).toEqual([]);
@@ -2347,6 +2458,7 @@ test("English locale covers workspaces and the WireGuard dialog", async ({
   await page.getByRole("menuitemradio", { name: "English" }).click();
   for (const [path, heading] of [
     ["logs", "Logs"],
+    ["cache", "Cache operations"],
     ["monitoring", "Monitoring"],
     ["scheduling", "Scheduling"],
     ["wireguard", "WireGuard"],
@@ -3373,6 +3485,7 @@ test("all primary workspaces and the new-site editor mount without runtime error
 
   for (const [path, heading] of [
     ["security", "安全"],
+    ["cache", "缓存运维台"],
     ["monitoring", "监测"],
     ["scheduling", "调度"],
     ["wireguard", "隧道"],

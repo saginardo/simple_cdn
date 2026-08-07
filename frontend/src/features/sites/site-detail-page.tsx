@@ -1,11 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
+  ArrowRight,
   KeyRound,
   LoaderCircle,
   Network,
   Plus,
-  RefreshCw,
   Rocket,
   Save,
   ShieldCheck,
@@ -114,12 +114,6 @@ interface SiteDraft {
   tcp_forwards: TCPForward[];
   enabled: boolean;
 }
-interface CacheOperationDraft {
-  scope: "full" | "url" | "prefix";
-  value: string;
-  prewarm: boolean;
-  prewarm_paths: string;
-}
 interface TLSStatus {
   certificate_task: DeploymentTask | null;
   published_after_certificate: boolean;
@@ -165,13 +159,6 @@ export function SiteDetailPage() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [allowlistOpen, setAllowlistOpen] = useState(false);
   const [tlsPendingOpen, setTlsPendingOpen] = useState(false);
-  const [cacheOperationOpen, setCacheOperationOpen] = useState(false);
-  const [cacheOperation, setCacheOperation] = useState<CacheOperationDraft>({
-    scope: "url",
-    value: "",
-    prewarm: false,
-    prewarm_paths: "",
-  });
   const [checkingTLS, setCheckingTLS] = useState(false);
   const globalTTL = settings.data?.dns.default_ttl_seconds ?? 60;
   const dirty = Boolean(baseline && JSON.stringify(draft) !== baseline);
@@ -299,9 +286,7 @@ export function SiteDetailPage() {
       toast.success(
         input.path.endsWith("certificate")
           ? t("TLS 签发已排队")
-          : input.path.endsWith("invalidate-cache")
-            ? t("缓存失效已发布")
-            : t("站点发布已启动"),
+          : t("站点发布已启动"),
       );
       void queryClient.invalidateQueries({
         queryKey: ["site-tls", siteId],
@@ -312,9 +297,6 @@ export function SiteDetailPage() {
       void queryClient.invalidateQueries({
         queryKey: ["sites"],
       });
-      if (input.path.endsWith("invalidate-cache")) {
-        setCacheOperationOpen(false);
-      }
     },
     onError: (error, input) => {
       if (
@@ -595,7 +577,7 @@ export function SiteDetailPage() {
                       path: `/api/sites/${encodedID}/certificate`,
                     })
                   }
-                  onInvalidate={() => setCacheOperationOpen(true)}
+                  onManageCache={() => navigate(`/cache?site_id=${encodedID}`)}
                   onAllowlist={() => setAllowlistOpen(true)}
                   onDelete={() => setDeleteOpen(true)}
                 />
@@ -645,27 +627,6 @@ export function SiteDetailPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      <CacheOperationDialog
-        open={cacheOperationOpen}
-        onOpenChange={setCacheOperationOpen}
-        value={cacheOperation}
-        onChange={setCacheOperation}
-        pending={operation.isPending}
-        onSubmit={() =>
-          operation.mutate({
-            path: `/api/sites/${encodedID}/invalidate-cache`,
-            body: {
-              scope: cacheOperation.scope,
-              value:
-                cacheOperation.scope === "full"
-                  ? ""
-                  : cacheOperation.value.trim(),
-              prewarm: cacheOperation.prewarm,
-              prewarm_paths: splitList(cacheOperation.prewarm_paths),
-            },
-          })
-        }
-      />
       <AllowlistDialog
         open={allowlistOpen}
         onOpenChange={setAllowlistOpen}
@@ -1687,128 +1648,6 @@ function TCPForwards({
   );
 }
 
-function CacheOperationDialog({
-  open,
-  onOpenChange,
-  value,
-  onChange,
-  pending,
-  onSubmit,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  value: CacheOperationDraft;
-  onChange: (value: CacheOperationDraft) => void;
-  pending: boolean;
-  onSubmit: () => void;
-}) {
-  const targetRequired = value.scope !== "full";
-  const pathsRequired = value.scope === "full" && value.prewarm;
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{t("缓存失效与预热")}</DialogTitle>
-          <DialogDescription>
-            {t("发布新的缓存键代际到边缘节点")}
-          </DialogDescription>
-        </DialogHeader>
-        <div className="grid gap-4 py-2">
-          <SelectField
-            label={t("失效范围")}
-            value={value.scope}
-            onChange={(scope) =>
-              onChange({
-                ...value,
-                scope: scope as CacheOperationDraft["scope"],
-                value: scope === "full" ? "" : value.value,
-              })
-            }
-            options={[
-              ["url", t("单个 URL")],
-              ["prefix", t("路径前缀")],
-              ["full", t("整个站点")],
-            ]}
-          />
-          {targetRequired ? (
-            <Field
-              label={value.scope === "url" ? t("URL 路径") : t("路径前缀")}
-              id="cache-invalidation-target"
-            >
-              <Input
-                id="cache-invalidation-target"
-                value={value.value}
-                onChange={(event) =>
-                  onChange({ ...value, value: event.target.value })
-                }
-                placeholder={
-                  value.scope === "url" ? "/assets/app.js" : "/assets/"
-                }
-              />
-            </Field>
-          ) : null}
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <Label htmlFor="cache-prewarm">{t("配置生效后预热")}</Label>
-              <p className="text-xs text-muted-foreground">
-                {t("由每个目标边缘节点本机发起")}
-              </p>
-            </div>
-            <Switch
-              id="cache-prewarm"
-              checked={value.prewarm}
-              onCheckedChange={(prewarm) => onChange({ ...value, prewarm })}
-            />
-          </div>
-          {value.prewarm && value.scope !== "url" ? (
-            <div className="grid gap-2">
-              <Label htmlFor="cache-prewarm-paths">
-                {value.scope === "full"
-                  ? t("预热 URL")
-                  : t("补充预热 URL（可选）")}
-              </Label>
-              <Textarea
-                id="cache-prewarm-paths"
-                rows={4}
-                value={value.prewarm_paths}
-                onChange={(event) =>
-                  onChange({ ...value, prewarm_paths: event.target.value })
-                }
-                placeholder="/assets/app.js"
-              />
-            </div>
-          ) : null}
-        </div>
-        <DialogFooter>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => onOpenChange(false)}
-          >
-            {t("取消")}
-          </Button>
-          <Button
-            type="button"
-            disabled={
-              pending ||
-              (targetRequired && !value.value.trim()) ||
-              (pathsRequired && !value.prewarm_paths.trim())
-            }
-            onClick={onSubmit}
-          >
-            {pending ? (
-              <LoaderCircle className="animate-spin" />
-            ) : (
-              <RefreshCw />
-            )}
-            {value.prewarm ? t("失效并预热") : t("执行失效")}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
 function SiteOperations({
   site,
   nodes,
@@ -1818,7 +1657,7 @@ function SiteOperations({
   pending,
   onPublish,
   onCertificate,
-  onInvalidate,
+  onManageCache,
   onAllowlist,
   onDelete,
 }: {
@@ -1830,7 +1669,7 @@ function SiteOperations({
   pending: boolean;
   onPublish: () => void;
   onCertificate: () => void;
-  onInvalidate: () => void;
+  onManageCache: () => void;
   onAllowlist: () => void;
   onDelete: () => void;
 }) {
@@ -1986,11 +1825,11 @@ function SiteOperations({
               type="button"
               variant="outline"
               size="sm"
-              disabled={site.deleting || pending}
-              onClick={onInvalidate}
+              disabled={site.deleting}
+              onClick={onManageCache}
             >
-              <RefreshCw />
-              {t("缓存失效与预热")}
+              <ArrowRight />
+              {t("打开缓存运维台")}
             </Button>
           </div>
         ) : null}

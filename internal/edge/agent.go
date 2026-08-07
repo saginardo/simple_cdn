@@ -99,6 +99,7 @@ type Agent struct {
 	lastApplyReport   *domain.ApplyReport
 	applyReportSeq    uint64
 	componentFailures map[string]string
+	cacheWarmupMu     sync.Mutex
 
 	manifestMu sync.RWMutex
 	manifest   *domain.EdgeControlManifest
@@ -276,6 +277,7 @@ func New(config Config) (*Agent, error) {
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityOriginConnection)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityStaticAssets)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityCacheControl)
+	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityCacheWarmupResults)
 	if compressionCapable {
 		config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityCompression)
 	}
@@ -770,10 +772,15 @@ func (a *Agent) Sync(ctx context.Context) error {
 }
 
 func (a *Agent) Heartbeat(ctx context.Context, appliedVersion int64, lastError string, report *domain.ApplyReport) error {
+	cacheWarmupResults, err := a.pendingCacheWarmupResults()
+	if err != nil {
+		return err
+	}
 	payload, err := json.Marshal(map[string]any{
 		"last_error": lastError, "applied_version": appliedVersion, "apply_report": report,
-		"capabilities":  append([]string(nil), a.Config.Capabilities...),
-		"agent_version": a.Config.AgentVersion, "agent_sha256": a.Config.AgentSHA256,
+		"capabilities":         append([]string(nil), a.Config.Capabilities...),
+		"cache_warmup_results": cacheWarmupResults,
+		"agent_version":        a.Config.AgentVersion, "agent_sha256": a.Config.AgentSHA256,
 		"nginx_version": a.Config.NginxVersion, "nginx_sha256": a.Config.NginxSHA256,
 		"active_upgrade_task_id": a.activeUpgradeID(),
 		"cache_storage":          a.cacheUsage.Snapshot(),
@@ -799,7 +806,7 @@ func (a *Agent) Heartbeat(ctx context.Context, appliedVersion int64, lastError s
 	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&result); err != nil {
 		if errors.Is(err, io.EOF) {
 			a.setControlManifest(nil)
-			return nil
+			return a.acknowledgeCacheWarmupResults(cacheWarmupResults)
 		}
 		return fmt.Errorf("decode heartbeat response: %w", err)
 	}
@@ -816,7 +823,7 @@ func (a *Agent) Heartbeat(ctx context.Context, appliedVersion int64, lastError s
 		}
 	}
 	a.setControlManifest(result.Control)
-	return nil
+	return a.acknowledgeCacheWarmupResults(cacheWarmupResults)
 }
 
 func loadManagedNginxMetadata(config *Config) error {
@@ -1113,7 +1120,7 @@ func (a *Agent) applyLocked(state domain.DesiredState) error {
 		return a.applyFailed(state.Version, "nginx_not_listening", fmt.Errorf("Nginx did not retain all required public listeners after applying configuration: %s", formatPublicPorts(ports, udpPorts)), nil)
 	}
 	cacheCleanupErr := reconcileInstalledCacheLayout(nginx.DefaultCachePath, state.NginxConfig)
-	warmupDetail, cacheWarmupErr := a.runCacheWarmups(state.CacheWarmups)
+	warmupDetail, _, cacheWarmupErr := a.runCacheWarmups(state.CacheWarmups)
 	if err := originStage.Persist(); err != nil {
 		restoreBackups(backups)
 		originStage.Rollback()

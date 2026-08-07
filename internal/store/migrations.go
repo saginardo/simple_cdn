@@ -48,6 +48,51 @@ var schemaMigrations = []schemaMigration{
 	{Version: 29, Name: "passkey-authentication", Apply: migratePasskeyAuthentication},
 	{Version: 30, Name: "authentication-hardening", Apply: migrateAuthenticationHardening},
 	{Version: 31, Name: "compression-and-cache-control", Apply: migrateCompressionAndCacheControl},
+	{Version: 32, Name: "cache-operations", Apply: migrateCacheOperations},
+}
+
+func migrateCacheOperations(tx *sql.Tx) error {
+	_, err := tx.Exec(`CREATE TABLE IF NOT EXISTS cache_operations (
+		id TEXT PRIMARY KEY,
+		site_id TEXT NOT NULL,
+		site_name TEXT NOT NULL,
+		kind TEXT NOT NULL,
+		retry_of_id TEXT REFERENCES cache_operations(id) ON DELETE SET NULL,
+		publish_task_id TEXT REFERENCES deployment_tasks(id) ON DELETE SET NULL,
+		scope TEXT NOT NULL,
+		target TEXT NOT NULL DEFAULT '',
+		prewarm_paths_json TEXT NOT NULL DEFAULT '[]',
+		cache_generation INTEGER NOT NULL,
+		config_version INTEGER NOT NULL,
+		status TEXT NOT NULL,
+		detail TEXT NOT NULL DEFAULT '',
+		actor TEXT NOT NULL DEFAULT '',
+		remote_addr TEXT NOT NULL DEFAULT '',
+		completed_at TEXT,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_cache_operations_created ON cache_operations(created_at DESC);
+	CREATE INDEX IF NOT EXISTS idx_cache_operations_site_created ON cache_operations(site_id, created_at DESC);
+	CREATE INDEX IF NOT EXISTS idx_cache_operations_status ON cache_operations(status, updated_at DESC);
+	CREATE TABLE IF NOT EXISTS cache_operation_nodes (
+		operation_id TEXT NOT NULL REFERENCES cache_operations(id) ON DELETE CASCADE,
+		node_id TEXT NOT NULL,
+		node_name TEXT NOT NULL,
+		target_version INTEGER NOT NULL DEFAULT 0,
+		configuration_status TEXT NOT NULL,
+		warmup_status TEXT NOT NULL,
+		attempted_urls INTEGER NOT NULL DEFAULT 0,
+		succeeded_urls INTEGER NOT NULL DEFAULT 0,
+		failures_json TEXT NOT NULL DEFAULT '[]',
+		reported_at TEXT,
+		PRIMARY KEY(operation_id, node_id)
+	);
+	CREATE INDEX IF NOT EXISTS idx_cache_operation_nodes_node ON cache_operation_nodes(node_id, operation_id);`)
+	if err != nil {
+		return fmt.Errorf("create cache operation schema: %w", err)
+	}
+	return nil
 }
 
 func migrateCompressionAndCacheControl(tx *sql.Tx) error {

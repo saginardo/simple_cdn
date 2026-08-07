@@ -98,7 +98,7 @@ func TestInstallEdgeScriptCreatesManagedOptLayout(t *testing.T) {
 		"NGINX_VERSION_PATH=/opt/cdn-edge/nginx/VERSION",
 		"NGINX_SHA256_PATH=/opt/cdn-edge/nginx/.bundle-sha256",
 		"EDGE_STATIC_ASSET_DIR=/opt/cdn-edge/static/objects",
-		"EDGE_CAPABILITIES=tcp_stream_v1,edge_rate_limit_v1,waf_chain_v1,pow_challenge_v1,static_assets_v1,cache_control_v1,nginx_capacity_v1,nginx_bundle_v1",
+		"EDGE_CAPABILITIES=tcp_stream_v1,edge_rate_limit_v1,waf_chain_v1,pow_challenge_v1,static_assets_v1,cache_control_v1,cache_warmup_results_v1,nginx_capacity_v1,nginx_bundle_v1",
 	} {
 		if !strings.Contains(environment, expected) {
 			t.Fatalf("edge.env does not contain %q:\n%s", expected, environment)

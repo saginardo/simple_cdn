@@ -500,6 +500,94 @@ export interface Site {
   updated_at: string;
 }
 
+export type CacheOperationStatus =
+  "queued" | "applying" | "succeeded" | "partial" | "failed";
+
+export type CacheWarmupStatus =
+  | "not_requested"
+  | "not_targeted"
+  | "pending"
+  | "succeeded"
+  | "partial"
+  | "failed"
+  | "unreported"
+  | "unsupported"
+  | "skipped";
+
+export interface CacheWarmupFailure {
+  path?: string;
+  detail: string;
+}
+
+export interface CacheOperationNode {
+  node_id: string;
+  node_name: string;
+  target_version?: number;
+  configuration_status:
+    "not_targeted" | "pending" | "succeeded" | "failed" | "timed_out";
+  warmup_status: CacheWarmupStatus;
+  attempted_urls: number;
+  succeeded_urls: number;
+  failures: CacheWarmupFailure[];
+  reported_at?: string;
+}
+
+export interface CacheOperation {
+  id: string;
+  site_id: string;
+  site_name: string;
+  kind: "invalidate" | "prewarm_retry";
+  retry_of_id?: string;
+  publish_task_id?: string;
+  scope: "full" | "url" | "prefix";
+  target?: string;
+  prewarm_paths: string[];
+  cache_generation: number;
+  config_version: number;
+  status: CacheOperationStatus;
+  detail?: string;
+  actor?: string;
+  remote_addr?: string;
+  nodes: CacheOperationNode[];
+  created_at: string;
+  updated_at: string;
+  completed_at?: string;
+}
+
+export interface CacheSiteOverview {
+  site_id: string;
+  site_name: string;
+  domains: string[];
+  cacheable: boolean;
+  disabled_reason?:
+    | "deleting"
+    | "tcp_only"
+    | "passthrough"
+    | "origin_response_buffering_disabled"
+    | "unsupported_origin";
+  cache_generation: number;
+  rule_count: number;
+  node_count: number;
+  active_node_count: number;
+  reporting_node_count: number;
+  last_operation?: CacheOperation;
+  pending_configuration: boolean;
+}
+
+export interface CacheRuleOverview {
+  site_id: string;
+  site_name: string;
+  scope: "url" | "prefix";
+  value: string;
+  generation: number;
+}
+
+export interface CacheOperationsOverview {
+  sites: CacheSiteOverview[];
+  operations: CacheOperation[];
+  rules: CacheRuleOverview[];
+}
+
 export interface DeploymentTask {
   id: string;
   kind: string;

@@ -204,6 +204,39 @@ CREATE TABLE IF NOT EXISTS publish_task_nodes (
   reported_at TEXT,
   PRIMARY KEY(task_id, node_id)
 );
+CREATE TABLE IF NOT EXISTS cache_operations (
+  id TEXT PRIMARY KEY,
+  site_id TEXT NOT NULL,
+  site_name TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  retry_of_id TEXT REFERENCES cache_operations(id) ON DELETE SET NULL,
+  publish_task_id TEXT REFERENCES deployment_tasks(id) ON DELETE SET NULL,
+  scope TEXT NOT NULL,
+  target TEXT NOT NULL DEFAULT '',
+  prewarm_paths_json TEXT NOT NULL DEFAULT '[]',
+  cache_generation INTEGER NOT NULL,
+  config_version INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  detail TEXT NOT NULL DEFAULT '',
+  actor TEXT NOT NULL DEFAULT '',
+  remote_addr TEXT NOT NULL DEFAULT '',
+  completed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS cache_operation_nodes (
+  operation_id TEXT NOT NULL REFERENCES cache_operations(id) ON DELETE CASCADE,
+  node_id TEXT NOT NULL,
+  node_name TEXT NOT NULL,
+  target_version INTEGER NOT NULL DEFAULT 0,
+  configuration_status TEXT NOT NULL,
+  warmup_status TEXT NOT NULL,
+  attempted_urls INTEGER NOT NULL DEFAULT 0,
+  succeeded_urls INTEGER NOT NULL DEFAULT 0,
+  failures_json TEXT NOT NULL DEFAULT '[]',
+  reported_at TEXT,
+  PRIMARY KEY(operation_id, node_id)
+);
 CREATE TABLE IF NOT EXISTS site_deletion_jobs (
   site_id TEXT PRIMARY KEY REFERENCES sites(id) ON DELETE CASCADE,
   task_id TEXT NOT NULL UNIQUE REFERENCES deployment_tasks(id) ON DELETE CASCADE,
@@ -464,6 +497,10 @@ CREATE TABLE IF NOT EXISTS node_uninstall_jobs (
 	);
 CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON deployment_tasks(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_publish_task_nodes_node ON publish_task_nodes(node_id, status);
+CREATE INDEX IF NOT EXISTS idx_cache_operations_created ON cache_operations(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_cache_operations_site_created ON cache_operations(site_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_cache_operations_status ON cache_operations(status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_cache_operation_nodes_node ON cache_operation_nodes(node_id, operation_id);
 CREATE INDEX IF NOT EXISTS idx_nodes_status ON nodes(status);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
 	CREATE INDEX IF NOT EXISTS idx_site_node_health_node ON site_node_health(node_id);
@@ -1776,7 +1813,7 @@ func (s *Store) InvalidateSiteCacheScope(siteID string, scope domain.CacheInvali
 	if site.Deleting {
 		return domain.Site{}, ErrSiteDeleting
 	}
-	if site.Passthrough || site.TCPOnly || !site.OriginResponseBuffering {
+	if !cacheSiteAvailable(site) {
 		return domain.Site{}, ErrCacheDisabled
 	}
 	nextConfigVersion := site.ConfigVersion + 1

@@ -30,6 +30,7 @@ const pageNames: Record<string, string> = {
   overview: "概览",
   logs: "日志",
   security: "安全",
+  cache: "缓存",
   monitoring: "监测",
   scheduling: "调度",
   wireguard: "隧道",

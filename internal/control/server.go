@@ -202,6 +202,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/wireguard/performance-tests", s.requireAdmin(s.listWireGuardPerformanceTests))
 	mux.HandleFunc("POST /api/wireguard/performance-tests", s.requireAdmin(s.createWireGuardPerformanceTest))
 	mux.HandleFunc("GET /api/sites", s.requireAdmin(s.listSites))
+	mux.HandleFunc("GET /api/cache/overview", s.requireAdmin(s.cacheOperationsOverview))
+	mux.HandleFunc("GET /api/cache/operations", s.requireAdmin(s.listCacheOperations))
+	mux.HandleFunc("POST /api/cache/operations", s.requireAdmin(s.createCacheOperation))
+	mux.HandleFunc("GET /api/cache/operations/{id}", s.requireAdmin(s.getCacheOperation))
+	mux.HandleFunc("POST /api/cache/operations/{id}/retry", s.requireAdmin(s.retryCacheOperation))
 	mux.HandleFunc("GET /api/certificates", s.requireAdmin(s.certificatesOverview))
 	mux.HandleFunc("POST /api/certificates/{id}/renew", s.requireAdmin(s.renewCertificate))
 	mux.HandleFunc("POST /api/sites", s.requireAdmin(s.createSite))
@@ -1217,21 +1222,26 @@ func (s *Server) invalidateCache(response http.ResponseWriter, request *http.Req
 		writeError(response, http.StatusBadRequest, err)
 		return
 	}
-	site, err := s.Store.InvalidateSiteCacheScope(request.PathValue("id"), input.Scope, value, prewarmPaths)
+	site, _, err := s.Store.GetSite(request.PathValue("id"))
 	if err != nil {
-		if errors.Is(err, store.ErrCacheDisabled) {
-			writeError(response, http.StatusConflict, err)
-			return
-		}
 		writeStoreError(response, err)
 		return
 	}
-	task, err := s.Publisher.PublishSite(site.ID)
-	if err != nil {
-		writeError(response, http.StatusInternalServerError, err)
+	if cacheable, _ := cacheSiteEligibility(site); !cacheable {
+		writeError(response, http.StatusConflict, store.ErrCacheDisabled)
 		return
 	}
-	s.audit(request, adminID(request.Context()), "invalidate_cache", "site", site.ID, fmt.Sprintf("scope=%s target=%q generation=%d prewarm_urls=%d task=%s", input.Scope, value, site.CacheGeneration, len(prewarmPaths), task.ID))
+	operation, task, err := s.Publisher.RunCacheInvalidation(store.CacheOperationInput{
+		SiteID: request.PathValue("id"), Scope: input.Scope, Target: value, PrewarmPaths: prewarmPaths,
+		Actor: adminID(request.Context()), RemoteAddr: s.requestIP(request),
+	})
+	if err != nil {
+		writeStoreError(response, err)
+		return
+	}
+	s.audit(request, adminID(request.Context()), "invalidate_cache", "cache_operation", operation.ID,
+		fmt.Sprintf("site=%s scope=%s target=%q generation=%d prewarm_urls=%d task=%s", operation.SiteID,
+			input.Scope, value, operation.CacheGeneration, len(prewarmPaths), task.ID))
 	writeJSON(response, http.StatusAccepted, task)
 }
 
@@ -1795,17 +1805,18 @@ func (s *Server) desiredState(response http.ResponseWriter, request *http.Reques
 }
 
 type heartbeatRequest struct {
-	LastError       string                    `json:"last_error"`
-	AppliedVersion  int64                     `json:"applied_version"`
-	ApplyReport     *domain.ApplyReport       `json:"apply_report,omitempty"`
-	Capabilities    []string                  `json:"capabilities,omitempty"`
-	AgentVersion    string                    `json:"agent_version,omitempty"`
-	AgentSHA256     string                    `json:"agent_sha256,omitempty"`
-	NginxVersion    string                    `json:"nginx_version,omitempty"`
-	NginxSHA256     string                    `json:"nginx_sha256,omitempty"`
-	ActiveUpgradeID string                    `json:"active_upgrade_task_id,omitempty"`
-	CacheStorage    *domain.CacheStorageUsage `json:"cache_storage,omitempty"`
-	MachineStatus   *domain.MachineStatus     `json:"machine_status,omitempty"`
+	LastError          string                     `json:"last_error"`
+	AppliedVersion     int64                      `json:"applied_version"`
+	ApplyReport        *domain.ApplyReport        `json:"apply_report,omitempty"`
+	CacheWarmupResults []domain.CacheWarmupResult `json:"cache_warmup_results,omitempty"`
+	Capabilities       []string                   `json:"capabilities,omitempty"`
+	AgentVersion       string                     `json:"agent_version,omitempty"`
+	AgentSHA256        string                     `json:"agent_sha256,omitempty"`
+	NginxVersion       string                     `json:"nginx_version,omitempty"`
+	NginxSHA256        string                     `json:"nginx_sha256,omitempty"`
+	ActiveUpgradeID    string                     `json:"active_upgrade_task_id,omitempty"`
+	CacheStorage       *domain.CacheStorageUsage  `json:"cache_storage,omitempty"`
+	MachineStatus      *domain.MachineStatus      `json:"machine_status,omitempty"`
 }
 
 const maxEdgeReportClockSkew = 5 * time.Minute
@@ -1866,12 +1877,27 @@ func (s *Server) heartbeat(response http.ResponseWriter, request *http.Request) 
 			input.MachineStatus = nil
 		}
 	}
+	cacheWarmupResults, err := domain.NormalizeCacheWarmupResults(input.CacheWarmupResults)
+	if err != nil {
+		writeError(response, http.StatusBadRequest, err)
+		return
+	}
+	for _, result := range cacheWarmupResults {
+		if result.CompletedAt.After(time.Now().UTC().Add(maxEdgeReportClockSkew)) {
+			writeError(response, http.StatusBadRequest, errors.New("cache prewarm result timestamp is in the future"))
+			return
+		}
+	}
 	if err := s.Store.SetNodeCapabilities(nodeID, input.Capabilities); err != nil {
 		writeStoreError(response, err)
 		return
 	}
 	if err := s.Store.HeartbeatWithArtifacts(nodeID, input.AppliedVersion, input.LastError, input.ApplyReport,
 		input.AgentVersion, input.AgentSHA256, input.NginxVersion, input.NginxSHA256, input.ActiveUpgradeID); err != nil {
+		writeStoreError(response, err)
+		return
+	}
+	if err := s.Store.RecordCacheWarmupResults(nodeID, cacheWarmupResults); err != nil {
 		writeStoreError(response, err)
 		return
 	}
@@ -2240,7 +2266,7 @@ func writeStoreError(response http.ResponseWriter, err error) {
 		writeError(response, http.StatusNotFound, err)
 		return
 	}
-	if errors.Is(err, store.ErrUninstallActive) || errors.Is(err, store.ErrUninstallNotActive) || errors.Is(err, store.ErrNodeAssigned) || errors.Is(err, store.ErrSiteDeleting) || errors.Is(err, store.ErrSiteTaskActive) || errors.Is(err, store.ErrSiteChanged) || errors.Is(err, store.ErrNodeUpgradeActive) || errors.Is(err, store.ErrNodeOperationActive) || errors.Is(err, store.ErrUpgradeRetryNotReady) || errors.Is(err, store.ErrMonitoringTargetExists) || errors.Is(err, store.ErrMonitoringTargetNameExists) || errors.Is(err, store.ErrMonitoringTargetLimit) || errors.Is(err, store.ErrMonitoringTargetsChanged) || errors.Is(err, store.ErrWireGuardTunnelInUse) || errors.Is(err, store.ErrWireGuardPerformanceActive) {
+	if errors.Is(err, store.ErrCacheDisabled) || errors.Is(err, store.ErrCacheOperationNotRetryable) || errors.Is(err, store.ErrUninstallActive) || errors.Is(err, store.ErrUninstallNotActive) || errors.Is(err, store.ErrNodeAssigned) || errors.Is(err, store.ErrSiteDeleting) || errors.Is(err, store.ErrSiteTaskActive) || errors.Is(err, store.ErrSiteChanged) || errors.Is(err, store.ErrNodeUpgradeActive) || errors.Is(err, store.ErrNodeOperationActive) || errors.Is(err, store.ErrUpgradeRetryNotReady) || errors.Is(err, store.ErrMonitoringTargetExists) || errors.Is(err, store.ErrMonitoringTargetNameExists) || errors.Is(err, store.ErrMonitoringTargetLimit) || errors.Is(err, store.ErrMonitoringTargetsChanged) || errors.Is(err, store.ErrWireGuardTunnelInUse) || errors.Is(err, store.ErrWireGuardPerformanceActive) {
 		writeError(response, http.StatusConflict, err)
 		return
 	}

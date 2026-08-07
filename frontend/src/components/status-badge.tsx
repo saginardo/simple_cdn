@@ -25,6 +25,12 @@ const labels: Record<string, string> = {
   preparing: "准备中",
   running: "执行中",
   forced: "强制完成",
+  not_targeted: "未纳入本次发布",
+  not_requested: "未请求",
+  unreported: "未精确上报",
+  unsupported: "节点不支持",
+  skipped: "已跳过",
+  timed_out: "超时",
 };
 
 const tones: Record<string, Tone> = {
@@ -39,6 +45,13 @@ const tones: Record<string, Tone> = {
   queued: "warning",
   failed: "danger",
   revoked: "danger",
+  timed_out: "danger",
+  partial: "warning",
+  unreported: "warning",
+  unsupported: "neutral",
+  skipped: "neutral",
+  not_targeted: "neutral",
+  not_requested: "neutral",
 };
 
 export function StatusBadge({

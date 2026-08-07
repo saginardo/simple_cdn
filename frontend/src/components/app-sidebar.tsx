@@ -1,6 +1,7 @@
 import {
   Activity,
   BadgeCheck,
+  DatabaseZap,
   Files,
   LayoutDashboard,
   LogOut,
@@ -46,6 +47,7 @@ const groups = [
       { label: "节点", to: "/nodes", icon: Server },
       { label: "站点", to: "/sites", icon: Waypoints },
       { label: "资源", to: "/static-assets", icon: Files },
+      { label: "缓存", to: "/cache", icon: DatabaseZap },
       { label: "监测", to: "/monitoring", icon: Activity },
       { label: "调度", to: "/scheduling", icon: Route },
       {
