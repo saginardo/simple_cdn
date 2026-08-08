@@ -1,6 +1,7 @@
 package nginx
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -38,6 +39,46 @@ func TestRenderStaticAssetExactLocation(t *testing.T) {
 		if !strings.Contains(configuration, expected) {
 			t.Errorf("rendered configuration is missing %q", expected)
 		}
+	}
+}
+
+func TestRenderStaticAssetUncompressedBytesPerSiteMap(t *testing.T) {
+	site := domain.Site{
+		ID: "site-static", Name: "static", Domains: []string{"static.example.test"}, Enabled: true,
+		PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true},
+	}
+	other := domain.Site{
+		ID: "site-plain", Name: "plain", Domains: []string{"plain.example.test"}, Enabled: true,
+		PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true},
+	}
+	longPath := "/static/" + strings.Repeat("long-name", 12) + "/app.js"
+	configuration, err := RenderWithRuntimeOptions([]domain.Site{site, other}, nil, nil, RenderRuntimeOptions{
+		DefaultCacheSizeGB: domain.DefaultCacheMaxSizeGB,
+		StaticAssets: []domain.StaticAssetReference{{
+			AssetID: "asset", BindingID: "binding", SiteID: site.ID, URLPath: longPath,
+			SHA256: strings.Repeat("a", 64), SizeBytes: 12, ContentType: "application/javascript",
+			CacheControl: domain.StaticAssetCacheImmutable,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		`map_hash_bucket_size 128;`,
+		`map $uri $cdn_static_uncompressed_bytes { default 0; }`,
+		"map $uri $cdn_static_bytes_" + site.ID + " {",
+		fmt.Sprintf(`    "%s" 12;`, longPath),
+		"set $cdn_static_uncompressed_bytes $cdn_static_bytes_" + site.ID + ";",
+	} {
+		if !strings.Contains(configuration, expected) {
+			t.Errorf("rendered configuration is missing %q", expected)
+		}
+	}
+	if strings.Contains(configuration, `map "$cdn_site_id:$uri"`) {
+		t.Fatal("rendered configuration still uses the site-prefixed uncompressed-bytes map key")
+	}
+	if strings.Contains(configuration, "cdn_static_bytes_"+other.ID) {
+		t.Fatal("site without static assets got a per-site uncompressed-bytes map")
 	}
 }
 
