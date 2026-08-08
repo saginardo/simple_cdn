@@ -52,6 +52,7 @@ func TestRenderStaticAssetUncompressedBytesPerSiteMap(t *testing.T) {
 		PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true},
 	}
 	longPath := "/static/" + strings.Repeat("long-name", 12) + "/app.js"
+	siteVariable := "cdn_static_bytes_" + strings.ReplaceAll(site.ID, "-", "")
 	configuration, err := RenderWithRuntimeOptions([]domain.Site{site, other}, nil, nil, RenderRuntimeOptions{
 		DefaultCacheSizeGB: domain.DefaultCacheMaxSizeGB,
 		StaticAssets: []domain.StaticAssetReference{{
@@ -65,10 +66,11 @@ func TestRenderStaticAssetUncompressedBytesPerSiteMap(t *testing.T) {
 	}
 	for _, expected := range []string{
 		`map_hash_bucket_size 128;`,
+		`variables_hash_bucket_size 128;`,
 		`map $uri $cdn_static_uncompressed_bytes { default 0; }`,
-		"map $uri $cdn_static_bytes_" + site.ID + " {",
+		"map $uri $" + siteVariable + " {",
 		fmt.Sprintf(`    "%s" 12;`, longPath),
-		"set $cdn_static_uncompressed_bytes $cdn_static_bytes_" + site.ID + ";",
+		"set $cdn_static_uncompressed_bytes $" + siteVariable + ";",
 	} {
 		if !strings.Contains(configuration, expected) {
 			t.Errorf("rendered configuration is missing %q", expected)
