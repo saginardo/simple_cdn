@@ -37,6 +37,8 @@ export interface Node {
   capabilities: string[];
   agent_version?: string;
   agent_sha256?: string;
+  nginx_version?: string;
+  nginx_sha256?: string;
   active_upgrade_task_id?: string;
   last_heartbeat_at?: string;
   applied_version: number;
@@ -45,11 +47,42 @@ export interface Node {
   updated_at: string;
   target_agent_sha256?: string;
   target_agent_version?: string;
+  target_nginx_sha256?: string;
+  target_nginx_version?: string;
+  nginx_upgrade_capable: boolean;
   upgrade_capable: boolean;
   upgrade_up_to_date: boolean;
   can_upgrade: boolean;
   upgrade_blocker?: string;
   upgrade_task?: NodeUpgradeTask;
+}
+
+export interface NginxArtifact {
+  sha256: string;
+  version: string;
+  state: "candidate" | "current" | "retired";
+  release_tag?: string;
+  source_url?: string;
+  official_source_url?: string;
+  source_sha256?: string;
+  build_commit?: string;
+  size_bytes?: number;
+  downloaded_at?: string;
+  promoted_at?: string;
+  managed: boolean;
+  download_url: string;
+}
+
+export interface NginxArtifactStatus {
+  enabled: boolean;
+  repository: string;
+  check_interval_seconds: number;
+  checking: boolean;
+  last_checked_at?: string;
+  last_error?: string;
+  artifact_error?: string;
+  current: NginxArtifact;
+  candidate?: NginxArtifact;
 }
 
 export interface NginxCapacity {

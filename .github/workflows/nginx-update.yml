@@ -1,0 +1,171 @@
+name: Managed Nginx stable update
+
+on:
+  schedule:
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: managed-nginx-stable-update
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Check, build, test, and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Discover official stable version
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          page=$(mktemp)
+          source_archive=$(mktemp)
+          release_json=$(mktemp)
+          trap 'rm -f "$page" "$source_archive" "$release_json"' EXIT
+          curl --fail --location --silent --show-error \
+            --proto '=https' --tlsv1.2 \
+            https://nginx.org/en/download.html --output "$page"
+          stable_version=$(perl -0777 -ne \
+            'if (/Stable version(.*?)(?:Legacy versions|Source Code)/is) {
+              my $stable = $1;
+              if ($stable =~ /nginx-([0-9]+\.[0-9]+\.[0-9]+)\.tar\.gz/i) { print $1 }
+            }' \
+            "$page")
+          if [[ ! "$stable_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Could not resolve the official Nginx stable version" >&2
+            exit 1
+          fi
+          bundled_version=$(tr -d '[:space:]' <deploy/nginx/VERSION)
+          newest=$(printf '%s\n%s\n' "$bundled_version" "$stable_version" | sort -V | tail -n 1)
+          tag="nginx-v${stable_version}"
+          if [[ "$newest" != "$stable_version" || "$stable_version" == "$bundled_version" ]]; then
+            echo "Official stable $stable_version is not newer than bundled $bundled_version"
+            echo "build=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if gh release view "$tag" --json isDraft,isPrerelease,assets >"$release_json" 2>/dev/null; then
+            if jq -e '
+              (.isPrerelease == false) and
+              ([.assets[].name] as $names |
+                all(
+                  "cdn-nginx-linux-amd64.tar.gz",
+                  "cdn-nginx-linux-amd64.tar.gz.sha256",
+                  "cdn-nginx-linux-amd64.json";
+                  . as $required | $names | index($required)
+                ))
+            ' "$release_json" >/dev/null; then
+              if jq -e '.isDraft' "$release_json" >/dev/null; then
+                gh release edit "$tag" --draft=false
+                echo "Published previously completed draft release $tag"
+              else
+                echo "Release $tag already exists with all required assets"
+              fi
+              echo "build=false" >>"$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "Removing incomplete managed release $tag before rebuilding"
+            gh release delete "$tag" --cleanup-tag --yes
+          fi
+          official_source_url="https://nginx.org/download/nginx-${stable_version}.tar.gz"
+          curl --fail --location --silent --show-error \
+            --proto '=https' --tlsv1.2 \
+            "$official_source_url" --output "$source_archive"
+          source_sha256=$(sha256sum "$source_archive" | awk '{print $1}')
+          build_commit=$(git rev-parse HEAD)
+          printf '%s\n' "$stable_version" >deploy/nginx/VERSION
+          {
+            echo "build=true"
+            echo "version=$stable_version"
+            echo "tag=$tag"
+            echo "official_source_url=$official_source_url"
+            echo "source_sha256=$source_sha256"
+            echo "build_commit=$build_commit"
+          } >>"$GITHUB_OUTPUT"
+          echo "Building official Nginx stable $stable_version" >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Build managed Nginx artifact
+        if: steps.release.outputs.build == 'true'
+        env:
+          SOURCE_SHA256: ${{ steps.release.outputs.source_sha256 }}
+        run: |
+          mkdir -p dist-nginx
+          docker build --target nginx-artifact \
+            --build-arg "NGINX_SHA256=$SOURCE_SHA256" \
+            --output type=local,dest=dist-nginx .
+
+      - name: Test artifact on Debian 12 and 13
+        if: steps.release.outputs.build == 'true'
+        run: ./scripts/test-nginx-artifact.sh dist-nginx/cdn-nginx-linux-amd64.tar.gz
+
+      - name: Test Debian package replacement and rollback
+        if: steps.release.outputs.build == 'true'
+        run: ./scripts/test-edge-installer-debian.sh dist-nginx/cdn-nginx-linux-amd64.tar.gz
+
+      - name: Create release manifest
+        if: steps.release.outputs.build == 'true'
+        env:
+          NGINX_VERSION: ${{ steps.release.outputs.version }}
+          OFFICIAL_SOURCE_URL: ${{ steps.release.outputs.official_source_url }}
+          SOURCE_SHA256: ${{ steps.release.outputs.source_sha256 }}
+          BUILD_COMMIT: ${{ steps.release.outputs.build_commit }}
+        run: |
+          artifact=dist-nginx/cdn-nginx-linux-amd64.tar.gz
+          test "$(tar -xOf "$artifact" nginx/VERSION | tr -d '[:space:]')" = "$NGINX_VERSION"
+          tar -xOf "$artifact" nginx/BUILD.json | jq -e \
+            --arg version "$NGINX_VERSION" \
+            '.nginx_version == $version and .architecture == "amd64"' >/dev/null
+          artifact_sha256=$(sha256sum "$artifact" | awk '{print $1}')
+          artifact_size=$(stat -c '%s' "$artifact")
+          jq -n \
+            --arg nginx_version "$NGINX_VERSION" \
+            --arg sha256 "$artifact_sha256" \
+            --argjson size_bytes "$artifact_size" \
+            --arg official_source_url "$OFFICIAL_SOURCE_URL" \
+            --arg source_sha256 "$SOURCE_SHA256" \
+            --arg build_commit "$BUILD_COMMIT" \
+            '{
+              schema_version: 1,
+              channel: "stable",
+              nginx_version: $nginx_version,
+              architecture: "amd64",
+              filename: "cdn-nginx-linux-amd64.tar.gz",
+              sha256: $sha256,
+              size_bytes: $size_bytes,
+              official_source_url: $official_source_url,
+              source_sha256: $source_sha256,
+              build_commit: $build_commit
+            }' >dist-nginx/cdn-nginx-linux-amd64.json
+          printf '%s  %s\n' "$artifact_sha256" cdn-nginx-linux-amd64.tar.gz \
+            >dist-nginx/cdn-nginx-linux-amd64.tar.gz.sha256
+
+      - name: Publish persistent GitHub Release assets
+        if: steps.release.outputs.build == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          NGINX_VERSION: ${{ steps.release.outputs.version }}
+          OFFICIAL_SOURCE_URL: ${{ steps.release.outputs.official_source_url }}
+          BUILD_COMMIT: ${{ steps.release.outputs.build_commit }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            dist-nginx/cdn-nginx-linux-amd64.tar.gz \
+            dist-nginx/cdn-nginx-linux-amd64.tar.gz.sha256 \
+            dist-nginx/cdn-nginx-linux-amd64.json \
+            --draft \
+            --target "$BUILD_COMMIT" \
+            --title "Managed Nginx $NGINX_VERSION" \
+            --notes "Built and tested from the official stable source: $OFFICIAL_SOURCE_URL"
+          gh release edit "$RELEASE_TAG" --draft=false
+          echo "Published $RELEASE_TAG for control-plane discovery." >>"$GITHUB_STEP_SUMMARY"

@@ -1,6 +1,6 @@
 # Edge deployment and managed Nginx
 
-Edge nodes run directly on Debian 12 or Debian 13. Docker is not required on an edge. The controller distributes the edge Agent and a project-built Nginx 1.30.4 bundle; both Debian releases therefore run the same Nginx feature set, including HTTP/2, HTTP/3, stream, Lua, Brotli, and Zstandard support.
+Edge nodes run directly on Debian 12 or Debian 13. Docker is not required on an edge. The controller distributes the edge Agent and the administrator-approved managed Nginx bundle; both Debian releases therefore run the same Nginx feature set, including HTTP/2, HTTP/3, stream, Lua, Brotli, and Zstandard support. Nginx 1.30.4 is the control image's bootstrap fallback, not a ceiling on later independently published stable updates.
 
 The installer removes Debian's Nginx packages after recording their exact versions and configuration for transaction rollback. A successful layout version 2 installation does not use `/usr/sbin/nginx` or `/etc/nginx`.
 
@@ -75,7 +75,7 @@ The Agent runs as root because it atomically writes certificates and generated c
 
 ## Reproducible Nginx build
 
-`deploy/nginx/VERSION` pins Nginx 1.30.4. The Docker build pins SHA-256 values for Nginx, NDK, lua-nginx-module, lua-resty-core, lua-resty-lrucache, OpenResty LuaJIT, ngx_brotli plus its Brotli source, and zstd-nginx-module. It builds the two compression modules into the Nginx binary, links the system static zstd library, builds serially (`make -j1`) to stay within a 2-core, 4 GiB builder, and creates a deterministic `tar.gz` with normalized ordering, ownership, timestamps, and gzip metadata.
+`deploy/nginx/VERSION` pins the 1.30.4 bootstrap baseline used by ordinary control-image builds. The daily stable workflow temporarily supplies the newer official stable version and its source hash without changing the control release. The Docker build pins SHA-256 values for Nginx, NDK, lua-nginx-module, lua-resty-core, lua-resty-lrucache, OpenResty LuaJIT, ngx_brotli plus its Brotli source, and zstd-nginx-module. It builds the two compression modules into the Nginx binary, links the system static zstd library, builds serially (`make -j1`) to stay within a 2-core, 4 GiB builder, and creates a deterministic `tar.gz` with normalized ordering, ownership, timestamps, and gzip metadata.
 
 Build only the Nginx artifact:
 

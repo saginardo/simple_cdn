@@ -119,6 +119,44 @@ func TestOnlineRestoreStagesCommitsAndAppliesVerifiedSnapshot(t *testing.T) {
 	if _, err := LoadOrCreateInternalCA(filepath.Join(restoredSecrets, "pki")); err != nil {
 		t.Fatal(err)
 	}
+	restoredNginxDirectory := filepath.Join(restoredSecrets, "nginx-artifacts")
+	if err := os.MkdirAll(restoredNginxDirectory, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	restoredBundlePath := filepath.Join(temporary, "restored-nginx.tar.gz")
+	writeTestNginxArchive(t, restoredBundlePath, validTestNginxEntries("1.30.5"))
+	restoredBundle, err := os.ReadFile(restoredBundlePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoredMetadata, err := ResolveNginxBundle(restoredBundlePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoredNginxName := restoredMetadata.SHA256 + ".tar.gz"
+	if err := os.WriteFile(filepath.Join(restoredNginxDirectory, restoredNginxName), restoredBundle, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	restoredDatabase, err = store.Open(filepath.Join(controlFixture, "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoredArtifact := domain.NginxArtifact{
+		SHA256: restoredMetadata.SHA256, Version: restoredMetadata.Version, State: domain.NginxArtifactCandidate,
+		ReleaseTag: "nginx-v1.30.5", SourceURL: "https://downloads.example.test/restored",
+		OfficialSourceURL: "https://nginx.org/download/nginx-1.30.5.tar.gz",
+		SourceSHA256:      strings.Repeat("e", 64), BuildCommit: strings.Repeat("f", 40),
+		SizeBytes: int64(len(restoredBundle)), DownloadedAt: time.Now().UTC(),
+	}
+	if _, _, err := restoredDatabase.SaveNginxArtifactCandidate(restoredArtifact); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := restoredDatabase.PromoteNginxArtifact(restoredArtifact.SHA256); err != nil {
+		t.Fatal(err)
+	}
+	if err := restoredDatabase.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if err := writeRestoreTestArchive(filepath.Join(controlFixture, "control-secrets.tar.gz"), restoredSecrets); err != nil {
 		t.Fatal(err)
 	}
@@ -149,6 +187,13 @@ func TestOnlineRestoreStagesCommitsAndAppliesVerifiedSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := LoadOrCreateInternalCA(filepath.Join(dataDir, "pki")); err != nil {
+		t.Fatal(err)
+	}
+	liveNginxDirectory := filepath.Join(dataDir, "nginx-artifacts")
+	if err := os.MkdirAll(liveNginxDirectory, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(liveNginxDirectory, "old.tar.gz"), []byte("old-nginx-artifact"), 0o640); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(tlsDir, "old.pem"), []byte("old"), 0o600); err != nil {
@@ -281,6 +326,25 @@ esac
 	}
 	if _, err := os.Stat(filepath.Join(dataDir, "control.db.before-restore-"+job.ID)); err != nil {
 		t.Fatalf("previous SQLite database was not retained: %v", err)
+	}
+	restoredNginx, err := os.ReadFile(filepath.Join(dataDir, "nginx-artifacts", restoredNginxName))
+	if err != nil || !bytes.Equal(restoredNginx, restoredBundle) {
+		t.Fatalf("managed Nginx artifact was not restored: size=%d, err=%v", len(restoredNginx), err)
+	}
+	previousNginx, err := os.ReadFile(filepath.Join(dataDir, "nginx-artifacts.before-restore-"+job.ID, "old.tar.gz"))
+	if err != nil || string(previousNginx) != "old-nginx-artifact" {
+		t.Fatalf("previous managed Nginx artifacts were not retained: contents=%q, err=%v", previousNginx, err)
+	}
+	restoredDatabase, err = store.Open(filepath.Join(dataDir, "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoredCurrent, err := restoredDatabase.CurrentNginxArtifact()
+	if err != nil || restoredCurrent.SHA256 != restoredMetadata.SHA256 || restoredCurrent.State != domain.NginxArtifactCurrent {
+		t.Fatalf("restored Nginx catalog = %#v, err=%v", restoredCurrent, err)
+	}
+	if err := restoredDatabase.Close(); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(tlsDir, "before-restore-"+job.ID, "old.pem")); err != nil {
 		t.Fatalf("previous TLS state was not retained: %v", err)

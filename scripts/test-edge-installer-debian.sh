@@ -171,7 +171,9 @@ EOF
     fi
     [[ ! -e /etc/nginx ]]
     [[ "$(cat /opt/cdn-edge/.layout-version)" == "2" ]]
-    [[ "$(cat /opt/cdn-edge/nginx/VERSION)" == "1.30.4" ]]
+    local expected_nginx_version
+    expected_nginx_version=$(tar -xOf /fixtures/cdn-nginx-linux-amd64.tar.gz nginx/VERSION | tr -d '[:space:]')
+    [[ "$(cat /opt/cdn-edge/nginx/VERSION)" == "$expected_nginx_version" ]]
     [[ "$(stat -c '%a' /opt/cdn-edge/nginx)" == "755" ]]
     [[ "$(stat -c '%a' /opt/cdn-edge/nginx/lib/lua/5.1/resty/core.lua)" == "644" ]]
     if [[ "$scenario" == "layout1" ]]; then

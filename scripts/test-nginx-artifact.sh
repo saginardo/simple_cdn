@@ -85,7 +85,10 @@ container_smoke_test() {
     <<<"$dependencies"
   local version_output
   version_output=$("$nginx" -V 2>&1)
-  grep -Fq 'nginx version: nginx/1.30.4' <<<"$version_output"
+  local expected_version
+  expected_version=$(tr -d '[:space:]' </opt/cdn-edge/nginx/VERSION)
+  [[ "$expected_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+  grep -Fq "nginx version: nginx/$expected_version" <<<"$version_output"
   grep -Fq -- '--add-module=/build/ngx_brotli-' <<<"$version_output"
   grep -Fq -- '--add-module=/build/zstd-nginx-module-' <<<"$version_output"
   "$nginx" -t

@@ -449,6 +449,19 @@ CREATE TABLE IF NOT EXISTS node_uninstall_jobs (
 	  updated_at TEXT NOT NULL,
 	  UNIQUE(site_id, url_path)
 	);
+	CREATE TABLE IF NOT EXISTS nginx_artifacts (
+	  sha256 TEXT PRIMARY KEY,
+	  version TEXT NOT NULL UNIQUE,
+	  state TEXT NOT NULL CHECK (state IN ('candidate', 'current', 'retired')),
+	  release_tag TEXT NOT NULL UNIQUE,
+	  source_url TEXT NOT NULL,
+	  official_source_url TEXT NOT NULL,
+	  source_sha256 TEXT NOT NULL,
+	  build_commit TEXT NOT NULL,
+	  size_bytes INTEGER NOT NULL,
+	  downloaded_at TEXT NOT NULL,
+	  promoted_at TEXT
+	);
 	CREATE TABLE IF NOT EXISTS rate_limit_policies (
 	  id TEXT PRIMARY KEY,
 	  name TEXT NOT NULL UNIQUE,
@@ -509,6 +522,8 @@ CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
 	CREATE INDEX IF NOT EXISTS idx_pow_policies_priority ON pow_policies(priority, created_at);
 	CREATE INDEX IF NOT EXISTS idx_static_asset_bindings_asset ON static_asset_bindings(asset_id, site_id);
 	CREATE INDEX IF NOT EXISTS idx_static_asset_bindings_site ON static_asset_bindings(site_id, url_path);
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_nginx_artifacts_current ON nginx_artifacts(state) WHERE state = 'current';
+	CREATE INDEX IF NOT EXISTS idx_nginx_artifacts_state_downloaded ON nginx_artifacts(state, downloaded_at DESC);
 	CREATE INDEX IF NOT EXISTS idx_security_bans_expires ON security_bans(expires_at);
 	CREATE INDEX IF NOT EXISTS idx_security_events_created ON security_events(created_at DESC);
 	CREATE INDEX IF NOT EXISTS idx_monitoring_probe_target ON monitoring_probe_results(target_id, checked_at DESC);

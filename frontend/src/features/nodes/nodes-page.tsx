@@ -1,15 +1,20 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowRight,
+  CheckCircle2,
   CirclePlus,
+  Download,
   LoaderCircle,
+  PackageCheck,
   RefreshCw,
   Rocket,
   Server,
+  TriangleAlert,
 } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { Link } from "react-router";
 import { toast } from "sonner";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import {
   EmptyState,
   PageBody,
@@ -40,8 +45,13 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { api, errorMessage } from "@/lib/api";
-import { formatDateTime, formatNumber } from "@/lib/format";
-import type { Node, NodeUpgradeTask } from "@/lib/types";
+import {
+  formatBytes,
+  formatDateTime,
+  formatNumber,
+  shortHash,
+} from "@/lib/format";
+import type { NginxArtifactStatus, Node, NodeUpgradeTask } from "@/lib/types";
 import { useListPagination } from "@/hooks/use-list-pagination";
 import { t, useI18n } from "@/lib/i18n";
 interface BulkUpgradeResult {
@@ -107,6 +117,7 @@ export function NodesPage() {
         }
       />
       <PageBody>
+        <NginxArtifactPanel />
         {nodes.isLoading ? <PageLoading /> : null}
         {nodes.error ? <PageError error={nodes.error} /> : null}
         {nodes.data ? (
@@ -119,7 +130,7 @@ export function NodesPage() {
                     <TableHead>{t("状态")}</TableHead>
                     <TableHead>{t("公网 IPv4")}</TableHead>
                     <TableHead>{t("心跳")}</TableHead>
-                    <TableHead>{t("代理版本")}</TableHead>
+                    <TableHead>{t("运行版本")}</TableHead>
                     <TableHead className="w-28">{t("升级")}</TableHead>
                     <TableHead className="w-12 pr-5">
                       <span className="sr-only">{t("管理")}</span>
@@ -148,12 +159,17 @@ export function NodesPage() {
                       </TableCell>
                       <TableCell>
                         <div className="text-sm font-medium">
+                          {t("代理")}{" "}
                           {node.agent_version
                             ? `v${node.agent_version}`
                             : t("版本未知")}
                         </div>
                         <div className="text-xs text-muted-foreground">
-                          {t("配置 v")}
+                          Nginx{" "}
+                          {node.nginx_version
+                            ? `v${node.nginx_version}`
+                            : t("版本未知")}{" "}
+                          · {t("配置 v")}
                           {formatNumber(node.applied_version)}
                         </div>
                       </TableCell>
@@ -205,6 +221,168 @@ export function NodesPage() {
         ) : null}
       </PageBody>
       <CreateNodeDialog open={createOpen} onOpenChange={setCreateOpen} />
+    </>
+  );
+}
+
+function NginxArtifactPanel() {
+  const queryClient = useQueryClient();
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [approval, setApproval] = useState<{
+    sha256: string;
+    version: string;
+  }>();
+  const status = useQuery({
+    queryKey: ["nginx-artifacts"],
+    queryFn: () => api<NginxArtifactStatus>("/api/nginx/artifacts"),
+    refetchInterval: (query) => (query.state.data?.checking ? 2_000 : 60_000),
+  });
+  const check = useMutation({
+    mutationFn: () =>
+      api<NginxArtifactStatus>("/api/nginx/artifacts/check", {
+        method: "POST",
+      }),
+    onSuccess: (result) => {
+      queryClient.setQueryData(["nginx-artifacts"], result);
+      void queryClient.invalidateQueries({ queryKey: ["messages"] });
+      toast.success(
+        result.candidate
+          ? t("Nginx 候选版本已就绪")
+          : t("未发现新的 Nginx 稳定版"),
+      );
+    },
+    onError: (error) => toast.error(errorMessage(error)),
+  });
+  const promote = useMutation({
+    mutationFn: (sha256: string) =>
+      api<NginxArtifactStatus>(
+        `/api/nginx/artifacts/${encodeURIComponent(sha256)}/promote`,
+        { method: "POST" },
+      ),
+    onSuccess: (result) => {
+      queryClient.setQueryData(["nginx-artifacts"], result);
+      void queryClient.invalidateQueries({ queryKey: ["nodes"] });
+      void queryClient.invalidateQueries({ queryKey: ["messages"] });
+      setConfirmOpen(false);
+      toast.success(t("Nginx 升级目标已更新"));
+    },
+    onError: (error) => toast.error(errorMessage(error)),
+  });
+
+  if (status.error) {
+    return (
+      <PageError title={t("Nginx 版本状态加载失败")} error={status.error} />
+    );
+  }
+  if (!status.data) return null;
+  const data = status.data;
+  const candidate = data.candidate;
+  return (
+    <>
+      <Panel>
+        <div className="flex flex-col gap-3 border-b px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 items-center gap-2">
+            <PackageCheck className="size-4 shrink-0 text-primary" />
+            <div className="min-w-0">
+              <div className="font-medium">{t("受管 Nginx")}</div>
+              <div className="truncate text-xs text-muted-foreground">
+                {data.repository || t("自动检查未配置")}
+              </div>
+            </div>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!data.enabled || check.isPending || data.checking}
+            onClick={() => check.mutate()}
+          >
+            {check.isPending || data.checking ? (
+              <LoaderCircle className="animate-spin" />
+            ) : (
+              <RefreshCw />
+            )}
+            {t("检查更新")}
+          </Button>
+        </div>
+        <div className="grid md:grid-cols-2">
+          <div className="px-4 py-3 md:border-r">
+            <div className="text-xs text-muted-foreground">
+              {t("当前升级目标")}
+            </div>
+            <div className="mt-1 flex items-center gap-2">
+              <CheckCircle2 className="size-4 text-success" />
+              <span className="font-medium">Nginx v{data.current.version}</span>
+              <StatusBadge
+                status="succeeded"
+                label={data.current.managed ? t("已批准") : t("内置兜底")}
+              />
+            </div>
+            <div
+              className="mt-1 font-mono text-xs text-muted-foreground"
+              title={data.current.sha256}
+            >
+              {shortHash(data.current.sha256)}
+            </div>
+          </div>
+          <div className="border-t px-4 py-3 md:border-t-0">
+            <div className="text-xs text-muted-foreground">
+              {t("待批准候选")}
+            </div>
+            {candidate ? (
+              <div className="mt-1 flex flex-wrap items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 font-medium">
+                    <Download className="size-4 text-info" />
+                    Nginx v{candidate.version}
+                  </div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    {formatBytes(candidate.size_bytes)} ·{" "}
+                    {formatDateTime(candidate.downloaded_at)}
+                  </div>
+                </div>
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    setApproval({
+                      sha256: candidate.sha256,
+                      version: candidate.version,
+                    });
+                    setConfirmOpen(true);
+                  }}
+                >
+                  <CheckCircle2 />
+                  {t("设为升级目标")}
+                </Button>
+              </div>
+            ) : (
+              <div className="mt-1 text-sm text-muted-foreground">
+                {t("暂无待批准版本")}
+              </div>
+            )}
+          </div>
+        </div>
+        {data.artifact_error || data.last_error ? (
+          <div className="flex items-start gap-2 border-t px-4 py-2 text-xs text-destructive">
+            <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
+            <span>{data.artifact_error || data.last_error}</span>
+          </div>
+        ) : data.last_checked_at ? (
+          <div className="border-t px-4 py-2 text-xs text-muted-foreground">
+            {t("上次检查")} {formatDateTime(data.last_checked_at)}
+          </div>
+        ) : null}
+      </Panel>
+      <ConfirmDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title={t("批准 Nginx {version}", { version: approval?.version ?? "" })}
+        description={t(
+          "该版本将成为新建和在线升级任务的 Nginx 目标，现有节点不会自动升级。",
+        )}
+        confirmLabel={t("设为升级目标")}
+        busy={promote.isPending}
+        onConfirm={() => approval && promote.mutate(approval.sha256)}
+      />
     </>
   );
 }

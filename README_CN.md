@@ -13,7 +13,7 @@
 - 支持从管理界面对单个节点或全部节点执行在线升级，包括资格检查、mTLS 任务下发、所有制品的 SHA-256 校验、独立 systemd 更新器、新代理心跳就绪检查和事务式回滚。
 - 按能力启用的 WAF 处理链：可按站点配置优先级和 AND 条件，检查路径、查询字符串、请求头、请求体、User-Agent 与客户端 IP；支持立即放行、仅记录、拦截和 IPv4 封禁，并内置敏感文件、恶意 PHP、路径穿越、SQL 注入、XSS 和扫描器 UA 六类规则。安全工作区同时提供按站点的浏览器 PoW、边缘本地客户端 IP 限速、持久安全事件和全节点 nftables 封禁对账。详见 [docs/SECURITY_POLICIES.md](docs/SECURITY_POLICIES.md)。
 - 边缘代理以原子方式暂存版本化 Nginx 基础配置、每站点 HTTP 和 `stream` 配置片段及证书；检查本机公网 TCP 与 UDP 端口占用，校验 `/opt/cdn-edge/nginx/sbin/nginx`，重新加载健康的 Nginx，或拉起已失败/停止的 Nginx。代理会确认重新加载确实创建了新一代 worker 进程；失败时恢复最后一份正常配置和 TLS 文件，并在不阻塞心跳循环的前提下上报 Linux 主机状态和 `/opt/cdn-edge/cache` 磁盘用量。
-- 可复现的 AMD64 Nginx 1.30.4 bundle：固定所有源码 SHA-256，启用加固参数、HTTP/2、HTTP/3、stream、NDK、lua-nginx-module、ngx_brotli 和 zstd-nginx-module，并私有携带 OpenResty LuaJIT/runtime。事务安装器记录并卸载 Debian Nginx 软件包，把二进制、配置、运行目录、日志、缓存和服务统一安装到 `/opt/cdn-edge`；失败时恢复准确的软件包版本和 `/etc/nginx`。
+- 可复现的 AMD64 受管 Nginx bundle：主控镜像内置 1.30.4 作为首次安装兜底，后续稳定版独立发布。每次构建都固定所有源码 SHA-256，启用加固参数、HTTP/2、HTTP/3、stream、NDK、lua-nginx-module、ngx_brotli 和 zstd-nginx-module，并私有携带 OpenResty LuaJIT/runtime。事务安装器记录并卸载 Debian Nginx 软件包，把二进制、配置、运行目录、日志、缓存和服务统一安装到 `/opt/cdn-edge`；失败时恢复准确的软件包版本和 `/etc/nginx`。
 - Nginx OSS 静态资源缓存策略：每个边缘节点共享一个缓存区，默认总磁盘上限为 1 GiB。全局节点默认值可被单个节点覆盖，站点共享该节点配额。只有常见 CSS、JavaScript、字体、图片、WebAssembly 和 Web Manifest 后缀会选择缓存，其他 URI 均使用 `proxy_cache off`。携带 Authorization 或 Cookie 的请求不会读取或写入共享缓存，但这些请求头仍会原样回源。策略包括规范化缓存代际、缓存锁、重新验证、后台刷新、`STALE` 回退，以及 HTTP(S) 主备源站故障切换。HTTP(S) 站点会自动对 WebSocket Upgrade、SSE Accept、`X-CDN-Stream: 1` 和 POST 响应关闭缓存与响应缓冲；整站透传模式会对整个主机名禁用缓存和缓冲，同时转发字节范围。`grpc://` 和 `grpcs://` 源站通过客户端 HTTP/2 监听器使用原生 gRPC 代理。
 - 每站点动态 gzip、Brotli 与 Zstandard 压缩默认开启，可配置不压缩 MIME 列表，默认排除 `text/event-stream`。缓存支持整站、精确 URL 与路径前缀三级失效，并可在失效发布后向每个已分配边缘下发有界预热任务。访问日志和保留 30 天的分钟聚合会记录 `Content-Encoding`、压缩响应数、估算或精确的节省字节及各编码命中数。详见 [docs/COMPRESSION_AND_CACHE_CONTROL.md](docs/COMPRESSION_AND_CACHE_CONTROL.md)。
 - 托管静态资源：单文件最大 32 MiB，在控制面按内容寻址保存，经 mTLS 授权同步到相关边缘并校验大小与 SHA-256；同一资源可绑定到一个或多个站点的精确 URL。符合条件的公开文件会原子生成 `.gz`、`.br` 和 `.zst` 预压缩副本；Nginx 直接返回文件，并应用可选缓存头、MIME、ETag、GET/HEAD 限制以及 WAF、PoW 和限速处理。资源不再被引用后由边缘原子清理。详见 [docs/STATIC_ASSETS.md](docs/STATIC_ASSETS.md)。
@@ -81,6 +81,8 @@ go test ./...
 
 GitHub Actions 会为每个拉取请求执行相同的编译与校验、浏览器冒烟测试和完整 Docker 镜像构建。`main` 构建成功后发布带开发版本的 `main` 和 `sha-<commit>` 镜像；推送有效的 `vMAJOR.MINOR.PATCH` 标签会直接发布对应稳定版镜像，无需修改项目文件。工作流不会连接生产环境。私有部署自动化消费不可变 digest；控制主机只拉取镜像，不再编译源码或执行 `docker compose build`。详见 [Compose 部署文档](docs/COMPOSE_DEPLOYMENT.md#github-actions-delivery)。
 
+独立的 `Managed Nginx stable update` 工作流每天检查一次 nginx.org 的 **Stable version** 区域。仅当官方稳定版高于 `deploy/nginx/VERSION` 时，才下载并计算官方源码哈希，构建现有 amd64 bundle，在 Debian 12/13 上完成产物与迁移测试，并在全部检查成功后发布持久的 `nginx-v<version>` GitHub Release。Release manifest 会绑定 stable 渠道、官方源码 URL 与哈希、仓库提交、bundle 大小和 SHA-256；该工作流不会重建或发布主控镜像。
+
 ## 控制面安装
 
 Docker Compose 是控制面和 ClickHouse 的受支持部署方式。配置、SQLite、内部 CA、证书状态、ClickHouse 数据、日志和备份暂存都保存在 `/opt/cdn-platform` 下。现有公网反向代理可以独立保留；控制器仍在直连端口终止 TLS，以支持边缘 mTLS。安装、备份和恢复说明见 [docs/COMPOSE_DEPLOYMENT.md](docs/COMPOSE_DEPLOYMENT.md)。
@@ -105,6 +107,10 @@ sudo docker compose ps
 
 首次签发控制面证书和执行回滚时仍需使用 `control.env` 中的 `CLOUDFLARE_API_TOKEN`。完成管理员初始化后，可以在“设置”中保存加密的运行时覆盖。DNS 对账、站点证书任务和后续控制面证书续期都会使用该覆盖；删除覆盖后恢复环境变量值。SMTP 使用相同的整套配置覆盖和重置模型。
 
+主控启动后立即检查 `NGINX_UPDATE_GITHUB_REPOSITORY`，之后按 `NGINX_UPDATE_CHECK_INTERVAL` 周期检查（默认 `24h`）。它只接受非草稿、非预发布的 `nginx-v<version>` Release，并要求 manifest 声明 `channel: stable`；下载后还会独立校验压缩包内容，再保存到 `$CONTROL_DATA_DIR/nginx-artifacts`。现有 `./data/control` 卷会持久化这些文件，常规备份也会包含它们。公开仓库无需 Token；私有仓库或需要更高 API 配额时设置 `NGINX_UPDATE_GITHUB_TOKEN`。
+
+校验完成的新版本会同时出现在消息中心和“节点”页面，状态为待批准候选。管理员先明确将其设为升级目标，再选择单节点升级或“全部升级”；批准本身不会自动升级任何节点。bundle 和对应安装脚本都使用包含 SHA-256 的不可变地址，因此切换目标不会破坏在途任务。镜像内置 Nginx 继续作为首次安装兜底；主控只需部署一次这项能力，后续升级 Nginx 不再要求更新主控镜像版本。
+
 内置 ClickHouse 配置针对 2 核、4 GiB 控制主机进行了调优：限制后台调度器，并关闭 `system.metric_log`、`system.trace_log` 等高写入量内部分析表。CDN 访问日志、分钟聚合、查询诊断、数据分片诊断、错误和异步写入诊断仍保持启用。用户级 ClickHouse 限制和性能分析开关独立安装在 `users.d` 下。
 
 控制面 VPS 防火墙策略：
@@ -124,7 +130,7 @@ sudo docker compose ps
 ## 边缘节点注册
 
 1. 在“节点”页面使用固定公网 IPv4 添加节点。
-2. 将 `EDGE_BINARY_URL` 和 `NGINX_BUNDLE_URL` 设置为对应发布文件的 HTTPS 地址；控制器会根据 `EDGE_BINARY_PATH` 和 `NGINX_BUNDLE_PATH` 计算并校验 SHA-256 摘要。
+2. 将 `EDGE_BINARY_URL` 设置为对应 HTTPS 地址；控制器根据 `EDGE_BINARY_PATH` 计算代理摘要，`NGINX_BUNDLE_PATH` 提供经校验的内置兜底，管理员批准的新 Nginx 则通过主控的内容寻址地址分发。
 3. 点击“注册”，在对应 Debian 12 或 13 VPS 上以 `root` 执行生成的命令。
 4. 代理在本地创建私钥，使用有效期 15 分钟的一次性令牌提交 CSR，接收内部 mTLS 证书，并开始每 30 秒发送一次心跳。
 

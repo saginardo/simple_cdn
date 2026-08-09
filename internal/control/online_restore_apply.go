@@ -171,6 +171,11 @@ func ApplyPendingOnlineRestore(ctx context.Context, config OnlineRestoreApplyCon
 		staged: filepath.Join(secretsStage, "letsencrypt"),
 		backup: filepath.Join(config.DataDir, "letsencrypt.before-restore-"+job.ID),
 	}
+	nginxArtifactsSwap := restorePathSwap{
+		live:   filepath.Join(config.DataDir, "nginx-artifacts"),
+		staged: filepath.Join(secretsStage, "nginx-artifacts"),
+		backup: filepath.Join(config.DataDir, "nginx-artifacts.before-restore-"+job.ID),
+	}
 	tlsCutover := restoreTLSCutover{
 		root:   config.TLSDir,
 		stage:  tlsStage,
@@ -189,7 +194,7 @@ func ApplyPendingOnlineRestore(ctx context.Context, config OnlineRestoreApplyCon
 		}
 		return errors.Join(failures...)
 	}
-	for _, swap := range []*restorePathSwap{&databaseWALSwap, &databaseSHMSwap, &databaseSwap, &pkiSwap, &letsencryptSwap} {
+	for _, swap := range []*restorePathSwap{&databaseWALSwap, &databaseSHMSwap, &databaseSwap, &pkiSwap, &letsencryptSwap, &nginxArtifactsSwap} {
 		if err := swap.apply(); err != nil {
 			currentRollbackErr := swap.rollback()
 			manualRollbackErr := error(nil)

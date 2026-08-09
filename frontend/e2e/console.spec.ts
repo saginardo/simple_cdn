@@ -1164,6 +1164,21 @@ async function mockAPI(page: Page, overrides: Record<string, unknown> = {}) {
       },
       "/api/sites/site-1/metrics": siteMetrics,
       "/api/nodes": [],
+      "/api/nginx/artifacts": {
+        enabled: true,
+        repository: "saginardo/simple_cdn",
+        check_interval_seconds: 86400,
+        checking: false,
+        last_checked_at: now.toISOString(),
+        current: {
+          sha256: "f".repeat(64),
+          version: "1.30.4",
+          state: "current",
+          managed: false,
+          download_url:
+            "https://control.example.test/downloads/nginx/fallback/cdn-nginx-linux-amd64.tar.gz",
+        },
+      },
       "/api/wireguard/tunnels": [],
       "/api/wireguard/performance-tests": [],
       "/api/wireguard/suggested-cidr": { address_cidr: "10.253.0.0/24" },
@@ -3561,6 +3576,79 @@ test("bulk node upgrade refreshes the page without opening a result dialog", asy
   await expect(page.getByRole("dialog", { name: "批量升级结果" })).toHaveCount(
     0,
   );
+});
+
+test("managed Nginx candidate requires explicit administrator approval", async ({
+  page,
+}, testInfo) => {
+  const errors = trackPageErrors(page);
+  const candidateSHA = "a".repeat(64);
+  const approved = {
+    enabled: true,
+    repository: "saginardo/simple_cdn",
+    check_interval_seconds: 86400,
+    checking: false,
+    last_checked_at: now.toISOString(),
+    current: {
+      sha256: candidateSHA,
+      version: "1.30.5",
+      state: "current",
+      release_tag: "nginx-v1.30.5",
+      size_bytes: 24 * 1024 * 1024,
+      downloaded_at: now.toISOString(),
+      promoted_at: now.toISOString(),
+      managed: true,
+      download_url: `https://control.example.test/downloads/nginx/${candidateSHA}/cdn-nginx-linux-amd64.tar.gz`,
+    },
+  };
+  await mockAPI(page, {
+    "/api/nginx/artifacts": {
+      ...approved,
+      current: {
+        sha256: "f".repeat(64),
+        version: "1.30.4",
+        state: "current",
+        managed: false,
+        download_url:
+          "https://control.example.test/downloads/nginx/fallback/cdn-nginx-linux-amd64.tar.gz",
+      },
+      candidate: {
+        ...approved.current,
+        state: "candidate",
+        promoted_at: undefined,
+      },
+    },
+    [`/api/nginx/artifacts/${candidateSHA}/promote`]: approved,
+  });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/#/nodes");
+
+  await expect(page.getByText("Nginx v1.30.5", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "设为升级目标" }).click();
+  await expect(
+    page.getByRole("alertdialog", { name: "批准 Nginx 1.30.5" }),
+  ).toBeVisible();
+  const promoteRequest = page.waitForRequest((request) => {
+    const url = new URL(request.url());
+    return (
+      url.pathname === `/api/nginx/artifacts/${candidateSHA}/promote` &&
+      request.method() === "POST"
+    );
+  });
+  await page
+    .getByRole("alertdialog", { name: "批准 Nginx 1.30.5" })
+    .getByRole("button", { name: "设为升级目标" })
+    .click();
+  await promoteRequest;
+  await expect(page.getByText("Nginx 升级目标已更新")).toBeVisible();
+  await expect(
+    page.getByRole("alertdialog", { name: "批准 Nginx 1.30.5" }),
+  ).toBeHidden();
+  await page.screenshot({
+    path: testInfo.outputPath("managed-nginx-candidate.png"),
+    fullPage: true,
+  });
+  expect(errors).toEqual([]);
 });
 
 test("node list starts one upgrade without opening node details", async ({

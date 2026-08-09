@@ -195,7 +195,18 @@ func main() {
 		fatal(err.Error())
 	}
 	nginxBundleURL := env("NGINX_BUNDLE_URL", strings.TrimRight(edgeControlURL, "/")+"/downloads/cdn-nginx-linux-amd64.tar.gz")
-	server := &control.Server{Store: database, Cipher: cipher, CA: ca, Publisher: publisher, DNS: dns, ZoneResolver: dns, Cloudflare: dns, Issuer: issuer, CertificateManager: certificateManager, SiteDeleter: siteDeleter, Settings: settings, BackupValidator: control.ResticBackupRepositoryValidator{}, BackupStatusPath: env("BACKUP_STATUS_FILE", "/var/lib/cdn-platform-operations/backup.json"), OnlineRestore: onlineRestore, Notifier: notifier, Logs: logs, MonitoringHistory: monitoringHistory, ControlURL: controlURL, EdgeControlURL: edgeControlURL, EdgeBinaryURL: os.Getenv("EDGE_BINARY_URL"), EdgeBinarySHA256: edgeBinarySHA256, EdgeBinaryPath: edgeBinaryPath, NginxBundleURL: nginxBundleURL, NginxBundleSHA256: nginxBundle.SHA256, NginxBundlePath: nginxBundlePath, NginxVersion: nginxBundle.Version, StaticAssetDirectory: filepath.Join(dataDir, "static-assets", "objects"), InitializationTokenPath: initializationTokenPath, SetupAllowCIDRs: setupCIDRs, TrustedProxyCIDRs: trustedProxyCIDRs, Logger: logger}
+	nginxUpdates, err := control.NewNginxUpdateManager(control.NginxUpdateManagerConfig{
+		Store: database, Directory: filepath.Join(dataDir, "nginx-artifacts"),
+		Repository:   env("NGINX_UPDATE_GITHUB_REPOSITORY", "saginardo/simple_cdn"),
+		GitHubAPIURL: env("NGINX_UPDATE_GITHUB_API_URL", "https://api.github.com"),
+		GitHubToken:  os.Getenv("NGINX_UPDATE_GITHUB_TOKEN"), FallbackVersion: nginxBundle.Version,
+		Interval: durationEnvironment("NGINX_UPDATE_CHECK_INTERVAL", 24*time.Hour),
+		Enabled:  booleanEnvironment("NGINX_UPDATE_ENABLED", true), Logger: logger,
+	})
+	if err != nil {
+		fatal("initialize managed Nginx updates: " + err.Error())
+	}
+	server := &control.Server{Store: database, Cipher: cipher, CA: ca, Publisher: publisher, DNS: dns, ZoneResolver: dns, Cloudflare: dns, Issuer: issuer, CertificateManager: certificateManager, SiteDeleter: siteDeleter, Settings: settings, BackupValidator: control.ResticBackupRepositoryValidator{}, BackupStatusPath: env("BACKUP_STATUS_FILE", "/var/lib/cdn-platform-operations/backup.json"), OnlineRestore: onlineRestore, Notifier: notifier, Logs: logs, MonitoringHistory: monitoringHistory, ControlURL: controlURL, EdgeControlURL: edgeControlURL, EdgeBinaryURL: os.Getenv("EDGE_BINARY_URL"), EdgeBinarySHA256: edgeBinarySHA256, EdgeBinaryPath: edgeBinaryPath, NginxBundleURL: nginxBundleURL, NginxBundleSHA256: nginxBundle.SHA256, NginxBundlePath: nginxBundlePath, NginxVersion: nginxBundle.Version, NginxUpdates: nginxUpdates, StaticAssetDirectory: filepath.Join(dataDir, "static-assets", "objects"), InitializationTokenPath: initializationTokenPath, SetupAllowCIDRs: setupCIDRs, TrustedProxyCIDRs: trustedProxyCIDRs, Logger: logger}
 	if err := server.MigrateAdminTOTPSecret(); err != nil {
 		fatal(err.Error())
 	}
@@ -242,6 +253,7 @@ func main() {
 	defer certificateManager.Stop()
 	go healthManager.Run(ctx)
 	go certificateManager.Run(ctx)
+	go nginxUpdates.Run(ctx)
 	certificatePath, privateKeyPath := os.Getenv("CONTROL_TLS_CERT"), os.Getenv("CONTROL_TLS_KEY")
 	if certificatePath == "" || privateKeyPath == "" {
 		fatal("CONTROL_TLS_CERT and CONTROL_TLS_KEY are required")
@@ -596,6 +608,18 @@ func durationEnvironment(name string, fallback time.Duration) time.Duration {
 		fatal(name + " must be a positive Go duration")
 	}
 	return duration
+}
+
+func booleanEnvironment(name string, fallback bool) bool {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		fatal(name + " must be true or false")
+	}
+	return parsed
 }
 func split(value string) []string {
 	var result []string

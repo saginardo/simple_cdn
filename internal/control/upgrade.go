@@ -50,10 +50,14 @@ type nodeUpgradeAllResponse struct {
 }
 
 func (s *Server) buildNodeUpgradeStatus(node domain.Node) (nodeUpgradeStatusResponse, error) {
+	nginxTarget, nginxTargetErr := s.currentNginxArtifactTarget()
+	if nginxTargetErr != nil {
+		nginxTarget = s.builtinNginxArtifactTarget()
+	}
 	result := nodeUpgradeStatusResponse{
 		Node:              node,
 		TargetAgentSHA256: strings.ToLower(strings.TrimSpace(s.EdgeBinarySHA256)), TargetAgentVersion: version.Version,
-		TargetNginxSHA256: strings.ToLower(strings.TrimSpace(s.NginxBundleSHA256)), TargetNginxVersion: s.NginxVersion,
+		TargetNginxSHA256: nginxTarget.SHA256, TargetNginxVersion: nginxTarget.Version,
 	}
 	for _, capability := range node.Capabilities {
 		if capability == domain.EdgeCapabilityOnlineUpgrade {
@@ -70,9 +74,13 @@ func (s *Server) buildNodeUpgradeStatus(node domain.Node) (nodeUpgradeStatusResp
 	}
 	agentUpToDate := validSHA256Digest(node.AgentSHA256) && strings.EqualFold(node.AgentSHA256, result.TargetAgentSHA256)
 	nginxUpToDate := validSHA256Digest(node.NginxSHA256) && strings.EqualFold(node.NginxSHA256, result.TargetNginxSHA256)
-	result.UpgradeUpToDate = agentUpToDate && nginxUpToDate
+	result.UpgradeUpToDate = nginxTargetErr == nil && agentUpToDate && nginxUpToDate
 	if result.UpgradeTask != nil && (result.UpgradeTask.Status == domain.NodeUpgradeQueued || result.UpgradeTask.Status == domain.NodeUpgradeApplying) {
 		result.UpgradeBlocker = "节点升级正在进行"
+		return result, nil
+	}
+	if nginxTargetErr != nil {
+		result.UpgradeBlocker = nginxTargetErr.Error()
 		return result, nil
 	}
 	if result.UpgradeUpToDate {
@@ -120,10 +128,14 @@ func (s *Server) buildNodeUpgradeStatus(node domain.Node) (nodeUpgradeStatusResp
 }
 
 func (s *Server) validateNodeUpgradeArtifacts() error {
+	nginxTarget, err := s.currentNginxArtifactTarget()
+	if err != nil {
+		return err
+	}
 	if !validHTTPSURL(s.edgeControlURL()) ||
 		!validHTTPSURL(s.EdgeBinaryURL) || !validSHA256Digest(strings.TrimSpace(s.EdgeBinarySHA256)) ||
-		!validHTTPSURL(s.NginxBundleURL) || !validSHA256Digest(strings.TrimSpace(s.NginxBundleSHA256)) ||
-		!nginxVersionPattern.MatchString(strings.TrimSpace(s.NginxVersion)) {
+		!validHTTPSURL(nginxTarget.URL) || !validSHA256Digest(nginxTarget.SHA256) ||
+		!nginxVersionPattern.MatchString(nginxTarget.Version) {
 		return errors.New("主控尚未配置有效的边缘升级制品")
 	}
 	return nil
@@ -131,15 +143,24 @@ func (s *Server) validateNodeUpgradeArtifacts() error {
 
 func (s *Server) nodeUpgradeInstruction(node domain.Node) domain.NodeUpgradeInstruction {
 	baseURL := strings.TrimRight(s.edgeControlURL(), "/")
+	nginxTarget, err := s.currentNginxArtifactTarget()
+	if err != nil {
+		nginxTarget = s.builtinNginxArtifactTarget()
+	}
+	installer := s.renderEdgeInstallerFor(nginxTarget)
+	installerURL := baseURL + "/install-edge.sh"
+	if nginxTarget.Path != "" && validSHA256Digest(nginxTarget.SHA256) {
+		installerURL = s.versionedEdgeInstallerURL(nginxTarget.SHA256)
+	}
 	instruction := domain.NodeUpgradeInstruction{
 		Binary:         domain.UpgradeArtifact{URL: s.EdgeBinaryURL, SHA256: strings.ToLower(strings.TrimSpace(s.EdgeBinarySHA256))},
-		Installer:      domain.UpgradeArtifact{URL: baseURL + "/install-edge.sh", SHA256: resourceSHA256(s.renderedEdgeInstaller())},
+		Installer:      domain.UpgradeArtifact{URL: installerURL, SHA256: resourceSHA256(installer)},
 		AgentService:   domain.UpgradeArtifact{URL: baseURL + "/install-edge.service", SHA256: resourceSHA256(bootstrapEdgeService)},
 		UpdaterService: domain.UpgradeArtifact{URL: baseURL + "/install-edge-updater.service", SHA256: resourceSHA256(bootstrapEdgeUpdaterService)},
 	}
 	for _, capability := range node.Capabilities {
 		if capability == domain.EdgeCapabilityNginxBundle {
-			bundle := domain.UpgradeArtifact{URL: s.NginxBundleURL, SHA256: strings.ToLower(strings.TrimSpace(s.NginxBundleSHA256))}
+			bundle := domain.UpgradeArtifact{URL: nginxTarget.URL, SHA256: nginxTarget.SHA256}
 			service := domain.UpgradeArtifact{URL: baseURL + "/install-edge-nginx.service", SHA256: resourceSHA256(bootstrapEdgeNginxService)}
 			instruction.NginxBundle = &bundle
 			instruction.NginxService = &service

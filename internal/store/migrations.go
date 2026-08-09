@@ -49,6 +49,31 @@ var schemaMigrations = []schemaMigration{
 	{Version: 30, Name: "authentication-hardening", Apply: migrateAuthenticationHardening},
 	{Version: 31, Name: "compression-and-cache-control", Apply: migrateCompressionAndCacheControl},
 	{Version: 32, Name: "cache-operations", Apply: migrateCacheOperations},
+	{Version: 33, Name: "nginx-artifact-catalog", Apply: migrateNginxArtifactCatalog},
+}
+
+func migrateNginxArtifactCatalog(tx *sql.Tx) error {
+	_, err := tx.Exec(`CREATE TABLE IF NOT EXISTS nginx_artifacts (
+		sha256 TEXT PRIMARY KEY,
+		version TEXT NOT NULL UNIQUE,
+		state TEXT NOT NULL CHECK (state IN ('candidate', 'current', 'retired')),
+		release_tag TEXT NOT NULL UNIQUE,
+		source_url TEXT NOT NULL,
+		official_source_url TEXT NOT NULL,
+		source_sha256 TEXT NOT NULL,
+		build_commit TEXT NOT NULL,
+		size_bytes INTEGER NOT NULL,
+		downloaded_at TEXT NOT NULL,
+		promoted_at TEXT
+	);
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_nginx_artifacts_current
+		ON nginx_artifacts(state) WHERE state = 'current';
+	CREATE INDEX IF NOT EXISTS idx_nginx_artifacts_state_downloaded
+		ON nginx_artifacts(state, downloaded_at DESC);`)
+	if err != nil {
+		return fmt.Errorf("create Nginx artifact catalog: %w", err)
+	}
+	return nil
 }
 
 func migrateCacheOperations(tx *sql.Tx) error {

@@ -61,13 +61,14 @@ if [[ "$phase" == "all" ]]; then
   chmod 0600 "$control_staging/control.db"
 
   archive_inputs=()
-  for directory in pki letsencrypt; do
+  for directory in pki letsencrypt nginx-artifacts; do
     if [[ -d "$data_dir/$directory" ]]; then
       archive_inputs+=("$directory")
     fi
   done
   if ((${#archive_inputs[@]})); then
-    tar --create --gzip --file "$control_staging/control-secrets.tar.gz" --directory "$data_dir" "${archive_inputs[@]}"
+    tar --create --gzip --file "$control_staging/control-secrets.tar.gz" \
+      --exclude='.nginx-download-*.tmp' --directory "$data_dir" "${archive_inputs[@]}"
   else
     tar --create --gzip --file "$control_staging/control-secrets.tar.gz" --files-from /dev/null
   fi

@@ -70,6 +70,7 @@ type Server struct {
 	NginxBundleSHA256         string
 	NginxBundlePath           string
 	NginxVersion              string
+	NginxUpdates              *NginxUpdateManager
 	StaticAssetDirectory      string
 	InitializationTokenPath   string
 	SetupAllowCIDRs           []*net.IPNet
@@ -99,6 +100,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /uninstall-edge.sh", s.uninstallEdgeScript)
 	mux.HandleFunc("GET /downloads/cdn-edge-agent-linux-amd64", s.edgeBinary)
 	mux.HandleFunc("GET /downloads/cdn-nginx-linux-amd64.tar.gz", s.nginxBundle)
+	mux.HandleFunc("GET /downloads/nginx/{sha256}/cdn-nginx-linux-amd64.tar.gz", s.versionedNginxBundle)
+	mux.HandleFunc("GET /downloads/nginx/{sha256}/install-edge.sh", s.versionedEdgeInstaller)
 	mux.HandleFunc("GET /api/setup/status", s.setupStatus)
 	mux.HandleFunc("GET /api/branding", s.getPublicBranding)
 	mux.HandleFunc("POST /api/setup/begin", s.beginSetup)
@@ -174,6 +177,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/static-assets/{id}/bindings/{bindingID}", s.requireAdmin(s.updateStaticAssetBinding))
 	mux.HandleFunc("DELETE /api/static-assets/{id}/bindings/{bindingID}", s.requireAdmin(s.deleteStaticAssetBinding))
 	mux.HandleFunc("GET /api/nodes", s.requireAdmin(s.listNodes))
+	mux.HandleFunc("GET /api/nginx/artifacts", s.requireAdmin(s.nginxArtifactStatus))
+	mux.HandleFunc("POST /api/nginx/artifacts/check", s.requireAdmin(s.checkNginxArtifacts))
+	mux.HandleFunc("POST /api/nginx/artifacts/{sha256}/promote", s.requireAdmin(s.promoteNginxArtifact))
 	mux.HandleFunc("POST /api/nodes", s.requireAdmin(s.createNode))
 	mux.HandleFunc("POST /api/nodes/upgrade-all", s.requireAdmin(s.startAllNodeUpgrades))
 	mux.HandleFunc("GET /api/nodes/{id}", s.requireAdmin(s.nodeDetail))
@@ -634,8 +640,9 @@ func (s *Server) createEnrollmentToken(response http.ResponseWriter, request *ht
 	nodeID := request.PathValue("id")
 	digest := strings.TrimSpace(s.EdgeBinarySHA256)
 	edgeControlURL := s.edgeControlURL()
-	if !validHTTPSURL(s.ControlURL) || !validHTTPSURL(edgeControlURL) || s.validateNodeUpgradeArtifacts() != nil {
-		writeError(response, http.StatusConflict, errors.New("CONTROL_PUBLIC_URL, EDGE_CONTROL_URL, EDGE_BINARY_URL, and NGINX_BUNDLE_URL must be HTTPS URLs, and both edge artifacts must be valid before generating an enrollment command"))
+	nginxTarget, nginxTargetErr := s.currentNginxArtifactTarget()
+	if !validHTTPSURL(s.ControlURL) || !validHTTPSURL(edgeControlURL) || nginxTargetErr != nil || s.validateNodeUpgradeArtifacts() != nil {
+		writeError(response, http.StatusConflict, errors.New("CONTROL_PUBLIC_URL, EDGE_CONTROL_URL, EDGE_BINARY_URL, and the current Nginx artifact must be valid before generating an enrollment command"))
 		return
 	}
 	enrollmentRequired, err := s.Store.NodeRequiresEnrollment(nodeID)
@@ -644,6 +651,9 @@ func (s *Server) createEnrollmentToken(response http.ResponseWriter, request *ht
 		return
 	}
 	bootstrapURL := strings.TrimRight(s.ControlURL, "/") + "/install-edge.sh"
+	if nginxTarget.Path != "" && validSHA256Digest(nginxTarget.SHA256) {
+		bootstrapURL = strings.TrimRight(s.ControlURL, "/") + "/downloads/nginx/" + nginxTarget.SHA256 + "/install-edge.sh"
+	}
 	serviceDigest := resourceSHA256(bootstrapEdgeService)
 	updaterServiceDigest := resourceSHA256(bootstrapEdgeUpdaterService)
 	result := map[string]any{"enrollment_required": enrollmentRequired}
