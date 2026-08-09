@@ -1,6 +1,6 @@
 # Edge deployment and managed Nginx
 
-Edge nodes run directly on Debian 12 or Debian 13. Docker is not required on an edge. The controller distributes the edge Agent and the administrator-approved managed Nginx bundle; both Debian releases therefore run the same Nginx feature set, including HTTP/2, HTTP/3, stream, Lua, Brotli, and Zstandard support. Nginx 1.30.4 is the control image's bootstrap fallback, not a ceiling on later independently published stable updates.
+Edge nodes run directly on Debian 12 or Debian 13. Docker is not required on an edge. The controller distributes the edge Agent and the administrator-approved managed Nginx bundle; both Debian releases therefore run the same Nginx feature set, including HTTP/2, HTTP/3, stream, Lua, Brotli, and Zstandard support. Nginx 1.30.4 is the control image's bootstrap fallback, not a ceiling on later independently published stable updates. The build, discovery, approval and retention model is documented in [NGINX_UPDATES.md](NGINX_UPDATES.md).
 
 The installer removes Debian's Nginx packages after recording their exact versions and configuration for transaction rollback. A successful layout version 2 installation does not use `/usr/sbin/nginx` or `/etc/nginx`.
 
@@ -33,6 +33,8 @@ All edge-owned software, configuration, runtime data, logs, and cache live below
       cdn-platform-events.conf
       fragments/
       origin-pools/
+  static/
+    objects/                       # content-addressed managed static resources
   data/
     edge-client.key
     edge-client.crt
@@ -92,7 +94,7 @@ Build all release artifacts:
 ./scripts/build-release.sh dist
 ```
 
-The release directory contains the controller, edge Agent, Nginx bundle, and one `SHA256SUMS` file. The full controller image also embeds the same Nginx bundle at `/usr/local/lib/cdn-platform/cdn-nginx-linux-amd64.tar.gz`.
+The release directory contains the controller, edge Agent, Nginx bundle, and one `SHA256SUMS` file. The full controller image also embeds the same Nginx bundle at `/usr/local/lib/cdn-platform/cdn-nginx-linux-amd64.tar.gz`. Independently released stable bundles are downloaded to the control plane first; an edge never consumes a temporary GitHub Actions Artifact URL.
 
 Run the artifact and migration checks after changing Nginx, its modules, or the installer:
 
@@ -206,5 +208,6 @@ Back up these non-recreatable paths:
 
 - `/opt/cdn-edge/config`: Agent settings and site TLS certificates.
 - `/opt/cdn-edge/data`: node mTLS identity, applied version, pending log delivery state, and local runtime state.
+- `/opt/cdn-edge/static/objects`: managed static resources and validated precompressed sidecars when the edge is expected to serve them during a control-plane outage.
 
 `logs` is optional when uploaded logs are already retained by the controller. `bin`, `nginx`, `systemd`, generated Nginx fragments, and `cache` are checksum-verified or recreatable and are normally excluded.

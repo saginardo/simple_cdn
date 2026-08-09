@@ -1,6 +1,6 @@
 # HTTP(S) 透传模式与 Range 流量排障
 
-更新时间：2026-07-15
+最后审计：2026-08-09
 
 ## 结论
 
@@ -31,13 +31,13 @@
 - 新建站点未传该字段时默认 `false`；更新站点未传时保留当前值，避免旧客户端意外关闭透传。
 - 切换开关会递增 `cache_generation`，避免日后重新启用缓存时复用透传前的对象。
 - 透传站点不允许“刷新缓存”，对应 API 返回 `409 Conflict`。
-- 控制面启动时会给旧 SQLite 数据库增加 `passthrough INTEGER NOT NULL DEFAULT 0`，已有站点保持原有缓存行为。
+- 版本化 SQLite 迁移会为旧数据库补充 `passthrough INTEGER NOT NULL DEFAULT 0`，已有站点保持原有缓存行为。
 
 启用后，Nginx 在普通主源站和备用源站位置会：
 
 - 不生成站点级静态缓存选择策略，并显式 `proxy_cache off`。
 - 设置 `proxy_buffering off` 与 `proxy_request_buffering off`。
-- 使用站点配置的 6、15、30 或 60 分钟读写空闲超时，默认 6 分钟。
+- 使用站点配置的 2、6、15、30 或 60 分钟读写空闲超时，默认 2 分钟。
 - 显式转发 `Range $http_range` 与 `If-Range $http_if_range`。
 - 保留所选 HTTP/1.1、TLS HTTP/2 或 H2C 上游连接复用、SNI/TLS 校验和主备源站故障切换。
 

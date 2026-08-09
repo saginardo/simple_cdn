@@ -6,6 +6,8 @@
 
 已发布版本由 `vMAJOR.MINOR.PATCH` Git 标签推导，详见仓库的[版本标签](https://github.com/saginardo/simple_cdn/tags)。
 
+维护中的文档索引、配置参考和运维手册见[文档索引](docs/README.md)。
+
 ## 已实现功能
 
 - Go 控制面，包含版本化事务式 SQLite 迁移、Argon2id 密码与 TOTP 登录、Passkey 无密码登录、一次性恢复码、持久化认证限速、TOTP 防重放、CSRF 防护、审计记录，以及紧凑的管理界面。登录失败或浏览器不支持 Passkey 时会回退到密码与 TOTP；“登录与安全”设置可更换 TOTP、添加或关闭 Passkey，而 TOTP 始终保持开启。界面提供独立的节点和站点详情页、持久化消息中心、节点机器状态、最近 24 小时缓存结果、缓存磁盘用量和带二次确认的管理流程。
@@ -50,6 +52,7 @@ internal/nginx        生成的 Nginx 缓存与源站配置
 internal/integrations Cloudflare、Certbot 和 SMTP 适配器
 internal/logstore     ClickHouse 访问日志、拨测历史和聚合存储
 deploy/               Compose 与环境变量模板
+docs/                 架构、配置、部署与运维文档
 scripts/              Compose 控制面辅助脚本和发布构建脚本
 ```
 
@@ -81,11 +84,11 @@ go test ./...
 
 GitHub Actions 会为每个拉取请求执行相同的编译与校验、浏览器冒烟测试和完整 Docker 镜像构建。`main` 构建成功后发布带开发版本的 `main` 和 `sha-<commit>` 镜像；推送有效的 `vMAJOR.MINOR.PATCH` 标签会直接发布对应稳定版镜像，无需修改项目文件。工作流不会连接生产环境。私有部署自动化消费不可变 digest；控制主机只拉取镜像，不再编译源码或执行 `docker compose build`。详见 [Compose 部署文档](docs/COMPOSE_DEPLOYMENT.md#github-actions-delivery)。
 
-独立的 `Managed Nginx stable update` 工作流每天检查一次 nginx.org 的 **Stable version** 区域。仅当官方稳定版高于 `deploy/nginx/VERSION` 时，才下载并计算官方源码哈希，构建现有 amd64 bundle，在 Debian 12/13 上完成产物与迁移测试，并在全部检查成功后发布持久的 `nginx-v<version>` GitHub Release。Release manifest 会绑定 stable 渠道、官方源码 URL 与哈希、仓库提交、bundle 大小和 SHA-256；该工作流不会重建或发布主控镜像。
+独立的 `Managed Nginx stable update` 工作流每天检查一次 nginx.org 的 **Stable version** 区域。仅当官方稳定版高于 `deploy/nginx/VERSION` 时，才下载并计算官方源码哈希，构建现有 amd64 bundle，在 Debian 12/13 上完成产物与迁移测试，并在全部检查成功后发布持久的 `nginx-v<version>` GitHub Release。Release manifest 会绑定 stable 渠道、官方源码 URL 与哈希、仓库提交、bundle 大小和 SHA-256；该工作流不会重建或发布主控镜像。完整信任链和管理员批准流程见 [docs/NGINX_UPDATES.md](docs/NGINX_UPDATES.md)。
 
 ## 控制面安装
 
-Docker Compose 是控制面和 ClickHouse 的受支持部署方式。配置、SQLite、内部 CA、证书状态、ClickHouse 数据、日志和备份暂存都保存在 `/opt/cdn-platform` 下。现有公网反向代理可以独立保留；控制器仍在直连端口终止 TLS，以支持边缘 mTLS。安装、备份和恢复说明见 [docs/COMPOSE_DEPLOYMENT.md](docs/COMPOSE_DEPLOYMENT.md)。
+Docker Compose 是控制面和 ClickHouse 的受支持部署方式。配置、SQLite、内部 CA、证书状态、ClickHouse 数据、日志、Nginx 工件和备份暂存都保存在 `/opt/cdn-platform` 下。现有公网反向代理可以独立保留；控制器仍在直连端口终止 TLS，以支持边缘 mTLS。安装、备份和恢复说明见 [docs/COMPOSE_DEPLOYMENT.md](docs/COMPOSE_DEPLOYMENT.md)，变量详见 [docs/CONFIGURATION.md](docs/CONFIGURATION.md)。
 
 在已安装 Docker Engine 和 Docker Compose 的全新 Debian 12 控制面 VPS 上，从可信代码检出目录执行：
 
@@ -115,7 +118,8 @@ sudo docker compose ps
 
 控制面 VPS 防火墙策略：
 
-- TCP 443 仅向管理员和边缘节点开放。
+- 公网管理 HTTPS（通常为 TCP 443）仅向管理员和可选反向代理开放。
+- 控制器的直连 `CONTROL_LISTEN` 端口（Compose 示例为 TCP 8443）向边缘节点及本机证书/健康服务开放。
 - TCP 22 仅向管理来源开放。
 - 除非有意使用独立日志节点，否则 ClickHouse 8123 端口只绑定 `localhost`。
 
@@ -160,7 +164,7 @@ sudo docker compose ps
 
 ## 第一个站点
 
-1. 添加站点的主机名、分配节点 ID、主源站和可选备源站。控制器会根据主机名自动识别 Cloudflare 区域（Zone）。站点默认继承全局 DNS TTL，也可在草稿中选择 60-300 秒覆盖；该覆盖只会在发布后生效。生成的 HTTPS 站点默认请求体上限为 128 MiB，站点表单可调整为固定的 256、512 或 1024 MiB。HTTP/HTTPS/WebSocket 代理默认上游读写空闲超时为 360 秒，可选 6、15、30 或 60 分钟。WebSocket 和 SSE 无需声明路径：WebSocket 使用 `Upgrade`，浏览器 SSE 使用 `Accept: text/event-stream`，每个 POST 都会透传 [OpenAI 风格流式响应](https://developers.openai.com/api/docs/guides/streaming-responses)，非标准客户端还可发送 `X-CDN-Stream: 1`。普通站点使用 HTTP(S) 源站；整个主机名不得使用磁盘缓存时启用透传模式；全 WebSocket 站点使用 `ws://` 或 `wss://`；全 gRPC 主机名使用 `grpc://` 或 `grpcs://`。
+1. 添加站点的主机名、分配节点 ID、主源站和可选备源站。控制器会根据主机名自动识别 Cloudflare 区域（Zone）。站点默认继承全局 DNS TTL，也可在草稿中选择 60-300 秒覆盖；该覆盖只会在发布后生效。生成的 HTTPS 站点默认请求体上限为 128 MiB，站点表单可调整为固定的 256、512 或 1024 MiB。HTTP/HTTPS/WebSocket 代理默认上游读写空闲超时为 120 秒，可选 2、6、15、30 或 60 分钟。WebSocket 和 SSE 无需声明路径：WebSocket 使用 `Upgrade`，浏览器 SSE 使用 `Accept: text/event-stream`，每个 POST 都会透传 [OpenAI 风格流式响应](https://developers.openai.com/api/docs/guides/streaming-responses)，非标准客户端还可发送 `X-CDN-Stream: 1`。普通站点使用 HTTP(S) 源站；整个主机名不得使用磁盘缓存时启用透传模式；全 WebSocket 站点使用 `ws://` 或 `wss://`；全 gRPC 主机名使用 `grpc://` 或 `grpcs://`。
 2. 在 Cloudflare 中保持这些主机名记录为 DNS-only。控制面只管理带有 `cdn-platform:site=<site-id>;...` 标签的记录；如果主机名已被无标签 A 记录或其他站点的 A 记录占用，操作会被拒绝。
 3. 创建站点后，控制面 VPS 会立即通过权限受限的 Cloudflare Token 排队执行异步 DNS-01 任务，并加密保存结果证书。“站点”页面会轮询任务状态，刷新页面不会取消任务。同一站点同时只能存在一个活跃证书任务。
 4. 执行“发布”。控制器会先检查 TLS 签发状态；证书尚未签发成功时不会创建发布任务，并提示证书正在申请。失败或缺失的签发任务会在发布预检时自动重新入队。签发成功后，控制器为每个受影响节点构建期望状态，并等待最长 90 秒，让已分配的活跃节点完成校验和应用。“站点”页面会显示逐节点冲突或超时详情；解决冲突后点击“重新发布”。
@@ -203,7 +207,7 @@ HTTP 边缘节点提供 `http://EDGE_IPV4/__cdn_health`。已发布 HTTP 配置�
 
 ## 备份与恢复
 
-Compose 备份流程使用 SQLite 在线备份 API 和 ClickHouse 原生备份，再将完整恢复集写入加密 Restic 存储。流程会重试短暂故障，发布供消息中心使用的机器可读状态，并在最终失败后发送 SMTP 告警。保留策略为 7 个每日快照、4 个每周快照和 6 个每月快照。仓库凭据和每日计划可在经过身份验证的“设置”页面管理，数据库配置优先于环境变量；离线恢复凭据仍然必须单独保存。在线流量保持运行期间，“设置”页面可以下载选定快照，并在隔离的 SQLite/ClickHouse 暂存区完成校验；随后通过二次确认执行切换，仅需短暂重启控制器，并保留回滚数据。离线校验和灾难恢复流程见 [docs/COMPOSE_DEPLOYMENT.md](docs/COMPOSE_DEPLOYMENT.md)。
+Compose 备份流程使用 SQLite 在线备份 API 和 ClickHouse 原生备份，再将恢复集写入加密 Restic 存储。流程会重试短暂故障，发布供消息中心使用的机器可读状态，并在最终失败后发送 SMTP 告警。保留策略为 7 个每日快照、4 个每周快照和 6 个每月快照。仓库凭据和每日计划可在经过身份验证的“设置”页面管理，数据库配置优先于环境变量；离线恢复凭据仍然必须单独保存。当前 Restic 集合包含 Nginx 工件和控制秘密，但不包含托管静态资源对象字节；请单独备份 `$CONTROL_DATA_DIR/static-assets/objects`。在线流量保持运行期间，“设置”页面可以下载选定快照，并在隔离的 SQLite/ClickHouse 暂存区完成校验；随后通过二次确认执行切换，仅需短暂重启控制器，并保留回滚数据。离线校验和灾难恢复流程见 [docs/COMPOSE_DEPLOYMENT.md](docs/COMPOSE_DEPLOYMENT.md)。
 
 ## 容量与后续边界
 

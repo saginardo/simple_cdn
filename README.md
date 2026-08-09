@@ -6,6 +6,8 @@ A small self-hosted CDN for one administrator, one Debian control VPS, and 3-10 
 
 Published versions are derived from `vMAJOR.MINOR.PATCH` Git tags. See the repository's [version tags](https://github.com/saginardo/simple_cdn/tags).
 
+For the maintained documentation map, configuration reference, and operational guides, see [Documentation](docs/README.md).
+
 ## What is implemented
 
 - Go control plane with versioned transactional SQLite migrations, Argon2id password plus TOTP login, passwordless passkey login, one-time recovery codes, persistent authentication rate limits, TOTP replay protection, CSRF protection, audit records, and a compact management UI. Login falls back to password plus TOTP when passkeys fail or the browser does not support them; **Sign-in and security** settings can replace TOTP and add or disable passkeys, while TOTP always remains enabled. The UI includes dedicated node/site detail pages, a persistent message center, per-node machine status, 24-hour cache outcomes, reported cache disk usage, and confirmation-protected workflows.
@@ -52,6 +54,7 @@ internal/nginx       Generated Nginx cache and origin configuration
 internal/integrations Cloudflare, Certbot, SMTP adapters
 internal/logstore    ClickHouse access-log, monitoring-history, and aggregate storage
 deploy/              Compose and environment templates
+docs/                Architecture, configuration, deployment, and operations guides
 scripts/             Compose control-plane helpers and release builds
 ```
 
@@ -83,11 +86,11 @@ For UI development, run the TLS control plane on `127.0.0.1:8443`, then start `n
 
 GitHub Actions runs the same compilation and validation checks, browser smoke tests, and a complete Docker build for every pull request. Successful `main` builds publish development-versioned `main` and `sha-<commit>` images. Pushing a valid `vMAJOR.MINOR.PATCH` tag publishes the matching stable image without editing project files. The workflow never connects to production. Private deployment automation consumes an immutable digest, and the control host only pulls that image instead of compiling source or running `docker compose build`. See [the Compose deployment guide](docs/COMPOSE_DEPLOYMENT.md#github-actions-delivery).
 
-The separate `Managed Nginx stable update` workflow checks the **Stable version** section on nginx.org once per day. When that version is newer than `deploy/nginx/VERSION`, it downloads and hashes the official source, builds the existing amd64 bundle, runs both Debian 12/13 artifact and migration suites, and publishes a persistent `nginx-v<version>` GitHub Release only after every check succeeds. Its release manifest binds the stable channel, official source URL and hash, repository commit, bundle size, and bundle SHA-256. This workflow does not rebuild or publish the control image.
+The separate `Managed Nginx stable update` workflow checks the **Stable version** section on nginx.org once per day. When that version is newer than `deploy/nginx/VERSION`, it downloads and hashes the official source, builds the existing amd64 bundle, runs both Debian 12/13 artifact and migration suites, and publishes a persistent `nginx-v<version>` GitHub Release only after every check succeeds. Its release manifest binds the stable channel, official source URL and hash, repository commit, bundle size, and bundle SHA-256. This workflow does not rebuild or publish the control image. The complete trust chain and administrator approval procedure are in [docs/NGINX_UPDATES.md](docs/NGINX_UPDATES.md).
 
 ## Control-plane installation
 
-Docker Compose is the supported deployment for the control plane and ClickHouse. It keeps configuration, SQLite, the internal CA, certificate state, ClickHouse data, logs, and backup staging below `/opt/cdn-platform`. The existing public reverse proxy can remain separate; the controller still terminates TLS on its direct port for edge mTLS. See [docs/COMPOSE_DEPLOYMENT.md](docs/COMPOSE_DEPLOYMENT.md) for installation, backup, and restore instructions.
+Docker Compose is the supported deployment for the control plane and ClickHouse. It keeps configuration, SQLite, the internal CA, certificate state, ClickHouse data, logs, Nginx artifacts, and backup staging below `/opt/cdn-platform`. The existing public reverse proxy can remain separate; the controller still terminates TLS on its direct port for edge mTLS. See [docs/COMPOSE_DEPLOYMENT.md](docs/COMPOSE_DEPLOYMENT.md) and the [configuration reference](docs/CONFIGURATION.md) for installation, backup, and restore instructions.
 
 On a fresh Debian 12 control VPS with Docker Engine and Docker Compose, run from a trusted checkout:
 
@@ -117,7 +120,8 @@ The bundled ClickHouse configuration is tuned for the 2-core, 4 GiB control host
 
 Firewall policy on the control VPS:
 
-- TCP 443 from administrators and edge nodes.
+- Public management HTTPS (normally TCP 443) from administrators and the optional reverse proxy.
+- The controller's direct `CONTROL_LISTEN` port (the Compose example is TCP 8443) from edge nodes and the local certificate/health services.
 - TCP 22 only from your administration source.
 - ClickHouse port 8123 bound to localhost unless you deliberately use a separate log node.
 
@@ -207,7 +211,7 @@ The failure window is roughly 1-2 minutes with a 60-second TTL and can approach 
 
 ## Backup and restore
 
-The Compose backup workflow uses SQLite's online backup API and a native ClickHouse backup, then writes the complete recovery set to encrypted Restic storage. It retries short-lived failures, publishes a machine-readable status consumed by the message center, and sends an SMTP alert after the final failed attempt. It retains 7 daily, 4 weekly, and 6 monthly snapshots. Repository credentials and the daily schedule can be managed from the authenticated Settings view with database-over-environment precedence; offline recovery credentials remain mandatory. The Settings view can download and validate a selected snapshot into an isolated SQLite/ClickHouse staging area while live traffic continues, then perform a confirmation-protected cutover with a short controller restart and retained rollback data. Offline verification and disaster-recovery procedures remain available in [docs/COMPOSE_DEPLOYMENT.md](docs/COMPOSE_DEPLOYMENT.md).
+The Compose backup workflow uses SQLite's online backup API and a native ClickHouse backup, then writes the recovery set to encrypted Restic storage. It retries short-lived failures, publishes a machine-readable status consumed by the message center, and sends an SMTP alert after the final failed attempt. It retains 7 daily, 4 weekly, and 6 monthly snapshots. Repository credentials and the daily schedule can be managed from the authenticated Settings view with database-over-environment precedence; offline recovery credentials remain mandatory. The current Restic set includes Nginx artifacts and control secrets, but not managed static-resource object bytes; back up `$CONTROL_DATA_DIR/static-assets/objects` separately. The Settings view can download and validate a selected snapshot into an isolated SQLite/ClickHouse staging area while live traffic continues, then perform a confirmation-protected cutover with a short controller restart and retained rollback data. Offline verification and disaster-recovery procedures remain available in [docs/COMPOSE_DEPLOYMENT.md](docs/COMPOSE_DEPLOYMENT.md).
 
 ## Capacity and next limits
 

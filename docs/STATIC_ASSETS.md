@@ -35,6 +35,12 @@ After a successful apply, the Agent removes content-addressed objects no longer 
 - A control-plane outage does not interrupt objects already synchronized to edges. It prevents uploads, binding changes, and delivery to a newly assigned or rebuilt node.
 - Content is public wherever its bound site URL is public. Do not upload secrets or rely on an unguessable path as authorization.
 
+## Backup and restore
+
+The controller stores object metadata and URL bindings in SQLite, but stores the bytes separately below `$CONTROL_DATA_DIR/static-assets/objects`. The current Compose Restic workflow does not archive that object directory. Back it up independently with the same recovery controls as the Restic repository; restoring SQLite without the matching object bytes preserves metadata but leaves the controller unable to redistribute those resources to a rebuilt or newly assigned edge.
+
+Edge copies below `/opt/cdn-edge/static/objects` can keep serving while the control plane is unavailable, but they are not an authoritative replacement for the controller copy. Do not rely on edge garbage-collection state as the only backup.
+
 ## Verification
 
 After assigning a resource, wait for the normal publish task to finish, then verify one edge directly:
