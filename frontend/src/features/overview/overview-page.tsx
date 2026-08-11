@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link } from "react-router";
-import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from "recharts";
+import { Area, AreaChart, CartesianGrid, Line, XAxis, YAxis } from "recharts";
 import {
   EmptyState,
   PageBody,
@@ -653,9 +653,16 @@ export function OverviewAreaChart({
         <Area
           dataKey={metric}
           type="monotone"
+          stroke="none"
+          fill={`url(#${gradientId})`}
+          isAnimationActive={false}
+        />
+        <Line
+          dataKey={metric}
+          type="monotone"
           stroke={`var(--color-${metric})`}
           strokeWidth={2.5}
-          fill={`url(#${gradientId})`}
+          dot={false}
           activeDot={{
             r: 5,
             strokeWidth: 2,
