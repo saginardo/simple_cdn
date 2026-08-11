@@ -12,7 +12,7 @@ import {
 } from "@/components/page";
 import { ListPagination } from "@/components/list-pagination";
 import {
-  OverviewLineChart,
+  OverviewAreaChart,
   chartPoint,
 } from "@/features/overview/overview-page";
 import { Button } from "@/components/ui/button";
@@ -135,7 +135,7 @@ export function OverviewSitePage() {
                 </Tabs>
               </CardHeader>
               <CardContent>
-                <OverviewLineChart data={chartData} metric={metric} />
+                <OverviewAreaChart data={chartData} metric={metric} />
               </CardContent>
             </Card>
             <Card>

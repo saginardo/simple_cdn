@@ -61,11 +61,50 @@ export function StatusBadge({
   status: string;
   label?: string;
 }) {
+  const tone = tones[status];
+  const isPulsing = [
+    "active",
+    "running",
+    "applying",
+    "dispatching",
+    "committing",
+    "preparing",
+  ].includes(status);
+
+  const dotColors: Record<Tone, { ping: string; dot: string }> = {
+    success: { ping: "bg-success/70", dot: "bg-success" },
+    info: { ping: "bg-info/70", dot: "bg-info" },
+    warning: { ping: "bg-warning/70", dot: "bg-warning" },
+    danger: { ping: "bg-destructive/70", dot: "bg-destructive" },
+    neutral: { ping: "bg-muted-foreground/50", dot: "bg-muted-foreground" },
+  };
+
   return (
     <Badge
       variant="outline"
-      className={cn("font-normal", tones[status] && toneBadge[tones[status]])}
+      className={cn(
+        "inline-flex items-center font-normal transition-colors",
+        tone && toneBadge[tone],
+      )}
     >
+      {tone && dotColors[tone] ? (
+        <span className="relative mr-1.5 flex size-1.5 shrink-0 items-center justify-center">
+          {isPulsing ? (
+            <span
+              className={cn(
+                "absolute inline-flex size-full animate-ping rounded-full opacity-75",
+                dotColors[tone].ping,
+              )}
+            />
+          ) : null}
+          <span
+            className={cn(
+              "relative inline-flex size-1.5 rounded-full",
+              dotColors[tone].dot,
+            )}
+          />
+        </span>
+      ) : null}
       {t(label ?? labels[status] ?? status)}
     </Badge>
   );

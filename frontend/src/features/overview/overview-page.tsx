@@ -7,12 +7,14 @@ import {
   ArrowUp,
   ArrowUpFromLine,
   ArrowUpDown,
+  Eye,
+  ExternalLink,
   RefreshCw,
   TriangleAlert,
 } from "lucide-react";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "react-router";
-import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
+import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from "recharts";
 import {
   EmptyState,
   PageBody,
@@ -35,6 +37,14 @@ import {
   ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+
 import {
   Table,
   TableBody,
@@ -106,6 +116,7 @@ const metricConfig: Record<
 };
 export function OverviewPage() {
   useI18n();
+  const [previewSite, setPreviewSite] = useState<OverviewSite | null>(null);
   const [metric, setMetric] = usePersistentEnum<Metric>(
     "simple-cdn.overview.metric",
     [
@@ -282,7 +293,7 @@ export function OverviewPage() {
                   </Tabs>
                 </CardHeader>
                 <CardContent>
-                  <OverviewLineChart data={chartData} metric={metric} />
+                  <OverviewAreaChart data={chartData} metric={metric} />
                 </CardContent>
               </Card>
 
@@ -405,16 +416,27 @@ export function OverviewPage() {
                               )}
                             </TableCell>
                             <TableCell className="pr-6">
-                              <Button asChild variant="ghost" size="icon-sm">
-                                <Link
-                                  to={`/overview/sites/${encodeURIComponent(site.id)}`}
-                                  aria-label={t("查看 {value0} 分析", {
-                                    value0: site.name,
-                                  })}
+                              <div className="flex items-center justify-end gap-1">
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon-sm"
+                                  title={t("快速预览")}
+                                  onClick={() => setPreviewSite(site)}
                                 >
-                                  <ArrowRight />
-                                </Link>
-                              </Button>
+                                  <Eye />
+                                </Button>
+                                <Button asChild variant="ghost" size="icon-sm">
+                                  <Link
+                                    to={`/overview/sites/${encodeURIComponent(site.id)}`}
+                                    aria-label={t("查看 {value0} 分析", {
+                                      value0: site.name,
+                                    })}
+                                  >
+                                    <ArrowRight />
+                                  </Link>
+                                </Button>
+                              </div>
                             </TableCell>
                           </TableRow>
                         ))}
@@ -437,6 +459,10 @@ export function OverviewPage() {
                 )}
               </CardContent>
             </Card>
+            <SiteQuickPreviewSheet
+              site={previewSite}
+              onClose={() => setPreviewSite(null)}
+            />
           </>
         ) : null}
       </PageBody>
@@ -530,7 +556,7 @@ function sortOverviewSites(
 function siteName(site: OverviewSite) {
   return site.name || site.id || t("未命名站点");
 }
-export function OverviewLineChart({
+export function OverviewAreaChart({
   data,
   metric,
 }: {
@@ -551,6 +577,9 @@ export function OverviewLineChart({
       color: selected.color,
     },
   } satisfies ChartConfig;
+
+  const gradientId = `overview-grad-${metric}`;
+
   return (
     <ChartContainer
       config={config}
@@ -560,17 +589,31 @@ export function OverviewLineChart({
         height: 280,
       }}
     >
-      <LineChart
+      <AreaChart
         data={data}
         margin={{
           left: 4,
           right: 12,
-          top: 8,
+          top: 12,
           bottom: 0,
         }}
         accessibilityLayer
       >
-        <CartesianGrid vertical={false} strokeDasharray="3 3" />
+        <defs>
+          <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+            <stop
+              offset="5%"
+              stopColor={`var(--color-${metric})`}
+              stopOpacity={0.35}
+            />
+            <stop
+              offset="95%"
+              stopColor={`var(--color-${metric})`}
+              stopOpacity={0.01}
+            />
+          </linearGradient>
+        </defs>
+        <CartesianGrid vertical={false} strokeDasharray="3 3" opacity={0.3} />
         <XAxis
           dataKey="label"
           tickLine={false}
@@ -585,7 +628,11 @@ export function OverviewLineChart({
           tickFormatter={(value) => selected.format(Number(value))}
         />
         <ChartTooltip
-          cursor={false}
+          cursor={{
+            stroke: `var(--color-${metric})`,
+            strokeWidth: 1,
+            strokeDasharray: "4 4",
+          }}
           content={
             <ChartTooltipContent
               indicator="line"
@@ -603,21 +650,26 @@ export function OverviewLineChart({
             />
           }
         />
-        <Line
+        <Area
           dataKey={metric}
           type="monotone"
           stroke={`var(--color-${metric})`}
-          strokeWidth={2}
-          dot={false}
+          strokeWidth={2.5}
+          fill={`url(#${gradientId})`}
           activeDot={{
-            r: 4,
+            r: 5,
+            strokeWidth: 2,
+            stroke: "var(--background)",
+            className: "drop-shadow-[0_0_6px_var(--color-primary)]",
           }}
           isAnimationActive={false}
         />
-      </LineChart>
+      </AreaChart>
     </ChartContainer>
   );
 }
+export const OverviewLineChart = OverviewAreaChart;
+
 export function chartPoint(point: OverviewPoint): OverviewPoint & {
   label: string;
 } {
@@ -657,12 +709,15 @@ function MetricBandItem({
   return (
     <div
       data-slot="metric-band-item"
-      className={cn("flex min-h-36 flex-col px-5 py-4", className)}
+      className={cn(
+        "group/metric flex min-h-36 flex-col px-5 py-4 transition-colors hover:bg-muted/30",
+        className,
+      )}
     >
       <div className="flex min-w-0 items-center gap-2">
         <span
           className={cn(
-            "grid size-7 shrink-0 place-items-center rounded-md",
+            "grid size-7 shrink-0 place-items-center rounded-md shadow-2xs transition-transform duration-200 group-hover/metric:scale-105",
             toneSurface[tone],
           )}
         >
@@ -678,11 +733,121 @@ function MetricBandItem({
       <p className="mt-2 text-xs text-muted-foreground">{meta}</p>
       <span
         className={cn(
-          "mt-auto block h-0.5 w-10 rounded-full opacity-70",
+          "mt-auto block h-0.5 w-10 rounded-full opacity-70 transition-all duration-200 group-hover/metric:w-16",
           toneFill[tone],
         )}
         aria-hidden="true"
       />
     </div>
+  );
+}
+
+function SiteQuickPreviewSheet({
+  site,
+  onClose,
+}: {
+  site: OverviewSite | null;
+  onClose: () => void;
+}) {
+  if (!site) return null;
+  const errRate = site.requests ? site.error_requests / site.requests : 0;
+
+  return (
+    <Sheet open={!!site} onOpenChange={(open) => !open && onClose()}>
+      <SheetContent side="right" className="p-6 sm:max-w-md">
+        <SheetHeader className="p-0 border-b pb-4">
+          <SheetTitle className="flex items-center gap-2">
+            <span className="font-semibold text-lg">{site.name}</span>
+            <Link
+              to={`/overview/sites/${encodeURIComponent(site.id)}`}
+              onClick={onClose}
+              className="text-muted-foreground hover:text-foreground transition-colors"
+              title={t("查看完整分析")}
+            >
+              <ExternalLink className="size-4" />
+            </Link>
+          </SheetTitle>
+          <SheetDescription className="truncate font-mono text-xs mt-1">
+            ID: {site.id}
+          </SheetDescription>
+        </SheetHeader>
+
+        <div className="mt-6 space-y-6">
+          <div className="space-y-2">
+            <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+              {t("绑定域名")}
+            </h4>
+            <div className="flex flex-wrap gap-1.5">
+              {site.domains.length ? (
+                site.domains.map((domain) => (
+                  <span
+                    key={domain}
+                    className="inline-flex items-center rounded-md border bg-muted/50 px-2 py-1 font-mono text-xs text-foreground"
+                  >
+                    {domain}
+                  </span>
+                ))
+              ) : (
+                <span className="text-xs text-muted-foreground">
+                  {t("未配置域名")}
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="rounded-lg border bg-card p-3.5 shadow-2xs">
+              <span className="text-xs text-muted-foreground">
+                {t("请求数")}
+              </span>
+              <p className="mt-1 text-lg font-semibold tabular-nums">
+                {formatNumber(site.requests)}
+              </p>
+            </div>
+            <div className="rounded-lg border bg-card p-3.5 shadow-2xs">
+              <span className="text-xs text-muted-foreground">
+                {t("错误率")}
+              </span>
+              <p
+                className={cn(
+                  "mt-1 text-lg font-semibold tabular-nums",
+                  errRate > 0.05 ? "text-destructive" : "text-foreground",
+                )}
+              >
+                {formatPercent(errRate, 2)}
+              </p>
+            </div>
+            <div className="rounded-lg border bg-card p-3.5 shadow-2xs">
+              <span className="text-xs text-muted-foreground">
+                {t("下行流量")}
+              </span>
+              <p className="mt-1 text-lg font-semibold tabular-nums">
+                {formatBytes(site.downstream_bytes)}
+              </p>
+            </div>
+            <div className="rounded-lg border bg-card p-3.5 shadow-2xs">
+              <span className="text-xs text-muted-foreground">
+                {t("上行流量")}
+              </span>
+              <p className="mt-1 text-lg font-semibold tabular-nums">
+                {formatBytes(site.upstream_bytes)}
+              </p>
+            </div>
+          </div>
+
+          <div className="pt-4 border-t">
+            <Button asChild className="w-full">
+              <Link
+                to={`/overview/sites/${encodeURIComponent(site.id)}`}
+                onClick={onClose}
+              >
+                <span>{t("前往站点完整分析")}</span>
+                <ArrowRight className="ml-2 size-4" />
+              </Link>
+            </Button>
+          </div>
+        </div>
+      </SheetContent>
+    </Sheet>
   );
 }

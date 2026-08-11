@@ -40,7 +40,10 @@ export function PageBody({
 }) {
   return (
     <div
-      className={cn("min-w-0 flex-1 space-y-4 p-4 sm:p-6 lg:p-8", className)}
+      className={cn(
+        "min-w-0 flex-1 space-y-4 p-4 sm:p-6 lg:p-8 animate-in fade-in-50 slide-in-from-bottom-1 duration-200",
+        className,
+      )}
     >
       {children}
     </div>
@@ -61,7 +64,7 @@ export function Panel({
   return (
     <div
       className={cn(
-        "overflow-hidden rounded-lg border bg-card text-sm text-card-foreground",
+        "overflow-hidden rounded-lg border bg-card text-sm text-card-foreground shadow-xs dark:shadow-[0_1px_0_0_rgba(255,255,255,0.05)_inset]",
         className,
       )}
     >
@@ -105,19 +108,26 @@ export function PageError({
 export function EmptyState({
   title,
   description,
+  icon: Icon = Inbox,
+  action,
 }: {
   title: string;
   description?: string;
+  icon?: React.ElementType;
+  action?: ReactNode;
 }) {
   return (
-    <div className="flex min-h-44 flex-col items-center justify-center rounded-lg border border-dashed bg-muted/20 px-6 py-10 text-center">
-      <Inbox className="mb-3 size-8 text-muted-foreground" aria-hidden="true" />
-      <h3 className="text-sm font-medium">{title}</h3>
+    <div className="flex min-h-48 flex-col items-center justify-center rounded-xl border border-dashed bg-muted/15 px-6 py-10 text-center transition-colors">
+      <div className="mb-3.5 flex size-12 items-center justify-center rounded-full bg-background border shadow-2xs text-muted-foreground/80">
+        <Icon className="size-6 stroke-[1.5]" aria-hidden="true" />
+      </div>
+      <h3 className="text-sm font-semibold text-foreground">{title}</h3>
       {description ? (
-        <p className="mt-1 max-w-md text-sm text-muted-foreground">
+        <p className="mt-1.5 max-w-sm text-xs text-muted-foreground leading-relaxed">
           {description}
         </p>
       ) : null}
+      {action ? <div className="mt-4">{action}</div> : null}
     </div>
   );
 }
