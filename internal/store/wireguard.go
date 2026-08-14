@@ -178,7 +178,7 @@ func (s *Store) UpdateWireGuardTunnel(tunnel domain.WireGuardTunnel, nodeIDs []s
 		assigned[nodeID] = true
 	}
 	for _, site := range references {
-		for _, nodeID := range site.Nodes {
+		for _, nodeID := range site.AssignedNodeIDs() {
 			if !assigned[nodeID] {
 				return domain.WireGuardTunnel{}, fmt.Errorf("%w: site %s still assigns node %s", ErrWireGuardTunnelInUse, site.Name, nodeID)
 			}
@@ -845,7 +845,7 @@ func validateSiteWireGuardTunnels(queryer rowQueryer, site domain.Site) error {
 		} else if err != nil {
 			return err
 		}
-		for _, nodeID := range site.Nodes {
+		for _, nodeID := range site.AssignedNodeIDs() {
 			var assigned int
 			if err := queryer.QueryRow(`SELECT COUNT(*) FROM wireguard_tunnel_nodes WHERE tunnel_id=? AND node_id=?`, tunnelID, nodeID).Scan(&assigned); err != nil {
 				return err

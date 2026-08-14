@@ -91,6 +91,19 @@ func NormalizeAndValidateSite(site *Site) error {
 		nodes = append(nodes, nodeID)
 	}
 	site.Nodes = nodes
+	backupNodes := make([]string, 0, len(site.BackupNodes))
+	for _, nodeID := range site.BackupNodes {
+		nodeID = strings.TrimSpace(nodeID)
+		if nodeID == "" {
+			return fmt.Errorf("backup node ID is required")
+		}
+		if _, found := seenNodes[nodeID]; found {
+			return fmt.Errorf("node ID %q cannot be assigned as both primary and backup", nodeID)
+		}
+		seenNodes[nodeID] = struct{}{}
+		backupNodes = append(backupNodes, nodeID)
+	}
+	site.BackupNodes = backupNodes
 	if err := normalizeTCPForwards(site); err != nil {
 		return err
 	}

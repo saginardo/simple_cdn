@@ -333,7 +333,7 @@ func (m *HealthManager) reconcileSiteHealth(ctx context.Context, sites []domain.
 		if !site.Enabled {
 			continue
 		}
-		for _, nodeID := range site.Nodes {
+		for _, nodeID := range site.AssignedNodeIDs() {
 			node, found := nodesByID[nodeID]
 			if !found || node.Status != domain.NodeActive {
 				continue
@@ -557,6 +557,12 @@ type siteDNSOutcome struct {
 	noHealthy bool
 }
 
+type siteNodePool struct {
+	healthy            []domain.Node
+	activeAssigned     int
+	convergingAssigned int
+}
+
 func (m *HealthManager) reconcileSiteDNSOutcome(ctx context.Context, site domain.Site, nodes []domain.Node) (siteDNSOutcome, error) {
 	outcome := siteDNSOutcome{}
 	if err := ctx.Err(); err != nil {
@@ -566,71 +572,27 @@ func (m *HealthManager) reconcileSiteDNSOutcome(ctx context.Context, site domain
 	for _, node := range nodes {
 		nodesByID[node.ID] = node
 	}
-	var healthy []domain.Node
-	activeAssigned := 0
-	convergingAssigned := 0
-	for _, nodeID := range site.Nodes {
-		node, found := nodesByID[nodeID]
-		if !found {
-			continue
-		}
-		upgrading, err := m.nodeUpgradeInProgress(node)
-		if err != nil {
-			return outcome, err
-		}
-		if node.Status != domain.NodeActive {
-			if upgrading {
-				convergingAssigned++
-			}
-			continue
-		}
-		activeAssigned++
-		if upgrading {
-			convergingAssigned++
-			continue
-		}
-		desiredVersion, err := m.Server.Store.DesiredVersion(node.ID)
-		if err != nil {
-			return outcome, err
-		}
-		if desiredVersion == 0 || node.AppliedVersion < desiredVersion {
-			convergingAssigned++
-			continue
-		}
-		publishing, err := m.Server.Store.HasActiveNodePublication(node.ID)
-		if err != nil {
-			return outcome, err
-		}
-		if publishing {
-			convergingAssigned++
-			continue
-		}
-		nodeHealth, err := m.Server.Store.NodeHealth(node.ID)
-		if err != nil {
-			return outcome, err
-		}
-		if !nodeHealth.DNSEligible {
-			continue
-		}
-		state, _, err := m.Server.Store.NodeState(node.ID)
-		if err != nil {
-			return outcome, err
-		}
-		hasSiteHealth := nginx.HasSiteHealth(state.NginxConfig, site.ID)
-		if hasSiteHealth {
-			siteHealth, err := m.Server.Store.SiteNodeHealth(site.ID, node.ID)
-			if err != nil {
-				return outcome, err
-			}
-			if !siteHealth.DNSEligible {
-				continue
-			}
-		}
-		healthy = append(healthy, node)
+	primary, err := m.siteNodePool(site, site.Nodes, nodesByID)
+	if err != nil {
+		return outcome, err
 	}
-	if convergingAssigned > 0 {
+	if primary.convergingAssigned > 0 {
 		m.clearNoHealthyAlert(site.ID)
 		return outcome, nil
+	}
+	healthy := primary.healthy
+	activeAssigned := primary.activeAssigned
+	if len(healthy) == 0 && len(site.BackupNodes) > 0 {
+		backup, err := m.siteNodePool(site, site.BackupNodes, nodesByID)
+		if err != nil {
+			return outcome, err
+		}
+		activeAssigned += backup.activeAssigned
+		if backup.convergingAssigned > 0 {
+			m.clearNoHealthyAlert(site.ID)
+			return outcome, nil
+		}
+		healthy = backup.healthy
 	}
 	if len(healthy) == 0 {
 		if activeAssigned == 0 {
@@ -666,6 +628,70 @@ func (m *HealthManager) reconcileSiteDNSOutcome(ctx context.Context, site domain
 		return outcome, fmt.Errorf("reconcile DNS for %s: %w", site.Name, err)
 	}
 	return outcome, nil
+}
+
+func (m *HealthManager) siteNodePool(site domain.Site, nodeIDs []string, nodesByID map[string]domain.Node) (siteNodePool, error) {
+	pool := siteNodePool{healthy: make([]domain.Node, 0, len(nodeIDs))}
+	for _, nodeID := range nodeIDs {
+		node, found := nodesByID[nodeID]
+		if !found {
+			continue
+		}
+		upgrading, err := m.nodeUpgradeInProgress(node)
+		if err != nil {
+			return pool, err
+		}
+		if node.Status != domain.NodeActive {
+			if upgrading {
+				pool.convergingAssigned++
+			}
+			continue
+		}
+		pool.activeAssigned++
+		if upgrading {
+			pool.convergingAssigned++
+			continue
+		}
+		desiredVersion, err := m.Server.Store.DesiredVersion(node.ID)
+		if err != nil {
+			return pool, err
+		}
+		if desiredVersion == 0 || node.AppliedVersion < desiredVersion {
+			pool.convergingAssigned++
+			continue
+		}
+		publishing, err := m.Server.Store.HasActiveNodePublication(node.ID)
+		if err != nil {
+			return pool, err
+		}
+		if publishing {
+			pool.convergingAssigned++
+			continue
+		}
+		nodeHealth, err := m.Server.Store.NodeHealth(node.ID)
+		if err != nil {
+			return pool, err
+		}
+		if !nodeHealth.DNSEligible {
+			continue
+		}
+		state, _, err := m.Server.Store.NodeState(node.ID)
+		if err != nil {
+			return pool, err
+		}
+		hasSiteHealth := nginx.HasSiteHealth(state.NginxConfig, site.ID)
+		if hasSiteHealth {
+			siteHealth, err := m.Server.Store.SiteNodeHealth(site.ID, node.ID)
+			if err != nil {
+				return pool, err
+			}
+			if !siteHealth.DNSEligible {
+				continue
+			}
+		}
+		pool.healthy = append(pool.healthy, node)
+	}
+	return pool, nil
 }
 
 func (m *HealthManager) nodeUpgradeInProgress(node domain.Node) (bool, error) {

@@ -64,7 +64,7 @@ cdn-edge-agent -- mTLS --> 控制面 desired state、心跳、日志、升级任
 | 认证与管理   | Argon2id 密码、TOTP（始终开启）、恢复码、Passkey、CSRF、会话限速、审计、品牌和持久消息中心。                                                                 |
 | 节点生命周期 | 15 分钟一次性注册令牌、内部 CA/mTLS、manifest 增量轮询、机器状态 SSE、撤销、确认保护卸载和单节点/全量升级。                                                  |
 | Nginx 交付   | 自编译 HTTP/2、HTTP/3、Lua、Brotli、Zstandard、stream bundle；GitHub stable 独立更新；安装器和在线升级均支持事务回滚。                                       |
-| 站点发布     | 草稿与已发布快照分离；DNS-01 证书成功后才允许发布；逐节点校验、站点 HTTPS/SNI 健康和 Cloudflare DNS 滞回对账。                                               |
+| 站点发布     | 草稿与已发布快照分离；DNS-01 证书成功后才允许发布；主备节点预部署、逐节点校验、站点 HTTPS/SNI 健康和 Cloudflare DNS 滞回容灾调度。                             |
 | HTTP 流量    | 静态后缀共享缓存、缓存锁/revalidate/stale、整站/URL/前缀失效、边缘本地预热、动态 gzip/Brotli/Zstandard、WebSocket、SSE、OpenAI 风格 POST 流式和 Range 透传。 |
 | 回源         | HTTP/HTTPS/H2C/HTTP2、gRPC/GRPCS、主备切换、共享连接池、两层主动探测与熔断、TLS Host/SNI 分离。                                                              |
 | TCP 与隧道   | stream TCP 转发、监听/上游 TLS/SNI、动态 DNS、WireGuard 源站隧道、限速和双向 TCP/UDP 性能测试。                                                              |

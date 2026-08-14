@@ -110,7 +110,7 @@ func (s *Server) nodeDetail(response http.ResponseWriter, request *http.Request)
 	}
 	sites := make([]nodeSiteSummary, 0)
 	for _, site := range configuredSites {
-		if !containsNode(site.Nodes, node.ID) {
+		if !siteHasNode(site, node.ID) {
 			continue
 		}
 		sites = append(sites, nodeSiteSummary{

@@ -88,6 +88,7 @@ interface SiteDraft {
   name: string;
   domains: string;
   node_ids: string[];
+  backup_node_ids: string[];
   primary_url: string;
   primary_host: string;
   primary_sni: string;
@@ -461,11 +462,13 @@ export function SiteDetailPage() {
               ) : null}
               <NodeSelector
                 nodes={nodes.data ?? []}
-                selected={draft.node_ids}
-                onChange={(node_ids) =>
+                primarySelected={draft.node_ids}
+                backupSelected={draft.backup_node_ids}
+                onChange={(node_ids, backup_node_ids) =>
                   setDraft({
                     ...draft,
                     node_ids,
+                    backup_node_ids,
                   })
                 }
               />
@@ -521,9 +524,15 @@ export function SiteDetailPage() {
                     </>
                   ) : null}
                   <Fact
-                    label={t("边缘节点")}
+                    label={t("主节点")}
                     value={t("{value0} 个", {
                       value0: draft.node_ids.length,
+                    })}
+                  />
+                  <Fact
+                    label={t("备用节点")}
+                    value={t("{value0} 个", {
+                      value0: draft.backup_node_ids.length,
                     })}
                   />
                   <Fact
@@ -913,6 +922,7 @@ function TrafficSettings({
   setDraft: (draft: SiteDraft) => void;
   tunnels: WireGuardTunnel[];
 }) {
+  const assignedNodeIDs = [...draft.node_ids, ...draft.backup_node_ids];
   return (
     <Card>
       <CardHeader>
@@ -966,7 +976,7 @@ function TrafficSettings({
               httpVersion={draft.primary_http_version}
               wireGuardTunnelID={draft.primary_wireguard_tunnel_id}
               tunnels={tunnels}
-              nodeIDs={draft.node_ids}
+              nodeIDs={assignedNodeIDs}
               onChange={(values) =>
                 setDraft({
                   ...draft,
@@ -1006,7 +1016,7 @@ function TrafficSettings({
                 httpVersion={draft.backup_http_version}
                 wireGuardTunnelID={draft.backup_wireguard_tunnel_id}
                 tunnels={tunnels}
-                nodeIDs={draft.node_ids}
+                nodeIDs={assignedNodeIDs}
                 onChange={(values) =>
                   setDraft({
                     ...draft,
@@ -1366,61 +1376,61 @@ function OriginFields({
 }
 function NodeSelector({
   nodes,
-  selected,
+  primarySelected,
+  backupSelected,
   onChange,
 }: {
   nodes: Node[];
-  selected: string[];
-  onChange: (selected: string[]) => void;
+  primarySelected: string[];
+  backupSelected: string[];
+  onChange: (primarySelected: string[], backupSelected: string[]) => void;
 }) {
   const available = nodes.filter(
     (node) => !["revoked", "uninstalling", "uninstalled"].includes(node.status),
   );
-  const pagination = useListPagination(available);
   return (
     <Card>
       <CardHeader>
         <CardTitle>{t("边缘节点")}</CardTitle>
-        <CardDescription>{t("选择承载此站点的节点")}</CardDescription>
+        <CardDescription>
+          {t("主节点不可用时自动启用备用节点调度")}
+        </CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-5">
         {available.length ? (
           <>
-            <div className="grid gap-2 sm:grid-cols-2">
-              {pagination.items.map((node) => {
-                const checked = selected.includes(node.id);
-                return (
-                  <label
-                    key={node.id}
-                    className="flex items-center gap-3 rounded-lg border px-3 py-3 text-sm hover:bg-muted/30"
-                  >
-                    <Checkbox
-                      checked={checked}
-                      onCheckedChange={(value) =>
-                        onChange(
-                          value
-                            ? [...selected, node.id]
-                            : selected.filter((id) => id !== node.id),
-                        )
-                      }
-                    />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate font-medium">
-                        {node.name}
-                      </span>
-                      <span className="block font-mono text-xs text-muted-foreground">
-                        {node.public_ipv4}
-                      </span>
-                    </span>
-                    <StatusBadge status={node.status} />
-                  </label>
-                );
-              })}
-            </div>
-            <ListPagination
-              pagination={pagination}
-              itemLabel={t("个节点")}
-              className="mt-3 rounded-lg border"
+            <NodeChecklist
+              title={t("主节点")}
+              description={t("正常情况下参与流量调度")}
+              nodes={available}
+              selected={primarySelected}
+              onToggle={(nodeID, checked) =>
+                onChange(
+                  checked
+                    ? [...primarySelected, nodeID]
+                    : primarySelected.filter((id) => id !== nodeID),
+                  checked
+                    ? backupSelected.filter((id) => id !== nodeID)
+                    : backupSelected,
+                )
+              }
+            />
+            <Separator />
+            <NodeChecklist
+              title={t("备用节点")}
+              description={t("仅在所有主节点不可用时参与流量调度")}
+              nodes={available}
+              selected={backupSelected}
+              onToggle={(nodeID, checked) =>
+                onChange(
+                  checked
+                    ? primarySelected.filter((id) => id !== nodeID)
+                    : primarySelected,
+                  checked
+                    ? [...backupSelected, nodeID]
+                    : backupSelected.filter((id) => id !== nodeID),
+                )
+              }
             />
           </>
         ) : (
@@ -1431,6 +1441,58 @@ function NodeSelector({
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function NodeChecklist({
+  title,
+  description,
+  nodes,
+  selected,
+  onToggle,
+}: {
+  title: string;
+  description: string;
+  nodes: Node[];
+  selected: string[];
+  onToggle: (nodeID: string, checked: boolean) => void;
+}) {
+  const pagination = useListPagination(nodes);
+  return (
+    <section>
+      <div className="mb-3">
+        <h3 className="text-sm font-medium">{title}</h3>
+        <p className="text-xs text-muted-foreground">{description}</p>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2">
+        {pagination.items.map((node) => {
+          const checked = selected.includes(node.id);
+          return (
+            <label
+              key={node.id}
+              className="flex items-center gap-3 rounded-lg border px-3 py-3 text-sm hover:bg-muted/30"
+            >
+              <Checkbox
+                checked={checked}
+                onCheckedChange={(value) => onToggle(node.id, value === true)}
+              />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-medium">{node.name}</span>
+                <span className="block font-mono text-xs text-muted-foreground">
+                  {node.public_ipv4}
+                </span>
+              </span>
+              <StatusBadge status={node.status} />
+            </label>
+          );
+        })}
+      </div>
+      <ListPagination
+        pagination={pagination}
+        itemLabel={t("个节点")}
+        className="mt-3 rounded-lg border"
+      />
+    </section>
   );
 }
 function TCPForwards({
@@ -1680,13 +1742,17 @@ function SiteOperations({
   const publishTaskCurrent = taskMatchesCurrentSite(publishTask, site);
   const visiblePublishTask = publishTaskCurrent ? publishTask : undefined;
   const nodeByID = new Map(nodes.map((node) => [node.id, node]));
-  const assignedNodes = site.node_ids.map((nodeID) => {
+  const backupNodeIDs = site.backup_node_ids ?? [];
+  const assignedNodeIDs = [...site.node_ids, ...backupNodeIDs];
+  const primaryNodeIDs = new Set(site.node_ids);
+  const assignedNodes = assignedNodeIDs.map((nodeID) => {
     const node = nodeByID.get(nodeID);
     return {
       id: nodeID,
       name: node?.name || nodeID,
       publicIPv4: node?.public_ipv4,
       status: node?.status,
+      role: primaryNodeIDs.has(nodeID) ? t("主节点") : t("备用节点"),
     };
   });
   const assignedPagination = useListPagination(assignedNodes);
@@ -1717,13 +1783,13 @@ function SiteOperations({
             site.published
               ? t("已发布")
               : t("有未发布更改，目标 {value0} 个节点", {
-                  value0: site.node_ids.length,
+                  value0: assignedNodeIDs.length,
                 })
           }
           detail={
             site.published && visiblePublishTask?.status === "succeeded"
               ? t("当前配置已发布到 {value0} 个边缘节点", {
-                  value0: site.node_ids.length,
+                  value0: assignedNodeIDs.length,
                 })
               : undefined
           }
@@ -1742,8 +1808,10 @@ function SiteOperations({
               <div className="text-sm">{t("节点分配")}</div>
               <div className="text-xs text-muted-foreground">
                 {site.published ? t("当前承载节点") : t("待发布节点")} ·{" "}
-                {site.node_ids.length}
-                {t(" 个")}
+                {t("{value0} 个主节点，{value1} 个备用节点", {
+                  value0: site.node_ids.length,
+                  value1: backupNodeIDs.length,
+                })}
               </div>
             </div>
             <StatusBadge
@@ -1765,6 +1833,9 @@ function SiteOperations({
                               {node.publicIPv4}
                             </span>
                           ) : null}
+                          <span className="block text-muted-foreground">
+                            {node.role}
+                          </span>
                         </TableCell>
                         <TableCell className="text-right">
                           {node.status ? (
@@ -2169,6 +2240,7 @@ function emptyDraft(ttl: number): SiteDraft {
     name: "",
     domains: "",
     node_ids: [],
+    backup_node_ids: [],
     primary_url: "https://",
     primary_host: "",
     primary_sni: "",
@@ -2214,6 +2286,7 @@ function draftFromSite(site: Site, ttl: number): SiteDraft {
     name: site.name,
     domains: site.domains.join(", "),
     node_ids: [...site.node_ids],
+    backup_node_ids: [...(site.backup_node_ids ?? [])],
     primary_url: site.primary_origin.url,
     primary_host: site.primary_origin.host_header || "",
     primary_sni: site.primary_origin.tls_server_name || "",
@@ -2257,6 +2330,7 @@ function sitePayload(draft: SiteDraft) {
     name: draft.name,
     domains: splitList(draft.domains),
     node_ids: draft.node_ids,
+    backup_node_ids: draft.backup_node_ids,
     primary_origin: {
       url: draft.primary_url,
       host_header: draft.primary_host,

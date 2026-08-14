@@ -50,6 +50,11 @@ var schemaMigrations = []schemaMigration{
 	{Version: 31, Name: "compression-and-cache-control", Apply: migrateCompressionAndCacheControl},
 	{Version: 32, Name: "cache-operations", Apply: migrateCacheOperations},
 	{Version: 33, Name: "nginx-artifact-catalog", Apply: migrateNginxArtifactCatalog},
+	{Version: 34, Name: "site-backup-nodes", Apply: migrateSiteBackupNodes},
+}
+
+func migrateSiteBackupNodes(tx *sql.Tx) error {
+	return addColumnIfMissing(tx, "sites", "backup_node_ids_json", "backup_node_ids_json TEXT NOT NULL DEFAULT '[]'")
 }
 
 func migrateNginxArtifactCatalog(tx *sql.Tx) error {
@@ -896,6 +901,7 @@ func migrateCoreSchema(tx *sql.Tx) error {
 		definition string
 	}{
 		{"sites", "published", "published INTEGER NOT NULL DEFAULT 0"},
+		{"sites", "backup_node_ids_json", "backup_node_ids_json TEXT NOT NULL DEFAULT '[]'"},
 		{"sites", "stream_paths_json", "stream_paths_json TEXT NOT NULL DEFAULT '[]'"},
 		{"sites", "passthrough", "passthrough INTEGER NOT NULL DEFAULT 0"},
 		{"sites", "request_body_buffering", "request_body_buffering INTEGER NOT NULL DEFAULT 1"},

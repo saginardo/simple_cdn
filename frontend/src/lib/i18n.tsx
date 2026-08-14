@@ -624,6 +624,16 @@ const english = {
   安全删除站点: "Safely delete site",
   保存更改: "Save changes",
   备用源站: "Fallback origin",
+  备用: "standby",
+  主节点: "Primary nodes",
+  备用节点: "Standby nodes",
+  主节点不可用时自动启用备用节点调度:
+    "Automatically route to standby nodes when primary nodes are unavailable",
+  正常情况下参与流量调度: "Serve traffic during normal operation",
+  仅在所有主节点不可用时参与流量调度:
+    "Serve traffic only when all primary nodes are unavailable",
+  "{value0} 个主节点，{value1} 个备用节点":
+    "{value0} primary nodes, {value1} standby nodes",
   本次发布涉及节点: "Nodes affected by this publish",
   本次删除涉及节点: "Nodes affected by this deletion",
   边缘节点: "Edge nodes",

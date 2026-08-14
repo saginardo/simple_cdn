@@ -366,7 +366,7 @@ func (s *Server) buildNodeUninstallStatus(nodeID string) (nodeUninstallStatusRes
 			continue
 		}
 		active := 0
-		for _, assignedNodeID := range liveSite.Nodes {
+		for _, assignedNodeID := range liveSite.AssignedNodeIDs() {
 			assignedNode, nodeErr := s.Store.GetNode(assignedNodeID)
 			if nodeErr == nil && assignedNode.Status == domain.NodeActive {
 				active++
@@ -418,7 +418,7 @@ func (s *Server) assignedSites(nodeID string) ([]domain.Site, error) {
 }
 
 func siteHasNode(site domain.Site, nodeID string) bool {
-	for _, assignedNodeID := range site.Nodes {
+	for _, assignedNodeID := range site.AssignedNodeIDs() {
 		if assignedNodeID == nodeID {
 			return true
 		}

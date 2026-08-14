@@ -504,6 +504,7 @@ export interface Site {
   zone_id: string;
   domains: string[];
   node_ids: string[];
+  backup_node_ids: string[];
   primary_origin: Origin;
   backup_origin?: Origin;
   stream_paths: string[];

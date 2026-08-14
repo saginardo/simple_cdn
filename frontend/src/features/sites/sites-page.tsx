@@ -81,7 +81,13 @@ export function SitesPage() {
                         {siteOriginType(site)}
                       </TableCell>
                       <TableCell className="tabular-nums">
-                        {formatNumber(site.node_ids.length)}
+                        <span>{formatNumber(site.node_ids.length)}</span>
+                        {(site.backup_node_ids?.length ?? 0) > 0 ? (
+                          <span className="ml-1 text-xs text-muted-foreground">
+                            + {formatNumber(site.backup_node_ids.length)}{" "}
+                            {t("备用")}
+                          </span>
+                        ) : null}
                       </TableCell>
                       <TableCell className="text-sm font-medium tabular-nums">
                         V{formatNumber(site.config_version)}

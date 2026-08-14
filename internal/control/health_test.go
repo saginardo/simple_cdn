@@ -416,6 +416,94 @@ func TestDrainedSitePoolWithdrawsManagedDNS(t *testing.T) {
 	}
 }
 
+func TestSiteDNSUsesBackupOnlyAfterAllPrimaryNodesFailAndStopsAfterRecovery(t *testing.T) {
+	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	primaryA, err := database.CreateNode("primary-a", "203.0.113.101")
+	if err != nil {
+		t.Fatal(err)
+	}
+	primaryB, err := database.CreateNode("primary-b", "203.0.113.102")
+	if err != nil {
+		t.Fatal(err)
+	}
+	backup, err := database.CreateNode("backup", "203.0.113.103")
+	if err != nil {
+		t.Fatal(err)
+	}
+	site, err := database.CreateSite(domain.Site{
+		Name: "disaster recovery", Domains: []string{"dr.example.test"},
+		Nodes: []string{primaryA.ID, primaryB.ID}, BackupNodes: []string{backup.ID},
+		PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, Enabled: true,
+	}, "zone-dr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.MarkSitePublished(site.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, node := range []domain.Node{primaryA, primaryB, backup} {
+		if err := database.SetNodeStatus(node.ID, domain.NodeActive); err != nil {
+			t.Fatal(err)
+		}
+		if err := database.SaveNodeState(node.ID, domain.DesiredState{Version: 1, NginxConfig: "# legacy config"}, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := database.Heartbeat(node.ID, 1, "", nil); err != nil {
+			t.Fatal(err)
+		}
+		for range 5 {
+			if _, err := database.RecordNodeHealth(node.ID, true, ""); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	nodes, err := database.ListNodes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dns := &MemoryDNS{}
+	manager := HealthManager{Server: &Server{Store: database, DNS: dns}}
+	assertDNS := func(want ...string) {
+		t.Helper()
+		if err := manager.reconcileSiteDNS(context.Background(), site, nodes); err != nil {
+			t.Fatal(err)
+		}
+		records := dns.Zones[site.ZoneID]
+		if len(records) != len(want) {
+			t.Fatalf("DNS records = %#v, want addresses %#v", records, want)
+		}
+		for index, address := range want {
+			if records[index].Content != address {
+				t.Fatalf("DNS records = %#v, want addresses %#v", records, want)
+			}
+		}
+	}
+	markUnhealthy := func(nodeID string) {
+		t.Helper()
+		for range 3 {
+			if _, err := database.RecordNodeHealth(nodeID, false, "timeout"); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	assertDNS(primaryA.PublicIPv4, primaryB.PublicIPv4)
+	markUnhealthy(primaryA.ID)
+	assertDNS(primaryB.PublicIPv4)
+	markUnhealthy(primaryB.ID)
+	assertDNS(backup.PublicIPv4)
+	for range 5 {
+		if _, err := database.RecordNodeHealth(primaryA.ID, true, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertDNS(primaryA.PublicIPv4)
+}
+
 func TestSiteHTTPSHealthRemovesOnlyFailingNodeAfterThreeChecks(t *testing.T) {
 	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
 	if err != nil {

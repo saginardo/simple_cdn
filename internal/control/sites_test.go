@@ -75,6 +75,53 @@ func TestSiteAPIAutomaticallyResolvesCloudflareZone(t *testing.T) {
 	}
 }
 
+func TestSiteAPIStoresBackupNodesAndPreservesThemWhenOmitted(t *testing.T) {
+	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.CreateInitialAdmin("hash", "secret"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CreateSession("admin", "session-token", "csrf-token", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	primary, err := database.CreateNode("primary-edge", "203.0.113.92")
+	if err != nil {
+		t.Fatal(err)
+	}
+	backup, err := database.CreateNode("backup-edge", "203.0.113.93")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{Store: database}
+	created := requestSite(t, server, http.MethodPost, "/api/sites", map[string]any{
+		"name": "backup nodes", "zone_id": "zone", "domains": []string{"backup.example.test"},
+		"node_ids": []string{primary.ID}, "backup_node_ids": []string{backup.ID},
+		"primary_origin": map[string]any{"url": "https://origin.example.test", "enabled": true}, "enabled": true,
+	})
+	if len(created.BackupNodes) != 1 || created.BackupNodes[0] != backup.ID {
+		t.Fatalf("created backup nodes = %#v", created.BackupNodes)
+	}
+
+	updated := requestSite(t, server, http.MethodPut, "/api/sites/"+created.ID, map[string]any{
+		"name": created.Name, "domains": created.Domains, "node_ids": created.Nodes,
+		"primary_origin": created.PrimaryOrigin, "enabled": created.Enabled,
+	})
+	if len(updated.BackupNodes) != 1 || updated.BackupNodes[0] != backup.ID {
+		t.Fatalf("omitted backup nodes changed assignment = %#v", updated.BackupNodes)
+	}
+
+	cleared := requestSite(t, server, http.MethodPut, "/api/sites/"+created.ID, map[string]any{
+		"name": created.Name, "domains": created.Domains, "node_ids": created.Nodes,
+		"backup_node_ids": []string{}, "primary_origin": created.PrimaryOrigin, "enabled": created.Enabled,
+	})
+	if len(cleared.BackupNodes) != 0 {
+		t.Fatalf("explicitly cleared backup nodes = %#v", cleared.BackupNodes)
+	}
+}
+
 func TestSiteAPIReturnsBadRequestWhenCloudflareZoneCannotBeResolved(t *testing.T) {
 	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
 	if err != nil {

@@ -80,6 +80,49 @@ func TestPublishRequiresCertificateAndThenMarksPublished(t *testing.T) {
 	}
 }
 
+func TestPublishPredeploysSiteToBackupNodes(t *testing.T) {
+	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	key, _ := NewEncryptionKey()
+	cipher, _ := NewCipher(key)
+	primary, err := database.CreateNode("primary-edge", "203.0.113.14")
+	if err != nil {
+		t.Fatal(err)
+	}
+	backup, err := database.CreateNode("backup-edge", "203.0.113.15")
+	if err != nil {
+		t.Fatal(err)
+	}
+	site, err := database.CreateSite(domain.Site{
+		Name: "backup deployment", Domains: []string{"backup-deployment.example.test"},
+		Nodes: []string{primary.ID}, BackupNodes: []string{backup.ID},
+		PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, Enabled: true,
+	}, "zone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	publisher := Publisher{Store: database, Cipher: cipher}
+	certificate, privateKey, notAfter := testCertificate(t, site.Domains...)
+	if err := publisher.StoreCertificate(site.ID, certificate, privateKey, notAfter); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := publisher.PublishSite(site.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, node := range []domain.Node{primary, backup} {
+		state, _, err := database.NodeState(node.ID)
+		if err != nil {
+			t.Fatalf("node %s state: %v", node.Name, err)
+		}
+		if !strings.Contains(state.NginxConfig, site.ID) {
+			t.Fatalf("node %s did not receive standby-ready site configuration", node.Name)
+		}
+	}
+}
+
 func TestPublishUsesEachNodesEffectiveCacheLimit(t *testing.T) {
 	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
 	if err != nil {

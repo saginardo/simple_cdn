@@ -80,13 +80,13 @@ func (s *Store) PrepareNodeUninstall(nodeID string, affectedSiteIDs []string, re
 		return NodeUninstallJob{}, existingErr
 	}
 
-	rows, err := tx.Query(`SELECT id, node_ids_json FROM sites`)
+	rows, err := tx.Query(`SELECT id, node_ids_json, backup_node_ids_json FROM sites`)
 	if err != nil {
 		return NodeUninstallJob{}, err
 	}
 	for rows.Next() {
-		var siteID, nodeIDsJSON string
-		if err := rows.Scan(&siteID, &nodeIDsJSON); err != nil {
+		var siteID, nodeIDsJSON, backupNodeIDsJSON string
+		if err := rows.Scan(&siteID, &nodeIDsJSON, &backupNodeIDsJSON); err != nil {
 			rows.Close()
 			return NodeUninstallJob{}, err
 		}
@@ -95,6 +95,12 @@ func (s *Store) PrepareNodeUninstall(nodeID string, affectedSiteIDs []string, re
 			rows.Close()
 			return NodeUninstallJob{}, fmt.Errorf("decode site nodes for uninstall: %w", err)
 		}
+		var backupNodeIDs []string
+		if err := json.Unmarshal([]byte(backupNodeIDsJSON), &backupNodeIDs); err != nil {
+			rows.Close()
+			return NodeUninstallJob{}, fmt.Errorf("decode site backup nodes for uninstall: %w", err)
+		}
+		nodeIDs = append(nodeIDs, backupNodeIDs...)
 		for _, assignedNodeID := range nodeIDs {
 			if assignedNodeID == nodeID {
 				affectedSiteIDs = append(affectedSiteIDs, siteID)
@@ -123,7 +129,7 @@ func (s *Store) PrepareNodeUninstall(nodeID string, affectedSiteIDs []string, re
 			rows.Close()
 			return NodeUninstallJob{}, fmt.Errorf("decode published site nodes for uninstall: %w", err)
 		}
-		for _, assignedNodeID := range site.Nodes {
+		for _, assignedNodeID := range site.AssignedNodeIDs() {
 			if assignedNodeID == nodeID {
 				affectedSiteIDs = append(affectedSiteIDs, site.ID)
 				break
@@ -366,13 +372,13 @@ func (s *Store) DeleteNode(nodeID string) error {
 		return err
 	}
 	defer tx.Rollback()
-	rows, err := tx.Query(`SELECT node_ids_json FROM sites`)
+	rows, err := tx.Query(`SELECT node_ids_json, backup_node_ids_json FROM sites`)
 	if err != nil {
 		return err
 	}
 	for rows.Next() {
-		var nodeIDsJSON string
-		if err := rows.Scan(&nodeIDsJSON); err != nil {
+		var nodeIDsJSON, backupNodeIDsJSON string
+		if err := rows.Scan(&nodeIDsJSON, &backupNodeIDsJSON); err != nil {
 			rows.Close()
 			return err
 		}
@@ -381,6 +387,12 @@ func (s *Store) DeleteNode(nodeID string) error {
 			rows.Close()
 			return fmt.Errorf("decode site nodes before deleting node: %w", err)
 		}
+		var backupNodeIDs []string
+		if err := json.Unmarshal([]byte(backupNodeIDsJSON), &backupNodeIDs); err != nil {
+			rows.Close()
+			return fmt.Errorf("decode site backup nodes before deleting node: %w", err)
+		}
+		nodeIDs = append(nodeIDs, backupNodeIDs...)
 		for _, assignedNodeID := range nodeIDs {
 			if assignedNodeID == nodeID {
 				rows.Close()
@@ -409,7 +421,7 @@ func (s *Store) DeleteNode(nodeID string) error {
 			rows.Close()
 			return fmt.Errorf("decode published site nodes before deleting node: %w", err)
 		}
-		for _, assignedNodeID := range site.Nodes {
+		for _, assignedNodeID := range site.AssignedNodeIDs() {
 			if assignedNodeID == nodeID {
 				rows.Close()
 				return ErrNodeAssigned

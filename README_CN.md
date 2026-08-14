@@ -23,7 +23,7 @@
 - 按能力启用 WireGuard 专用回源隧道：主机私钥本地生成，控制面管理修订收敛、私网地址发布、源站一次性安装、nftables 规则，以及公网 TCP 与隧道 TCP/UDP 对照测试。站点可在加密隧道内使用 HTTP/H2C 或明文 gRPC 以取消源站 TLS 证书管理，也可保留原 Host/SNI 继续使用 HTTPS/GRPCS。详见 [docs/WIREGUARD_ORIGIN.md](docs/WIREGUARD_ORIGIN.md)。
 - 按站点、按能力启用基于 UDP 443 的 HTTP/3/QUIC，默认关闭。安装器仅在 Nginx 报告 `--with-http_v3_module` 时声明 `http3_v1`；主动开启的站点在兼容节点上会增加 QUIC 监听、`Alt-Svc`、地址验证重试、UDP 冲突检查、重载后监听确认和能力自动对账，同时保留 TCP 443 上的 HTTP/1.1 与 HTTP/2 回退。IP 封禁同时覆盖 UDP 443 和 TCP 80/443。
 - Nginx stream TCP 转发：客户端 TLS 终止和上游 TLS/SNI 校验可独立选择，支持动态上游 DNS 解析、按端口配置超时、原子多文件回滚，以及不监听 80/443 的纯 TCP 站点。
-- Cloudflare DNS-only A 记录对账：节点可达性和站点级 HTTPS/SNI/证书健康检查都带滞回。连续 3 次探测失败时移除节点，连续 5 次成功时恢复；若所有节点均异常，则有意保持 DNS 不变。
+- Cloudflare DNS-only A 记录对账：节点可达性和站点级 HTTPS/SNI/证书健康检查都带滞回。站点可配置预部署但平时不参与解析的备用节点；所有主节点不可用时自动启用健康备用节点，任一主节点恢复 DNS 资格后自动切回主节点。连续 3 次探测失败时移除节点，连续 5 次成功时恢复；若主备节点均异常，则有意保持 DNS 不变。
 - 经过身份验证的运行时设置：支持 60-300 秒 DNS TTL、按站点发布的 TTL 覆盖、加密保存 Cloudflare 与 SMTP 设置，以及加密保存 Restic S3/R2 备份凭据和计划。数据库覆盖优先于环境变量回退值，修改后无需重启控制器。
 - 通过 Certbot Cloudflare 插件执行 DNS-01 证书签发；证书私钥在 SQLite 中保持加密，仅通过 mTLS 下发。
 - ClickHouse 原始请求日志保留 7 天，分钟聚合保留 30 天。边缘为 HTTP、WebSocket 和 gRPC 主备回源统一生成并回传 `X-Request-ID`，保留客户端 ID、源站响应 ID、传输完成状态与回源字节，控制台可按任一 ID 检索；详见 [docs/REQUEST_TRACING.md](docs/REQUEST_TRACING.md)。命名 TCP 拨测目标只在 SQLite 中保存最新评分、连续失败次数和节点调度状态；每轮拨测历史通过有界异步队列进入 ClickHouse，保留 7 天，并提供多目标 1 小时至 7 天图表。控制面不可用时，边缘访问日志在本地排队。

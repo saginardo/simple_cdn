@@ -269,7 +269,7 @@ func insertCacheOperationTx(tx *sql.Tx, operation domain.CacheOperation, site do
 		operation.RemoteAddr, stamp(operation.CreatedAt), stamp(operation.UpdatedAt)); err != nil {
 		return err
 	}
-	for _, nodeID := range site.Nodes {
+	for _, nodeID := range site.AssignedNodeIDs() {
 		var name, capabilitiesJSON string
 		var status domain.NodeStatus
 		if err := tx.QueryRow(`SELECT name, status, capabilities_json FROM nodes WHERE id = ?`, nodeID).Scan(&name, &status, &capabilitiesJSON); err != nil {

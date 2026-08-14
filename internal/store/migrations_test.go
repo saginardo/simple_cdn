@@ -38,6 +38,41 @@ func TestMigrationsRecordCurrentVersionAndRemainIdempotent(t *testing.T) {
 	}
 }
 
+func TestSiteBackupNodeMigrationAddsEmptyPool(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	node, err := database.CreateNode("backup-migration-edge", "203.0.113.94")
+	if err != nil {
+		t.Fatal(err)
+	}
+	site, err := database.CreateSite(domain.Site{
+		Name: "backup migration", Domains: []string{"backup-migration.example.test"}, Nodes: []string{node.ID},
+		PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, Enabled: true,
+	}, "zone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`ALTER TABLE sites DROP COLUMN backup_node_ids_json`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`DELETE FROM schema_migrations WHERE version >= 34`); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	var backupNodesJSON string
+	if err := database.db.QueryRow(`SELECT backup_node_ids_json FROM sites WHERE id = ?`, site.ID).Scan(&backupNodesJSON); err != nil {
+		t.Fatal(err)
+	}
+	if backupNodesJSON != "[]" {
+		t.Fatalf("migrated backup nodes = %q", backupNodesJSON)
+	}
+}
+
 func TestHTTP3MigrationAddsPublicUDPPorts(t *testing.T) {
 	database, err := Open(filepath.Join(t.TempDir(), "control.db"))
 	if err != nil {

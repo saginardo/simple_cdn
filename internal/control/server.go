@@ -843,6 +843,7 @@ type siteRequest struct {
 	ZoneID                        string               `json:"zone_id"`
 	Domains                       []string             `json:"domains"`
 	NodeIDs                       []string             `json:"node_ids"`
+	BackupNodeIDs                 *[]string            `json:"backup_node_ids"`
 	PrimaryOrigin                 originRequest        `json:"primary_origin"`
 	BackupOrigin                  *originRequest       `json:"backup_origin"`
 	StreamPaths                   *[]string            `json:"stream_paths"`
@@ -928,6 +929,12 @@ func (input siteRequest) site(id string, current *domain.Site) domain.Site {
 		backup := input.BackupOrigin.origin(currentBackup)
 		backupOrigin = &backup
 	}
+	backupNodeIDs := []string(nil)
+	if input.BackupNodeIDs != nil {
+		backupNodeIDs = append([]string(nil), (*input.BackupNodeIDs)...)
+	} else if current != nil {
+		backupNodeIDs = append([]string(nil), current.BackupNodes...)
+	}
 	tcpOnly := false
 	var tcpForwards []domain.TCPForward
 	if current != nil {
@@ -946,7 +953,7 @@ func (input siteRequest) site(id string, current *domain.Site) domain.Site {
 		cacheInvalidations = append(cacheInvalidations, current.CacheInvalidations...)
 		cacheWarmups = append(cacheWarmups, current.CacheWarmups...)
 	}
-	return domain.Site{ID: id, Name: input.Name, Domains: input.Domains, Nodes: input.NodeIDs, PrimaryOrigin: input.PrimaryOrigin.origin(currentPrimary), BackupOrigin: backupOrigin, StreamPaths: streamPaths, Passthrough: passthrough, RequestBodyBuffering: requestBodyBuffering, OriginResponseBuffering: originResponseBuffering, DynamicCompressionEnabled: dynamicCompressionEnabled, CompressionExcludedMIMETypes: compressionExcludedMIMETypes, HTTP3Enabled: http3Enabled, ClientMaxBodySizeMB: clientMaxBodySizeMB, ClientKeepaliveTimeoutSeconds: clientKeepaliveTimeoutSeconds, ReadWriteTimeoutSeconds: readWriteTimeoutSeconds, DNSTTLSeconds: dnsTTLSeconds, TCPOnly: tcpOnly, TCPForwards: tcpForwards, CacheInvalidations: cacheInvalidations, CacheWarmups: cacheWarmups, Enabled: enabled}
+	return domain.Site{ID: id, Name: input.Name, Domains: input.Domains, Nodes: input.NodeIDs, BackupNodes: backupNodeIDs, PrimaryOrigin: input.PrimaryOrigin.origin(currentPrimary), BackupOrigin: backupOrigin, StreamPaths: streamPaths, Passthrough: passthrough, RequestBodyBuffering: requestBodyBuffering, OriginResponseBuffering: originResponseBuffering, DynamicCompressionEnabled: dynamicCompressionEnabled, CompressionExcludedMIMETypes: compressionExcludedMIMETypes, HTTP3Enabled: http3Enabled, ClientMaxBodySizeMB: clientMaxBodySizeMB, ClientKeepaliveTimeoutSeconds: clientKeepaliveTimeoutSeconds, ReadWriteTimeoutSeconds: readWriteTimeoutSeconds, DNSTTLSeconds: dnsTTLSeconds, TCPOnly: tcpOnly, TCPForwards: tcpForwards, CacheInvalidations: cacheInvalidations, CacheWarmups: cacheWarmups, Enabled: enabled}
 }
 
 func (input siteRequest) validateClientMaxBodySize() error {
@@ -1424,17 +1431,17 @@ func (s *Server) originAllowlist(response http.ResponseWriter, request *http.Req
 		writeStoreError(response, err)
 		return
 	}
-	currentNodes := make(map[string]bool, len(site.Nodes))
+	currentNodes := make(map[string]bool, len(site.AssignedNodeIDs()))
 	publishedNodes := make(map[string]bool)
-	nodeIDs := make([]string, 0, len(site.Nodes))
-	for _, nodeID := range site.Nodes {
+	nodeIDs := make([]string, 0, len(site.AssignedNodeIDs()))
+	for _, nodeID := range site.AssignedNodeIDs() {
 		currentNodes[nodeID] = true
 		nodeIDs = append(nodeIDs, nodeID)
 	}
 	publication, publicationErr := s.Store.SitePublication(site.ID)
 	if publicationErr == nil {
-		publishedNodes = make(map[string]bool, len(publication.Site.Nodes))
-		for _, nodeID := range publication.Site.Nodes {
+		publishedNodes = make(map[string]bool, len(publication.Site.AssignedNodeIDs()))
+		for _, nodeID := range publication.Site.AssignedNodeIDs() {
 			publishedNodes[nodeID] = true
 			if !currentNodes[nodeID] {
 				nodeIDs = append(nodeIDs, nodeID)
@@ -1991,7 +1998,7 @@ func (s *Server) writeLogs(response http.ResponseWriter, request *http.Request) 
 	}
 	allowedSites := make(map[string]struct{})
 	allowAssigned := func(site domain.Site) {
-		for _, assignedNodeID := range site.Nodes {
+		for _, assignedNodeID := range site.AssignedNodeIDs() {
 			if assignedNodeID == nodeID {
 				allowedSites[site.ID] = struct{}{}
 				break

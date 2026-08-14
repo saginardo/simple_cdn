@@ -247,14 +247,14 @@ func (p Publisher) prepareNodeStates(siteID string, removing bool) ([]store.Node
 			KeyCiphertext:         publication.KeyCiphertext,
 		}
 		if publication.Site.ID == siteID {
-			for _, nodeID := range publication.Site.Nodes {
+			for _, nodeID := range publication.Site.AssignedNodeIDs() {
 				affected[nodeID] = struct{}{}
 			}
 		}
 	}
 	if removing {
 		delete(materialsByID, siteID)
-		for _, nodeID := range targetSite.Nodes {
+		for _, nodeID := range targetSite.AssignedNodeIDs() {
 			affected[nodeID] = struct{}{}
 		}
 	} else {
@@ -268,7 +268,7 @@ func (p Publisher) prepareNodeStates(siteID string, removing bool) ([]store.Node
 			}
 		}
 		materialsByID[siteID] = publicationMaterial{Site: targetSite, CertificateCiphertext: certificate, KeyCiphertext: key}
-		for _, nodeID := range targetSite.Nodes {
+		for _, nodeID := range targetSite.AssignedNodeIDs() {
 			affected[nodeID] = struct{}{}
 		}
 	}
@@ -758,7 +758,7 @@ func nginxConfigFragmentsEqual(left, right *domain.NginxConfigFragments) bool {
 }
 
 func siteTouchesNodes(site domain.Site, nodeIDs map[string]struct{}) bool {
-	for _, nodeID := range site.Nodes {
+	for _, nodeID := range site.AssignedNodeIDs() {
 		if _, found := nodeIDs[nodeID]; found {
 			return true
 		}

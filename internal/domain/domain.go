@@ -167,6 +167,7 @@ type Site struct {
 	ZoneID        string   `json:"zone_id"`
 	Domains       []string `json:"domains"`
 	Nodes         []string `json:"node_ids"`
+	BackupNodes   []string `json:"backup_node_ids"`
 	PrimaryOrigin Origin   `json:"primary_origin"`
 	BackupOrigin  *Origin  `json:"backup_origin,omitempty"`
 	// StreamPaths is retained as an empty compatibility field for older API clients.
@@ -195,6 +196,13 @@ type Site struct {
 	Deleting           bool                    `json:"deleting"`
 	CreatedAt          time.Time               `json:"created_at"`
 	UpdatedAt          time.Time               `json:"updated_at"`
+}
+
+func (site Site) AssignedNodeIDs() []string {
+	nodeIDs := make([]string, 0, len(site.Nodes)+len(site.BackupNodes))
+	nodeIDs = append(nodeIDs, site.Nodes...)
+	nodeIDs = append(nodeIDs, site.BackupNodes...)
+	return nodeIDs
 }
 
 func (site *Site) UnmarshalJSON(contents []byte) error {

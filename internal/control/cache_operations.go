@@ -82,10 +82,10 @@ func (s *Server) cacheOperationsOverview(response http.ResponseWriter, _ *http.R
 		item := cacheSiteOverview{
 			SiteID: site.ID, SiteName: site.Name, Domains: append([]string(nil), site.Domains...),
 			Cacheable: cacheable, DisabledReason: reason, CacheGeneration: site.CacheGeneration,
-			RuleCount: len(site.CacheInvalidations), NodeCount: len(site.Nodes), LastOperation: lastBySite[site.ID],
+			RuleCount: len(site.CacheInvalidations), NodeCount: len(site.AssignedNodeIDs()), LastOperation: lastBySite[site.ID],
 			PendingConfiguration: !site.Published,
 		}
-		for _, nodeID := range site.Nodes {
+		for _, nodeID := range site.AssignedNodeIDs() {
 			node, found := nodesByID[nodeID]
 			if !found || node.Status != domain.NodeActive {
 				continue

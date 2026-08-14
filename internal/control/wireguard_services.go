@@ -143,7 +143,7 @@ func (s *Server) wireGuardOriginServices(
 					Role: candidate.role, Published: site.Published,
 				})
 			}
-			for _, nodeID := range site.Nodes {
+			for _, nodeID := range site.AssignedNodeIDs() {
 				if builder.expectedReferences[nodeID] == nil {
 					builder.expectedReferences[nodeID] = make(map[string]struct{})
 				}

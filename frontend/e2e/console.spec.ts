@@ -69,6 +69,7 @@ const site = {
   zone_id: "zone-1",
   domains: ["cdn.example.com"],
   node_ids: [],
+  backup_node_ids: [],
   primary_origin: {
     url: "https://origin.example.com",
     host_header: "origin.example.com",
@@ -1644,7 +1645,13 @@ test("new site discovers its Cloudflare zone from domains", async ({
   await page.getByLabel("站点名称").fill("自动区域站点");
   await page.getByLabel("域名").fill("cdn.auto.example.com");
   await page.getByLabel("源站 URL").fill("https://origin.auto.example.com");
-  await page.getByText("edge-auto", { exact: true }).click();
+  await page
+    .locator('[data-slot="card"]')
+    .filter({ hasText: "主节点不可用时自动启用备用节点调度" })
+    .locator("section")
+    .first()
+    .getByText("edge-auto", { exact: true })
+    .click();
 
   const createRequest = page.waitForRequest(
     (request) =>
@@ -1657,6 +1664,68 @@ test("new site discovers its Cloudflare zone from domains", async ({
   await expect(
     page.getByText("站点已创建，TLS 证书正在自动申请"),
   ).toBeVisible();
+});
+
+test("new site keeps primary and standby node assignments separate", async ({
+  page,
+}, testInfo) => {
+  const errors = trackPageErrors(page);
+  const edgeNodes = [
+    ["node-primary", "edge-primary", "203.0.113.94"],
+    ["node-backup", "edge-backup", "203.0.113.95"],
+  ].map(([id, name, publicIPv4]) => ({
+    id,
+    name,
+    public_ipv4: publicIPv4,
+    status: "active",
+    capabilities: [],
+    applied_version: 1,
+    created_at: now.toISOString(),
+    updated_at: now.toISOString(),
+  }));
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await mockAPI(page, { "/api/nodes": edgeNodes });
+  await page.goto("/#/sites/new");
+
+  const assignment = page
+    .locator('[data-slot="card"]')
+    .filter({ hasText: "主节点不可用时自动启用备用节点调度" });
+  const primary = assignment.locator("section").nth(0);
+  const standby = assignment.locator("section").nth(1);
+  await primary.getByText("edge-primary", { exact: true }).click();
+  await standby.getByText("edge-backup", { exact: true }).click();
+  await expect(primary.getByRole("checkbox").nth(0)).toBeChecked();
+  await expect(standby.getByRole("checkbox").nth(1)).toBeChecked();
+  await page.screenshot({
+    path: testInfo.outputPath("site-backup-nodes-desktop.png"),
+    fullPage: true,
+  });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth + 1,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: testInfo.outputPath("site-backup-nodes-mobile.png"),
+    fullPage: true,
+  });
+
+  await page.getByLabel("站点名称").fill("容灾站点");
+  await page.getByLabel("域名").fill("dr.example.com");
+  await page.getByLabel("源站 URL").fill("https://origin.example.com");
+  const createRequest = page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === "/api/sites" &&
+      request.method() === "POST",
+  );
+  await page.getByRole("button", { name: "创建站点" }).click();
+  expect((await createRequest).postDataJSON()).toMatchObject({
+    node_ids: ["node-primary"],
+    backup_node_ids: ["node-backup"],
+  });
+  expect(errors).toEqual([]);
 });
 
 test("HTTP/3 is opt-in per site and saved explicitly", async ({
@@ -1687,7 +1756,13 @@ test("HTTP/3 is opt-in per site and saved explicitly", async ({
   await page.getByLabel("站点名称").fill("HTTP3 站点");
   await page.getByLabel("域名").fill("h3.example.com");
   await page.getByLabel("源站 URL").fill("https://origin.example.com");
-  await page.getByText("edge-http3", { exact: true }).click();
+  await page
+    .locator('[data-slot="card"]')
+    .filter({ hasText: "主节点不可用时自动启用备用节点调度" })
+    .locator("section")
+    .first()
+    .getByText("edge-http3", { exact: true })
+    .click();
   await page.screenshot({
     path: testInfo.outputPath("site-http3-opt-in.png"),
     fullPage: true,

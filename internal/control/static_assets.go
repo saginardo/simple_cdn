@@ -414,7 +414,7 @@ func (s *Server) ensureStaticAssetSiteCapable(siteID string) error {
 	if site.TCPOnly || site.Deleting {
 		return errors.New("static resources require an active HTTP site")
 	}
-	for _, nodeID := range site.Nodes {
+	for _, nodeID := range site.AssignedNodeIDs() {
 		node, err := s.Store.GetNode(nodeID)
 		if err != nil {
 			return err

@@ -35,14 +35,15 @@ func (s *Server) siteOriginConnections(response http.ResponseWriter, request *ht
 		writeStoreError(response, err)
 		return
 	}
-	assigned := make(map[string]struct{}, len(site.Nodes))
-	for _, nodeID := range site.Nodes {
+	assignedNodeIDs := site.AssignedNodeIDs()
+	assigned := make(map[string]struct{}, len(assignedNodeIDs))
+	for _, nodeID := range assignedNodeIDs {
 		assigned[nodeID] = struct{}{}
 	}
 
 	result := siteOriginConnectionsResponse{
 		SiteID: site.ID,
-		Nodes:  make([]siteOriginConnectionNode, 0, len(site.Nodes)),
+		Nodes:  make([]siteOriginConnectionNode, 0, len(assignedNodeIDs)),
 	}
 	now := time.Now().UTC()
 	for _, node := range nodes {

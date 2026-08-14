@@ -120,6 +120,7 @@ CREATE TABLE IF NOT EXISTS sites (
   zone_id TEXT NOT NULL,
   domains_json TEXT NOT NULL,
   node_ids_json TEXT NOT NULL,
+	backup_node_ids_json TEXT NOT NULL DEFAULT '[]',
   primary_origin_json TEXT NOT NULL,
   backup_origin_json TEXT,
 	stream_paths_json TEXT NOT NULL DEFAULT '[]',
@@ -1495,7 +1496,7 @@ func (s *Store) setNodeStatus(nodeID string, status domain.NodeStatus, manual bo
 	return smartRoutingDisabled, nil
 }
 
-const siteSelectColumns = `id, name, zone_id, domains_json, node_ids_json, primary_origin_json,
+const siteSelectColumns = `id, name, zone_id, domains_json, node_ids_json, backup_node_ids_json, primary_origin_json,
 	backup_origin_json, stream_paths_json, passthrough, request_body_buffering,
 	origin_response_buffering, dynamic_compression_enabled, compression_excluded_mime_types_json,
 	http3_enabled, client_max_body_size_mb, client_keepalive_timeout_seconds,
@@ -1528,6 +1529,10 @@ func (s *Store) insertSite(site domain.Site, zoneID string) error {
 		return err
 	}
 	nodes, err := json.Marshal(site.Nodes)
+	if err != nil {
+		return err
+	}
+	backupNodes, err := json.Marshal(site.BackupNodes)
 	if err != nil {
 		return err
 	}
@@ -1567,14 +1572,14 @@ func (s *Store) insertSite(site domain.Site, zoneID string) error {
 		return err
 	}
 	defer tx.Rollback()
-	if err := validateSiteNodes(tx, site.Nodes); err != nil {
+	if err := validateSiteNodes(tx, site.AssignedNodeIDs()); err != nil {
 		return err
 	}
 	if err := validateSiteWireGuardTunnels(tx, site); err != nil {
 		return err
 	}
-	_, err = tx.Exec(`INSERT INTO sites(id, name, zone_id, domains_json, node_ids_json, primary_origin_json, backup_origin_json, stream_paths_json, passthrough, request_body_buffering, origin_response_buffering, dynamic_compression_enabled, compression_excluded_mime_types_json, http3_enabled, client_max_body_size_mb, client_keepalive_timeout_seconds, read_write_timeout_seconds, dns_ttl_seconds, tcp_only, tcp_forwards_json, cache_max_size_gb, cache_generation, cache_invalidations_json, cache_warmups_json, config_version, published, enabled, deleting, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		site.ID, site.Name, zoneID, string(domains), string(nodes), string(primary), backup, string(streamPaths), boolInt(site.Passthrough), boolInt(site.RequestBodyBuffering), boolInt(site.OriginResponseBuffering), boolInt(site.DynamicCompressionEnabled), string(compressionExclusions), boolInt(site.HTTP3Enabled), site.ClientMaxBodySizeMB, site.ClientKeepaliveTimeoutSeconds, site.ReadWriteTimeoutSeconds, site.DNSTTLSeconds, boolInt(site.TCPOnly), string(tcpForwards), site.CacheMaxSizeGB, site.CacheGeneration, string(cacheInvalidations), string(cacheWarmups), site.ConfigVersion, boolInt(site.Published), boolInt(site.Enabled), boolInt(site.Deleting), stamp(site.CreatedAt), stamp(site.UpdatedAt))
+	_, err = tx.Exec(`INSERT INTO sites(id, name, zone_id, domains_json, node_ids_json, backup_node_ids_json, primary_origin_json, backup_origin_json, stream_paths_json, passthrough, request_body_buffering, origin_response_buffering, dynamic_compression_enabled, compression_excluded_mime_types_json, http3_enabled, client_max_body_size_mb, client_keepalive_timeout_seconds, read_write_timeout_seconds, dns_ttl_seconds, tcp_only, tcp_forwards_json, cache_max_size_gb, cache_generation, cache_invalidations_json, cache_warmups_json, config_version, published, enabled, deleting, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		site.ID, site.Name, zoneID, string(domains), string(nodes), string(backupNodes), string(primary), backup, string(streamPaths), boolInt(site.Passthrough), boolInt(site.RequestBodyBuffering), boolInt(site.OriginResponseBuffering), boolInt(site.DynamicCompressionEnabled), string(compressionExclusions), boolInt(site.HTTP3Enabled), site.ClientMaxBodySizeMB, site.ClientKeepaliveTimeoutSeconds, site.ReadWriteTimeoutSeconds, site.DNSTTLSeconds, boolInt(site.TCPOnly), string(tcpForwards), site.CacheMaxSizeGB, site.CacheGeneration, string(cacheInvalidations), string(cacheWarmups), site.ConfigVersion, boolInt(site.Published), boolInt(site.Enabled), boolInt(site.Deleting), stamp(site.CreatedAt), stamp(site.UpdatedAt))
 	if err != nil {
 		return err
 	}
@@ -1607,12 +1612,12 @@ func (s *Store) ListSites() ([]domain.Site, error) {
 
 func scanSite(row scanner) (domain.Site, string, error) {
 	var site domain.Site
-	var zoneID, domains, nodes, primary, streamPaths, tcpForwards, compressionExclusions, cacheInvalidations, cacheWarmups string
+	var zoneID, domains, nodes, backupNodes, primary, streamPaths, tcpForwards, compressionExclusions, cacheInvalidations, cacheWarmups string
 	var backup sql.NullString
 	var dnsTTL, cacheMaxSizeGB sql.NullInt64
 	var passthrough, requestBodyBuffering, originResponseBuffering, dynamicCompressionEnabled, http3Enabled, tcpOnly, published, enabled, deleting int
 	var createdAt, updatedAt string
-	err := row.Scan(&site.ID, &site.Name, &zoneID, &domains, &nodes, &primary, &backup, &streamPaths, &passthrough, &requestBodyBuffering, &originResponseBuffering, &dynamicCompressionEnabled, &compressionExclusions, &http3Enabled, &site.ClientMaxBodySizeMB, &site.ClientKeepaliveTimeoutSeconds, &site.ReadWriteTimeoutSeconds, &dnsTTL, &tcpOnly, &tcpForwards, &cacheMaxSizeGB, &site.CacheGeneration, &cacheInvalidations, &cacheWarmups, &site.ConfigVersion, &published, &enabled, &deleting, &createdAt, &updatedAt)
+	err := row.Scan(&site.ID, &site.Name, &zoneID, &domains, &nodes, &backupNodes, &primary, &backup, &streamPaths, &passthrough, &requestBodyBuffering, &originResponseBuffering, &dynamicCompressionEnabled, &compressionExclusions, &http3Enabled, &site.ClientMaxBodySizeMB, &site.ClientKeepaliveTimeoutSeconds, &site.ReadWriteTimeoutSeconds, &dnsTTL, &tcpOnly, &tcpForwards, &cacheMaxSizeGB, &site.CacheGeneration, &cacheInvalidations, &cacheWarmups, &site.ConfigVersion, &published, &enabled, &deleting, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.Site{}, "", ErrNotFound
 	}
@@ -1624,6 +1629,9 @@ func scanSite(row scanner) (domain.Site, string, error) {
 		return domain.Site{}, "", err
 	}
 	if err := json.Unmarshal([]byte(nodes), &site.Nodes); err != nil {
+		return domain.Site{}, "", err
+	}
+	if err := json.Unmarshal([]byte(backupNodes), &site.BackupNodes); err != nil {
 		return domain.Site{}, "", err
 	}
 	if err := json.Unmarshal([]byte(primary), &site.PrimaryOrigin); err != nil {
@@ -1714,6 +1722,7 @@ func (s *Store) UpdateSite(site domain.Site, zoneID string) (domain.Site, error)
 	site.UpdatedAt = now()
 	domains, _ := json.Marshal(site.Domains)
 	nodes, _ := json.Marshal(site.Nodes)
+	backupNodes, _ := json.Marshal(site.BackupNodes)
 	primary, _ := json.Marshal(site.PrimaryOrigin)
 	streamPaths, _ := json.Marshal(site.StreamPaths)
 	tcpForwards, _ := json.Marshal(site.TCPForwards)
@@ -1729,7 +1738,7 @@ func (s *Store) UpdateSite(site domain.Site, zoneID string) (domain.Site, error)
 		return domain.Site{}, err
 	}
 	defer tx.Rollback()
-	if err := validateSiteNodes(tx, site.Nodes); err != nil {
+	if err := validateSiteNodes(tx, site.AssignedNodeIDs()); err != nil {
 		return domain.Site{}, err
 	}
 	if err := validateSiteWireGuardTunnels(tx, site); err != nil {
@@ -1744,7 +1753,7 @@ func (s *Store) UpdateSite(site domain.Site, zoneID string) (domain.Site, error)
 	if err := replaceSiteDomainClaims(tx, site.ID, reservedDomains); err != nil {
 		return domain.Site{}, err
 	}
-	_, err = tx.Exec(`UPDATE sites SET name=?, zone_id=?, domains_json=?, node_ids_json=?, primary_origin_json=?, backup_origin_json=?, stream_paths_json=?, passthrough=?, request_body_buffering=?, origin_response_buffering=?, dynamic_compression_enabled=?, compression_excluded_mime_types_json=?, http3_enabled=?, client_max_body_size_mb=?, client_keepalive_timeout_seconds=?, read_write_timeout_seconds=?, dns_ttl_seconds=?, tcp_only=?, tcp_forwards_json=?, cache_max_size_gb=?, cache_generation=?, cache_invalidations_json=?, cache_warmups_json=?, config_version=?, published=?, enabled=?, deleting=?, updated_at=? WHERE id=?`, site.Name, zoneID, string(domains), string(nodes), string(primary), backup, string(streamPaths), boolInt(site.Passthrough), boolInt(site.RequestBodyBuffering), boolInt(site.OriginResponseBuffering), boolInt(site.DynamicCompressionEnabled), string(compressionExclusions), boolInt(site.HTTP3Enabled), site.ClientMaxBodySizeMB, site.ClientKeepaliveTimeoutSeconds, site.ReadWriteTimeoutSeconds, site.DNSTTLSeconds, boolInt(site.TCPOnly), string(tcpForwards), site.CacheMaxSizeGB, site.CacheGeneration, string(cacheInvalidations), string(cacheWarmups), site.ConfigVersion, boolInt(site.Published), boolInt(site.Enabled), boolInt(site.Deleting), stamp(site.UpdatedAt), site.ID)
+	_, err = tx.Exec(`UPDATE sites SET name=?, zone_id=?, domains_json=?, node_ids_json=?, backup_node_ids_json=?, primary_origin_json=?, backup_origin_json=?, stream_paths_json=?, passthrough=?, request_body_buffering=?, origin_response_buffering=?, dynamic_compression_enabled=?, compression_excluded_mime_types_json=?, http3_enabled=?, client_max_body_size_mb=?, client_keepalive_timeout_seconds=?, read_write_timeout_seconds=?, dns_ttl_seconds=?, tcp_only=?, tcp_forwards_json=?, cache_max_size_gb=?, cache_generation=?, cache_invalidations_json=?, cache_warmups_json=?, config_version=?, published=?, enabled=?, deleting=?, updated_at=? WHERE id=?`, site.Name, zoneID, string(domains), string(nodes), string(backupNodes), string(primary), backup, string(streamPaths), boolInt(site.Passthrough), boolInt(site.RequestBodyBuffering), boolInt(site.OriginResponseBuffering), boolInt(site.DynamicCompressionEnabled), string(compressionExclusions), boolInt(site.HTTP3Enabled), site.ClientMaxBodySizeMB, site.ClientKeepaliveTimeoutSeconds, site.ReadWriteTimeoutSeconds, site.DNSTTLSeconds, boolInt(site.TCPOnly), string(tcpForwards), site.CacheMaxSizeGB, site.CacheGeneration, string(cacheInvalidations), string(cacheWarmups), site.ConfigVersion, boolInt(site.Published), boolInt(site.Enabled), boolInt(site.Deleting), stamp(site.UpdatedAt), site.ID)
 	if err != nil {
 		return domain.Site{}, err
 	}

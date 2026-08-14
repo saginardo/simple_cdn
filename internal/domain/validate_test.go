@@ -2,6 +2,26 @@ package domain
 
 import "testing"
 
+func TestSiteBackupNodesAreNormalizedAndDisjoint(t *testing.T) {
+	site := Site{
+		Name: "backup nodes", Domains: []string{"backup.example.test"},
+		Nodes: []string{" primary-node "}, BackupNodes: []string{" backup-node "},
+		PrimaryOrigin: Origin{URL: "https://origin.example.test"},
+	}
+	if err := NormalizeAndValidateSite(&site); err != nil {
+		t.Fatal(err)
+	}
+	assigned := site.AssignedNodeIDs()
+	if len(assigned) != 2 || assigned[0] != "primary-node" || assigned[1] != "backup-node" {
+		t.Fatalf("normalized assigned nodes = %#v", assigned)
+	}
+
+	site.BackupNodes = []string{"primary-node"}
+	if err := NormalizeAndValidateSite(&site); err == nil {
+		t.Fatal("accepted a node assigned to both primary and backup pools")
+	}
+}
+
 func TestOriginHTTPVersionValidation(t *testing.T) {
 	for _, test := range []struct {
 		url     string
