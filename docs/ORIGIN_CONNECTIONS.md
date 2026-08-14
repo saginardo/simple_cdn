@@ -9,10 +9,11 @@ HTTP、HTTPS、WebSocket 和 gRPC 站点在具备 `origin_connection_v1` 能力�
 - 代理协议：`http`、`https`、`grpc` 或 `grpcs`；
 - 规范化后的连接地址和端口；URL 未写端口时，HTTP/GRPC 补 `80`，HTTPS/GRPCS 补 `443`；
 - HTTP Host 请求头；
-- TLS SNI。
+- TLS SNI；
 - 回源 HTTP 协议：HTTP/1.1、TLS HTTP/2 或明文 H2C。
+- 源站健康检查请求：HTTP 方法和路径。
 
-五项完全相同的主源或备用源共享一个 Nginx upstream 和空闲连接池。Host、SNI 或 HTTP 协议不同的虚拟主机保持隔离，避免跨协议复用连接，或把健康判断错误地扩散到另一个源站身份。
+六项完全相同的主源或备用源共享一个 Nginx upstream 和空闲连接池。Host、SNI、HTTP 协议或健康检查请求不同的虚拟主机保持隔离，避免跨协议复用连接，或把健康判断错误地扩散到另一个源站身份。
 
 Nginx 的 `keepalive` 数量是每个 worker、每个 upstream 的空闲连接上限，不是全节点硬上限。控制面以节点 `worker_connections / 16` 作为每 worker 的总空闲回源预算，限制在 16-1024 之间，再按连接池被站点引用的次数分配；单池上限通常为 64，在 `worker_connections >= 16384` 时为 128。每个池至少保留 1 个槽位。实际连接总数还包括正在使用的连接，因此源站容量规划不能只看 keepalive 数量。
 
@@ -34,7 +35,7 @@ Nginx 的 `keepalive` 数量是每个 worker、每个 upstream 的空闲连接�
 
 协议行为如下：
 
-- HTTP/HTTPS 使用源站根路径 `/` 的 `HEAD` 请求，并携带配置的 Host；探针严格使用站点选择的 HTTP/1.1、HTTP/2 或 H2C，协议协商不一致即失败。完整 HTTP 5xx 响应计为失败，其他完整响应表示传输可用。
+- HTTP/HTTPS/WS/WSS 使用站点为该主源或备用源配置的健康检查方法和路径，并携带配置的 Host；未配置时默认使用 `HEAD /`。探针严格使用站点选择的 HTTP/1.1、HTTP/2 或 H2C，协议协商不一致即失败。完整 HTTP 5xx 响应计为失败，其他完整响应表示传输可用。使用 `GET` 时会读取并关闭响应体，适合应用提供轻量的 `/health`、`/healthz` 等路径。
 - HTTPS 使用配置的 SNI 和系统 CA 验证证书，规则与 Nginx 回源一致，不支持跳过验证或自定义 CA。
 - gRPC 服务探测使用标准 Health Check RPC；返回 `SERVING` 视为正常，显式非服务状态视为失败。未实现可选 Health 服务（`UNIMPLEMENTED`）时，已建立的 gRPC 传输仍视为可用。
 - gRPC 冷连接探测验证 TCP；GRPCS 还验证证书并要求 TLS ALPN 协商为 `h2`。
@@ -88,4 +89,4 @@ sudo find /opt/cdn-edge/config/nginx/origin-pools -maxdepth 1 -type f -print -ex
 sudo journalctl -u cdn-edge-agent -u nginx --since '-5 minutes' --no-pager
 ```
 
-若池持续 `open`，先在节点详情确认是服务探测还是冷连接探测失败，再从边缘节点验证连接地址、Host、SNI、系统 CA、根路径 HEAD 响应或 gRPC Health 状态。不要通过手工改 include 或 applied version 绕过熔断；先修复源站或配置，再等待两层探测自动确认恢复。
+若池持续 `open`，先在节点详情确认是服务探测还是冷连接探测失败，再从边缘节点验证连接地址、Host、SNI、系统 CA、站点配置的健康检查请求或 gRPC Health 状态。不要通过手工改 include 或 applied version 绕过熔断；先修复源站或配置，再等待两层探测自动确认恢复。

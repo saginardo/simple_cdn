@@ -770,6 +770,8 @@ const english = {
   执行失效: "Invalidate",
   "回源 TLS SNI": "Origin TLS SNI",
   "回源 HTTP 协议": "Origin HTTP protocol",
+  健康检查方式: "Health check method",
+  健康检查路径: "Health check path",
   回源直通: "Origin pass-through",
   请求体缓冲区: "Request body buffering",
   关闭后边接收请求体边回源:

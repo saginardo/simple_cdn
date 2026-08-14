@@ -22,15 +22,17 @@ type OriginPoolReference struct {
 // ConfigPath is an agent-owned include file whose server directive can be
 // switched between available and down without rebuilding the desired state.
 type OriginPool struct {
-	ID                   string                `json:"id"`
-	Address              string                `json:"address"`
-	Scheme               string                `json:"scheme"`
-	HTTPVersion          OriginHTTPVersion     `json:"http_version,omitempty"`
-	HostHeader           string                `json:"host_header"`
-	TLSServerName        string                `json:"tls_server_name,omitempty"`
-	ConfigPath           string                `json:"config_path"`
-	KeepaliveConnections int                   `json:"keepalive_connections"`
-	References           []OriginPoolReference `json:"references"`
+	ID                   string                  `json:"id"`
+	Address              string                  `json:"address"`
+	Scheme               string                  `json:"scheme"`
+	HTTPVersion          OriginHTTPVersion       `json:"http_version,omitempty"`
+	HealthCheckMethod    OriginHealthCheckMethod `json:"health_check_method,omitempty"`
+	HealthCheckPath      string                  `json:"health_check_path,omitempty"`
+	HostHeader           string                  `json:"host_header"`
+	TLSServerName        string                  `json:"tls_server_name,omitempty"`
+	ConfigPath           string                  `json:"config_path"`
+	KeepaliveConnections int                     `json:"keepalive_connections"`
+	References           []OriginPoolReference   `json:"references"`
 }
 
 type OriginCircuitState string
@@ -92,27 +94,35 @@ func ValidOriginPool(pool OriginPool) bool {
 		return false
 	}
 	useTLS := false
+	httpHealthCheck := false
 	switch pool.Scheme {
 	case "http":
+		httpHealthCheck = true
 		if pool.HTTPVersion != "" && pool.HTTPVersion != OriginHTTPVersionHTTP1 && pool.HTTPVersion != OriginHTTPVersionH2C {
 			return false
 		}
 	case "https":
+		httpHealthCheck = true
 		useTLS = true
 		if pool.HTTPVersion != "" && pool.HTTPVersion != OriginHTTPVersionHTTP1 && pool.HTTPVersion != OriginHTTPVersionHTTP2 {
 			return false
 		}
 	case "grpc":
-		if pool.HTTPVersion != "" {
+		if pool.HTTPVersion != "" || pool.HealthCheckMethod != "" || pool.HealthCheckPath != "" {
 			return false
 		}
 	case "grpcs":
 		useTLS = true
-		if pool.HTTPVersion != "" {
+		if pool.HTTPVersion != "" || pool.HealthCheckMethod != "" || pool.HealthCheckPath != "" {
 			return false
 		}
 	default:
 		return false
+	}
+	if httpHealthCheck {
+		if err := ValidateOriginHealthCheck(pool.HealthCheckMethod, pool.HealthCheckPath); err != nil {
+			return false
+		}
 	}
 	if useTLS {
 		if pool.TLSServerName == "" || !ValidHostname(pool.TLSServerName) {

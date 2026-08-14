@@ -786,12 +786,14 @@ func (s *Server) listSites(response http.ResponseWriter, request *http.Request) 
 }
 
 type originRequest struct {
-	URL               string                    `json:"url"`
-	HostHeader        string                    `json:"host_header"`
-	TLSServerName     *string                   `json:"tls_server_name"`
-	HTTPVersion       *domain.OriginHTTPVersion `json:"http_version"`
-	WireGuardTunnelID *string                   `json:"wireguard_tunnel_id"`
-	Enabled           bool                      `json:"enabled"`
+	URL               string                          `json:"url"`
+	HostHeader        string                          `json:"host_header"`
+	TLSServerName     *string                         `json:"tls_server_name"`
+	HTTPVersion       *domain.OriginHTTPVersion       `json:"http_version"`
+	HealthCheckMethod *domain.OriginHealthCheckMethod `json:"health_check_method"`
+	HealthCheckPath   *string                         `json:"health_check_path"`
+	WireGuardTunnelID *string                         `json:"wireguard_tunnel_id"`
+	Enabled           bool                            `json:"enabled"`
 }
 
 type optionalNullableInt struct {
@@ -814,17 +816,30 @@ func (value *optionalNullableInt) UnmarshalJSON(encoded []byte) error {
 }
 
 func (input originRequest) origin(current *domain.Origin) domain.Origin {
+	sameURL := current != nil && strings.TrimSpace(input.URL) == current.URL
 	tlsServerName := ""
 	if input.TLSServerName != nil {
 		tlsServerName = *input.TLSServerName
-	} else if current != nil && strings.TrimSpace(input.URL) == current.URL {
+	} else if sameURL {
 		tlsServerName = current.TLSServerName
 	}
 	httpVersion := domain.OriginHTTPVersion("")
 	if input.HTTPVersion != nil {
 		httpVersion = *input.HTTPVersion
-	} else if current != nil && strings.TrimSpace(input.URL) == current.URL {
+	} else if sameURL {
 		httpVersion = current.HTTPVersion
+	}
+	healthCheckMethod := domain.OriginHealthCheckMethod("")
+	if input.HealthCheckMethod != nil {
+		healthCheckMethod = *input.HealthCheckMethod
+	} else if sameURL {
+		healthCheckMethod = current.HealthCheckMethod
+	}
+	healthCheckPath := ""
+	if input.HealthCheckPath != nil {
+		healthCheckPath = *input.HealthCheckPath
+	} else if sameURL {
+		healthCheckPath = current.HealthCheckPath
 	}
 	wireGuardTunnelID := ""
 	if input.WireGuardTunnelID != nil {
@@ -834,7 +849,8 @@ func (input originRequest) origin(current *domain.Origin) domain.Origin {
 	}
 	return domain.Origin{
 		URL: input.URL, HostHeader: input.HostHeader, TLSServerName: tlsServerName,
-		HTTPVersion: httpVersion, WireGuardTunnelID: wireGuardTunnelID, Enabled: input.Enabled,
+		HTTPVersion: httpVersion, HealthCheckMethod: healthCheckMethod, HealthCheckPath: healthCheckPath,
+		WireGuardTunnelID: wireGuardTunnelID, Enabled: input.Enabled,
 	}
 }
 

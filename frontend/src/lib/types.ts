@@ -370,11 +370,14 @@ export interface Origin {
   host_header: string;
   tls_server_name?: string;
   http_version?: OriginHTTPVersion;
+  health_check_method?: OriginHealthCheckMethod;
+  health_check_path?: string;
   wireguard_tunnel_id?: string;
   enabled: boolean;
 }
 
 export type OriginHTTPVersion = "http1" | "http2" | "h2c";
+export type OriginHealthCheckMethod = "HEAD" | "GET";
 
 export interface WireGuardPeer {
   node_id: string;

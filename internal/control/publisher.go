@@ -744,7 +744,7 @@ func cacheWarmupsEqual(left, right []domain.CacheWarmup) bool {
 func originPoolsEqual(left, right []domain.OriginPool) bool {
 	return slices.EqualFunc(left, right, func(a, b domain.OriginPool) bool {
 		return a.ID == b.ID && a.Address == b.Address && a.Scheme == b.Scheme && a.HTTPVersion == b.HTTPVersion && a.HostHeader == b.HostHeader &&
-			a.TLSServerName == b.TLSServerName && a.ConfigPath == b.ConfigPath && a.KeepaliveConnections == b.KeepaliveConnections &&
+			a.HealthCheckMethod == b.HealthCheckMethod && a.HealthCheckPath == b.HealthCheckPath && a.TLSServerName == b.TLSServerName && a.ConfigPath == b.ConfigPath && a.KeepaliveConnections == b.KeepaliveConnections &&
 			slices.Equal(a.References, b.References)
 	})
 }

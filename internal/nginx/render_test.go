@@ -199,6 +199,35 @@ func TestRenderManagedOriginPoolsSharesCompatibleConnections(t *testing.T) {
 	}
 }
 
+func TestRenderManagedOriginPoolsIsolatesHealthRequests(t *testing.T) {
+	sites := []domain.Site{
+		{ID: "site-default", Name: "default", Domains: []string{"default.example.test"}, PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, Enabled: true},
+		{ID: "site-health-a", Name: "health-a", Domains: []string{"health-a.example.test"}, PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", HealthCheckMethod: domain.OriginHealthCheckMethodGET, HealthCheckPath: "/health", Enabled: true}, Enabled: true},
+		{ID: "site-health-b", Name: "health-b", Domains: []string{"health-b.example.test"}, PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", HealthCheckMethod: domain.OriginHealthCheckMethodGET, HealthCheckPath: "/health", Enabled: true}, Enabled: true},
+	}
+	rendered, err := RenderNodeWithRuntimeOptions(sites, nil, nil, RenderRuntimeOptions{
+		DefaultCacheSizeGB: domain.DefaultCacheMaxSizeGB, ManagedOriginPools: true,
+		NginxWorkerConnections: 4096, OriginPoolConfigDirectory: "/tmp/cdn-origin-pools",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rendered.OriginPools) != 2 {
+		t.Fatalf("origin pools = %#v, want health-request isolation", rendered.OriginPools)
+	}
+	for _, pool := range rendered.OriginPools {
+		if pool.HealthCheckMethod == "" {
+			if pool.HealthCheckPath != "" || len(pool.References) != 1 {
+				t.Fatalf("default health pool = %#v", pool)
+			}
+			continue
+		}
+		if pool.HealthCheckMethod != domain.OriginHealthCheckMethodGET || pool.HealthCheckPath != "/health" || len(pool.References) != 2 {
+			t.Fatalf("custom health pool = %#v", pool)
+		}
+	}
+}
+
 func TestRenderManagedOriginPoolsIsolatesVirtualHostsAndWeightsCapacity(t *testing.T) {
 	sites := []domain.Site{
 		{ID: "site-a", Name: "a", Domains: []string{"a.example.test"}, PrimaryOrigin: domain.Origin{URL: "https://203.0.113.10:443", HostHeader: "shared.example.test", TLSServerName: "shared.example.test", Enabled: true}, Enabled: true},

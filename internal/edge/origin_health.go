@@ -269,8 +269,12 @@ func probeOriginHTTP(ctx context.Context, pool domain.OriginPool, client *http.C
 			traceMu.Unlock()
 		},
 	}
-	requestURL := &url.URL{Scheme: pool.Scheme, Host: pool.Address, Path: "/"}
-	request, err := http.NewRequestWithContext(httptrace.WithClientTrace(ctx, trace), http.MethodHead, requestURL.String(), nil)
+	healthMethod, healthPath := domain.EffectiveOriginHealthCheck(pool.HealthCheckMethod, pool.HealthCheckPath)
+	if err := domain.ValidateOriginHealthCheck(healthMethod, healthPath); err != nil {
+		return measurement, err
+	}
+	requestURL := &url.URL{Scheme: pool.Scheme, Host: pool.Address, Path: healthPath}
+	request, err := http.NewRequestWithContext(httptrace.WithClientTrace(ctx, trace), string(healthMethod), requestURL.String(), nil)
 	if err != nil {
 		return measurement, err
 	}

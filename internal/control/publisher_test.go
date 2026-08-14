@@ -1411,6 +1411,12 @@ func TestOriginPoolsEqualIncludesHTTPVersion(t *testing.T) {
 	if originPoolsEqual([]domain.OriginPool{base}, []domain.OriginPool{http2}) {
 		t.Fatal("origin pools with different HTTP versions compared equal")
 	}
+	customHealth := base
+	customHealth.HealthCheckMethod = domain.OriginHealthCheckMethodGET
+	customHealth.HealthCheckPath = "/health"
+	if originPoolsEqual([]domain.OriginPool{base}, []domain.OriginPool{customHealth}) {
+		t.Fatal("origin pools with different health requests compared equal")
+	}
 }
 
 func decodeCSRF(t *testing.T, body []byte) string {

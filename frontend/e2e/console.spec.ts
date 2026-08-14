@@ -1715,6 +1715,9 @@ test("new site keeps primary and standby node assignments separate", async ({
   await page.getByLabel("站点名称").fill("容灾站点");
   await page.getByLabel("域名").fill("dr.example.com");
   await page.getByLabel("源站 URL").fill("https://origin.example.com");
+  await page.getByLabel("健康检查方式").click();
+  await page.getByRole("option", { name: "GET", exact: true }).click();
+  await page.getByLabel("健康检查路径").fill("/health");
   const createRequest = page.waitForRequest(
     (request) =>
       new URL(request.url()).pathname === "/api/sites" &&
@@ -1724,6 +1727,10 @@ test("new site keeps primary and standby node assignments separate", async ({
   expect((await createRequest).postDataJSON()).toMatchObject({
     node_ids: ["node-primary"],
     backup_node_ids: ["node-backup"],
+    primary_origin: {
+      health_check_method: "GET",
+      health_check_path: "/health",
+    },
   });
   expect(errors).toEqual([]);
 });

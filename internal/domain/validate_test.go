@@ -54,6 +54,42 @@ func TestOriginHTTPVersionValidation(t *testing.T) {
 	}
 }
 
+func TestOriginHealthCheckValidationAndDefaults(t *testing.T) {
+	origin := Origin{URL: "https://origin.example.test"}
+	if err := ValidateOrigin(&origin); err != nil {
+		t.Fatal(err)
+	}
+	method, healthPath := EffectiveOriginHealthCheck(origin.HealthCheckMethod, origin.HealthCheckPath)
+	if method != OriginHealthCheckMethodHEAD || healthPath != "/" {
+		t.Fatalf("default health request = %s %s", method, healthPath)
+	}
+	if origin.HealthCheckMethod != "" || origin.HealthCheckPath != "" {
+		t.Fatalf("legacy empty health request was materialized: %#v", origin)
+	}
+
+	custom := Origin{
+		URL: "https://origin.example.test", HealthCheckMethod: " get ", HealthCheckPath: " /health ",
+	}
+	if err := ValidateOrigin(&custom); err != nil {
+		t.Fatal(err)
+	}
+	if custom.HealthCheckMethod != OriginHealthCheckMethodGET || custom.HealthCheckPath != "/health" {
+		t.Fatalf("normalized health request = %s %s", custom.HealthCheckMethod, custom.HealthCheckPath)
+	}
+
+	for _, invalid := range []Origin{
+		{URL: "https://origin.example.test", HealthCheckMethod: "POST"},
+		{URL: "https://origin.example.test", HealthCheckPath: "health"},
+		{URL: "https://origin.example.test", HealthCheckPath: "/health?full=1"},
+		{URL: "https://origin.example.test", HealthCheckPath: "/a/../health"},
+		{URL: "grpcs://origin.example.test", HealthCheckMethod: OriginHealthCheckMethodGET, HealthCheckPath: "/health"},
+	} {
+		if err := ValidateOrigin(&invalid); err == nil {
+			t.Fatalf("invalid health request was accepted: %#v", invalid)
+		}
+	}
+}
+
 func TestClientMaxBodySizeDefaultsAndPresetValidation(t *testing.T) {
 	newSite := func(value int) Site {
 		return Site{

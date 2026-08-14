@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	pathpkg "path"
 	"strconv"
 	"strings"
 )
@@ -339,10 +340,18 @@ func ValidateOrigin(origin *Origin) error {
 		return fmt.Errorf("scheme must be http, https, ws, wss, grpc, or grpcs")
 	}
 	origin.HTTPVersion = OriginHTTPVersion(strings.ToLower(strings.TrimSpace(string(origin.HTTPVersion))))
+	origin.HealthCheckMethod = OriginHealthCheckMethod(strings.ToUpper(strings.TrimSpace(string(origin.HealthCheckMethod))))
+	origin.HealthCheckPath = strings.TrimSpace(origin.HealthCheckPath)
+	if err := ValidateOriginHealthCheck(origin.HealthCheckMethod, origin.HealthCheckPath); err != nil {
+		return err
+	}
 	switch parsed.Scheme {
 	case "grpc", "grpcs":
 		if origin.HTTPVersion != "" {
 			return fmt.Errorf("HTTP version is managed by the gRPC upstream")
+		}
+		if origin.HealthCheckMethod != "" || origin.HealthCheckPath != "" {
+			return fmt.Errorf("gRPC origins use the gRPC Health Check RPC")
 		}
 	case "ws", "wss":
 		if origin.HTTPVersion == "" {
@@ -402,6 +411,39 @@ func EffectiveOriginHTTPVersion(origin Origin) OriginHTTPVersion {
 		return OriginHTTPVersionHTTP1
 	}
 	return origin.HTTPVersion
+}
+
+const maxOriginHealthCheckPathLength = 1024
+
+func ValidateOriginHealthCheck(method OriginHealthCheckMethod, healthPath string) error {
+	if method != "" && method != OriginHealthCheckMethodHEAD && method != OriginHealthCheckMethodGET {
+		return fmt.Errorf("origin health check method must be HEAD or GET")
+	}
+	if healthPath == "" {
+		return nil
+	}
+	if len(healthPath) > maxOriginHealthCheckPathLength {
+		return fmt.Errorf("origin health check path must not exceed %d characters", maxOriginHealthCheckPathLength)
+	}
+	if !strings.HasPrefix(healthPath, "/") || strings.ContainsAny(healthPath, " \t\r\n\x00?#") {
+		return fmt.Errorf("origin health check path must be an absolute path without query or fragment")
+	}
+	if pathpkg.Clean(healthPath) != healthPath {
+		return fmt.Errorf("origin health check path must be normalized")
+	}
+	return nil
+}
+
+func EffectiveOriginHealthCheck(method OriginHealthCheckMethod, healthPath string) (OriginHealthCheckMethod, string) {
+	method = OriginHealthCheckMethod(strings.ToUpper(strings.TrimSpace(string(method))))
+	if method == "" {
+		method = DefaultOriginHealthCheckMethod
+	}
+	healthPath = strings.TrimSpace(healthPath)
+	if healthPath == "" {
+		healthPath = DefaultOriginHealthCheckPath
+	}
+	return method, healthPath
 }
 
 func ValidOriginScheme(scheme string) bool {

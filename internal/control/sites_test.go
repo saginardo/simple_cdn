@@ -612,8 +612,8 @@ func TestSiteOriginTLSServerNameAPI(t *testing.T) {
 
 	created := requestSite(t, server, http.MethodPost, "/api/sites", map[string]any{
 		"name": "ip-origin", "zone_id": "zone", "domains": []string{"lax.dustvm.de"}, "node_ids": []string{node.ID},
-		"primary_origin": map[string]any{"url": "https://203.0.113.20:443", "host_header": "lax.dustvm.de", "tls_server_name": "LAX.DUSTVM.DE", "http_version": "http2", "enabled": true},
-		"backup_origin":  map[string]any{"url": "https://203.0.113.21:443", "host_header": "backup.dustvm.de", "tls_server_name": "backup.dustvm.de", "http_version": "http2", "enabled": true},
+		"primary_origin": map[string]any{"url": "https://203.0.113.20:443", "host_header": "lax.dustvm.de", "tls_server_name": "LAX.DUSTVM.DE", "http_version": "http2", "health_check_method": "GET", "health_check_path": "/health", "enabled": true},
+		"backup_origin":  map[string]any{"url": "https://203.0.113.21:443", "host_header": "backup.dustvm.de", "tls_server_name": "backup.dustvm.de", "http_version": "http2", "health_check_method": "HEAD", "health_check_path": "/ready", "enabled": true},
 		"enabled":        true,
 	})
 	if created.PrimaryOrigin.TLSServerName != "lax.dustvm.de" || created.BackupOrigin == nil || created.BackupOrigin.TLSServerName != "backup.dustvm.de" {
@@ -622,12 +622,20 @@ func TestSiteOriginTLSServerNameAPI(t *testing.T) {
 	if created.PrimaryOrigin.HTTPVersion != domain.OriginHTTPVersionHTTP2 || created.BackupOrigin.HTTPVersion != domain.OriginHTTPVersionHTTP2 {
 		t.Fatalf("unexpected origin HTTP versions: %#v", created)
 	}
+	if created.PrimaryOrigin.HealthCheckMethod != domain.OriginHealthCheckMethodGET || created.PrimaryOrigin.HealthCheckPath != "/health" ||
+		created.BackupOrigin.HealthCheckMethod != domain.OriginHealthCheckMethodHEAD || created.BackupOrigin.HealthCheckPath != "/ready" {
+		t.Fatalf("unexpected origin health requests: %#v", created)
+	}
 	loaded, _, err := database.GetSite(created.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if loaded.PrimaryOrigin.TLSServerName != "lax.dustvm.de" || loaded.BackupOrigin == nil || loaded.BackupOrigin.TLSServerName != "backup.dustvm.de" {
 		t.Fatalf("stored TLS server names were not preserved: %#v", loaded)
+	}
+	if loaded.PrimaryOrigin.HealthCheckMethod != domain.OriginHealthCheckMethodGET || loaded.PrimaryOrigin.HealthCheckPath != "/health" ||
+		loaded.BackupOrigin.HealthCheckMethod != domain.OriginHealthCheckMethodHEAD || loaded.BackupOrigin.HealthCheckPath != "/ready" {
+		t.Fatalf("stored origin health requests were not preserved: %#v", loaded)
 	}
 
 	updated := requestSite(t, server, http.MethodPut, "/api/sites/"+created.ID, map[string]any{
@@ -640,6 +648,10 @@ func TestSiteOriginTLSServerNameAPI(t *testing.T) {
 	}
 	if updated.PrimaryOrigin.HTTPVersion != domain.OriginHTTPVersionHTTP2 || updated.BackupOrigin.HTTPVersion != domain.OriginHTTPVersionHTTP2 {
 		t.Fatalf("omitted origin HTTP versions did not preserve existing values: %#v", updated)
+	}
+	if updated.PrimaryOrigin.HealthCheckMethod != domain.OriginHealthCheckMethodGET || updated.PrimaryOrigin.HealthCheckPath != "/health" ||
+		updated.BackupOrigin.HealthCheckMethod != domain.OriginHealthCheckMethodHEAD || updated.BackupOrigin.HealthCheckPath != "/ready" {
+		t.Fatalf("omitted origin health requests did not preserve existing values: %#v", updated)
 	}
 	cleared := requestSite(t, server, http.MethodPut, "/api/sites/"+created.ID, map[string]any{
 		"name": updated.Name, "zone_id": updated.ZoneID, "domains": updated.Domains, "node_ids": updated.Nodes,
@@ -656,6 +668,9 @@ func TestSiteOriginTLSServerNameAPI(t *testing.T) {
 	})
 	if movedBackup.BackupOrigin == nil || movedBackup.BackupOrigin.TLSServerName != "" {
 		t.Fatalf("omitted TLS server name was carried to a different backup URL: %#v", movedBackup.BackupOrigin)
+	}
+	if movedBackup.BackupOrigin.HealthCheckMethod != "" || movedBackup.BackupOrigin.HealthCheckPath != "" {
+		t.Fatalf("omitted health request was carried to a different backup URL: %#v", movedBackup.BackupOrigin)
 	}
 
 	defaultResponse := requestSiteResponse(t, server, http.MethodPost, "/api/sites", map[string]any{

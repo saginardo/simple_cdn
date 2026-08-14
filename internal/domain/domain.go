@@ -70,10 +70,12 @@ func ValidCacheStorageUsage(usage CacheStorageUsage) bool {
 }
 
 type Origin struct {
-	URL           string            `json:"url"`
-	HostHeader    string            `json:"host_header"`
-	TLSServerName string            `json:"tls_server_name,omitempty"`
-	HTTPVersion   OriginHTTPVersion `json:"http_version,omitempty"`
+	URL               string                  `json:"url"`
+	HostHeader        string                  `json:"host_header"`
+	TLSServerName     string                  `json:"tls_server_name,omitempty"`
+	HTTPVersion       OriginHTTPVersion       `json:"http_version,omitempty"`
+	HealthCheckMethod OriginHealthCheckMethod `json:"health_check_method,omitempty"`
+	HealthCheckPath   string                  `json:"health_check_path,omitempty"`
 	// WireGuardTunnelID is empty for the existing direct-origin path. When set,
 	// the publisher replaces only the connection host with the tunnel's origin
 	// address and preserves the URL scheme, port, Host header, and TLS SNI.
@@ -87,6 +89,18 @@ const (
 	OriginHTTPVersionHTTP1 OriginHTTPVersion = "http1"
 	OriginHTTPVersionHTTP2 OriginHTTPVersion = "http2"
 	OriginHTTPVersionH2C   OriginHTTPVersion = "h2c"
+)
+
+type OriginHealthCheckMethod string
+
+const (
+	OriginHealthCheckMethodHEAD OriginHealthCheckMethod = "HEAD"
+	OriginHealthCheckMethodGET  OriginHealthCheckMethod = "GET"
+)
+
+const (
+	DefaultOriginHealthCheckMethod = OriginHealthCheckMethodHEAD
+	DefaultOriginHealthCheckPath   = "/"
 )
 
 const (

@@ -74,6 +74,7 @@ import type {
   DeploymentTask,
   Node,
   OriginHTTPVersion,
+  OriginHealthCheckMethod,
   PublishStatus,
   Settings,
   Site,
@@ -93,12 +94,16 @@ interface SiteDraft {
   primary_host: string;
   primary_sni: string;
   primary_http_version: OriginHTTPVersion;
+  primary_health_method: OriginHealthCheckMethod;
+  primary_health_path: string;
   primary_wireguard_tunnel_id: string;
   backup_enabled: boolean;
   backup_url: string;
   backup_host: string;
   backup_sni: string;
   backup_http_version: OriginHTTPVersion;
+  backup_health_method: OriginHealthCheckMethod;
+  backup_health_path: string;
   backup_wireguard_tunnel_id: string;
   passthrough: boolean;
   request_body_buffering: boolean;
@@ -974,6 +979,8 @@ function TrafficSettings({
               host={draft.primary_host}
               sni={draft.primary_sni}
               httpVersion={draft.primary_http_version}
+              healthMethod={draft.primary_health_method}
+              healthPath={draft.primary_health_path}
               wireGuardTunnelID={draft.primary_wireguard_tunnel_id}
               tunnels={tunnels}
               nodeIDs={assignedNodeIDs}
@@ -984,6 +991,8 @@ function TrafficSettings({
                   primary_host: values.host,
                   primary_sni: values.sni,
                   primary_http_version: values.httpVersion,
+                  primary_health_method: values.healthMethod,
+                  primary_health_path: values.healthPath,
                   primary_wireguard_tunnel_id: values.wireGuardTunnelID,
                 })
               }
@@ -1014,6 +1023,8 @@ function TrafficSettings({
                 host={draft.backup_host}
                 sni={draft.backup_sni}
                 httpVersion={draft.backup_http_version}
+                healthMethod={draft.backup_health_method}
+                healthPath={draft.backup_health_path}
                 wireGuardTunnelID={draft.backup_wireguard_tunnel_id}
                 tunnels={tunnels}
                 nodeIDs={assignedNodeIDs}
@@ -1024,6 +1035,8 @@ function TrafficSettings({
                     backup_host: values.host,
                     backup_sni: values.sni,
                     backup_http_version: values.httpVersion,
+                    backup_health_method: values.healthMethod,
+                    backup_health_path: values.healthPath,
                     backup_wireguard_tunnel_id: values.wireGuardTunnelID,
                   })
                 }
@@ -1246,6 +1259,8 @@ function OriginFields({
   host,
   sni,
   httpVersion,
+  healthMethod,
+  healthPath,
   wireGuardTunnelID,
   tunnels,
   nodeIDs,
@@ -1257,6 +1272,8 @@ function OriginFields({
   host: string;
   sni: string;
   httpVersion: OriginHTTPVersion;
+  healthMethod: OriginHealthCheckMethod;
+  healthPath: string;
   wireGuardTunnelID: string;
   tunnels: WireGuardTunnel[];
   nodeIDs: string[];
@@ -1265,11 +1282,14 @@ function OriginFields({
     host: string;
     sni: string;
     httpVersion: OriginHTTPVersion;
+    healthMethod: OriginHealthCheckMethod;
+    healthPath: string;
     wireGuardTunnelID: string;
   }) => void;
 }) {
   const tls = /^(https|wss|grpcs):/i.test(url);
   const supportsHTTPVersion = /^https?:/i.test(url);
+  const supportsHealthCheck = /^(https?|wss?):/i.test(url);
   const selectableTunnels = tunnels.filter(
     (tunnel) =>
       tunnel.id === wireGuardTunnelID ||
@@ -1277,6 +1297,27 @@ function OriginFields({
         tunnel.peers.some((peer) => peer.node_id === nodeID),
       ),
   );
+  const update = (
+    values: Partial<{
+      url: string;
+      host: string;
+      sni: string;
+      httpVersion: OriginHTTPVersion;
+      healthMethod: OriginHealthCheckMethod;
+      healthPath: string;
+      wireGuardTunnelID: string;
+    }>,
+  ) =>
+    onChange({
+      url,
+      host,
+      sni,
+      httpVersion,
+      healthMethod,
+      healthPath,
+      wireGuardTunnelID,
+      ...values,
+    });
   return (
     <div className="grid gap-4 sm:grid-cols-2">
       <div className="sm:col-span-2 text-sm font-medium">{title}</div>
@@ -1286,15 +1327,12 @@ function OriginFields({
           required={required}
           value={url}
           onChange={(event) =>
-            onChange({
+            update({
               url: event.target.value,
-              host,
-              sni,
               httpVersion: compatibleOriginHTTPVersion(
                 event.target.value,
                 httpVersion,
               ),
-              wireGuardTunnelID,
             })
           }
           placeholder="https://origin.example.com:443"
@@ -1304,15 +1342,7 @@ function OriginFields({
         <Input
           id={`${title}-host`}
           value={host}
-          onChange={(event) =>
-            onChange({
-              url,
-              host: event.target.value,
-              sni,
-              httpVersion,
-              wireGuardTunnelID,
-            })
-          }
+          onChange={(event) => update({ host: event.target.value })}
           placeholder="origin.example.com"
         />
       </Field>
@@ -1320,13 +1350,7 @@ function OriginFields({
         label={t("回源链路")}
         value={wireGuardTunnelID || "direct"}
         onChange={(value) =>
-          onChange({
-            url,
-            host,
-            sni,
-            httpVersion,
-            wireGuardTunnelID: value === "direct" ? "" : value,
-          })
+          update({ wireGuardTunnelID: value === "direct" ? "" : value })
         }
         options={[
           ["direct", t("公网直连")],
@@ -1341,16 +1365,33 @@ function OriginFields({
           label={t("回源 HTTP 协议")}
           value={httpVersion}
           onChange={(value) =>
-            onChange({
-              url,
-              host,
-              sni,
-              httpVersion: value as OriginHTTPVersion,
-              wireGuardTunnelID,
-            })
+            update({ httpVersion: value as OriginHTTPVersion })
           }
           options={originHTTPVersionOptions(url)}
         />
+      ) : null}
+      {supportsHealthCheck ? (
+        <>
+          <SelectField
+            label={t("健康检查方式")}
+            value={healthMethod}
+            onChange={(value) =>
+              update({ healthMethod: value as OriginHealthCheckMethod })
+            }
+            options={[
+              ["HEAD", "HEAD"],
+              ["GET", "GET"],
+            ]}
+          />
+          <Field label={t("健康检查路径")} id={`${title}-health-path`}>
+            <Input
+              id={`${title}-health-path`}
+              value={healthPath}
+              onChange={(event) => update({ healthPath: event.target.value })}
+              placeholder="/"
+            />
+          </Field>
+        </>
       ) : null}
       {tls ? (
         <div className="grid gap-2 sm:col-span-2">
@@ -1358,15 +1399,7 @@ function OriginFields({
           <Input
             id={`${title}-sni`}
             value={sni}
-            onChange={(event) =>
-              onChange({
-                url,
-                host,
-                sni: event.target.value,
-                httpVersion,
-                wireGuardTunnelID,
-              })
-            }
+            onChange={(event) => update({ sni: event.target.value })}
             placeholder="origin.example.com"
           />
         </div>
@@ -2245,12 +2278,16 @@ function emptyDraft(ttl: number): SiteDraft {
     primary_host: "",
     primary_sni: "",
     primary_http_version: "http1",
+    primary_health_method: "HEAD",
+    primary_health_path: "/",
     primary_wireguard_tunnel_id: "",
     backup_enabled: false,
     backup_url: "",
     backup_host: "",
     backup_sni: "",
     backup_http_version: "http1",
+    backup_health_method: "HEAD",
+    backup_health_path: "/",
     backup_wireguard_tunnel_id: "",
     passthrough: false,
     request_body_buffering: true,
@@ -2291,12 +2328,16 @@ function draftFromSite(site: Site, ttl: number): SiteDraft {
     primary_host: site.primary_origin.host_header || "",
     primary_sni: site.primary_origin.tls_server_name || "",
     primary_http_version: site.primary_origin.http_version || "http1",
+    primary_health_method: site.primary_origin.health_check_method || "HEAD",
+    primary_health_path: site.primary_origin.health_check_path || "/",
     primary_wireguard_tunnel_id: site.primary_origin.wireguard_tunnel_id || "",
     backup_enabled: Boolean(site.backup_origin),
     backup_url: site.backup_origin?.url || "",
     backup_host: site.backup_origin?.host_header || "",
     backup_sni: site.backup_origin?.tls_server_name || "",
     backup_http_version: site.backup_origin?.http_version || "http1",
+    backup_health_method: site.backup_origin?.health_check_method || "HEAD",
+    backup_health_path: site.backup_origin?.health_check_path || "/",
     backup_wireguard_tunnel_id: site.backup_origin?.wireguard_tunnel_id || "",
     passthrough: site.passthrough,
     request_body_buffering: site.request_body_buffering ?? true,
@@ -2340,6 +2381,12 @@ function sitePayload(draft: SiteDraft) {
       http_version: /^(https?|wss?):/i.test(draft.primary_url)
         ? draft.primary_http_version
         : undefined,
+      health_check_method: /^(https?|wss?):/i.test(draft.primary_url)
+        ? draft.primary_health_method
+        : undefined,
+      health_check_path: /^(https?|wss?):/i.test(draft.primary_url)
+        ? draft.primary_health_path
+        : undefined,
       wireguard_tunnel_id: draft.tcp_only
         ? ""
         : draft.primary_wireguard_tunnel_id,
@@ -2370,6 +2417,12 @@ function sitePayload(draft: SiteDraft) {
         : "",
       http_version: /^(https?|wss?):/i.test(draft.backup_url)
         ? draft.backup_http_version
+        : undefined,
+      health_check_method: /^(https?|wss?):/i.test(draft.backup_url)
+        ? draft.backup_health_method
+        : undefined,
+      health_check_path: /^(https?|wss?):/i.test(draft.backup_url)
+        ? draft.backup_health_path
         : undefined,
       wireguard_tunnel_id: draft.tcp_only
         ? ""

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -20,6 +21,12 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"simple_cdn/internal/domain"
 )
+
+type originHealthRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (function originHealthRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return function(request)
+}
 
 func TestOriginCircuitSeparatesLayersAndRequiresBothToRecover(t *testing.T) {
 	agent, runner, pool := newOriginTestAgent(t)
@@ -244,6 +251,33 @@ func TestNetworkOriginProberReusesServiceHTTPAndIsolatesColdConnections(t *testi
 	prober.Reconcile(nil)
 	if len(prober.httpClients) != 0 {
 		t.Fatalf("stale HTTP probe clients = %d", len(prober.httpClients))
+	}
+}
+
+func TestProbeOriginHTTPUsesConfiguredHealthRequest(t *testing.T) {
+	client := &http.Client{Transport: originHealthRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Method != http.MethodGet || request.URL.Path != "/health" || request.Host != "health.example.test" {
+			t.Errorf("probe request = %s %s host %s", request.Method, request.URL.Path, request.Host)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Proto:      "HTTP/1.1",
+			ProtoMajor: 1,
+			ProtoMinor: 1,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"status":"ok"}`)),
+		}, nil
+	})}
+	pool := domain.OriginPool{
+		ID: strings.Repeat("f", 24), Address: "203.0.113.10:80", Scheme: "http", HostHeader: "health.example.test",
+		HealthCheckMethod: domain.OriginHealthCheckMethodGET, HealthCheckPath: "/health",
+	}
+	measurement, err := probeOriginHTTP(context.Background(), pool, client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if measurement.HTTPStatus != http.StatusOK {
+		t.Fatalf("health status = %d", measurement.HTTPStatus)
 	}
 }
 

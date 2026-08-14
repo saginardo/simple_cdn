@@ -21,6 +21,17 @@ func TestValidOriginPoolAndProbeStatus(t *testing.T) {
 	if !ValidOriginPool(http2Pool) {
 		t.Fatalf("valid HTTP/2 origin pool was rejected: %#v", http2Pool)
 	}
+	customHealth := pool
+	customHealth.HealthCheckMethod = OriginHealthCheckMethodGET
+	customHealth.HealthCheckPath = "/health"
+	if !ValidOriginPool(customHealth) {
+		t.Fatalf("valid custom health request was rejected: %#v", customHealth)
+	}
+	invalidHealth := pool
+	invalidHealth.HealthCheckMethod = "POST"
+	if ValidOriginPool(invalidHealth) {
+		t.Fatal("invalid health check method was accepted")
+	}
 	http2Pool.Scheme = "http"
 	if ValidOriginPool(http2Pool) {
 		t.Fatal("TLS HTTP/2 mode was accepted for a cleartext HTTP pool")

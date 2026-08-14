@@ -906,23 +906,23 @@ func RenderWithRuntimeOptions(sites []domain.Site, securityPolicies []domain.Sec
 			return "", fmt.Errorf("site %s requires an edge with HTTP/2 origin support", site.Name)
 		}
 		alwaysUnbuffered := site.Passthrough || domain.IsWebSocketScheme(primary.Scheme)
-			item := renderedSite{
-				ID: site.ID, DomainList: strings.Join(site.Domains, " "), HealthBody: SiteHealthBody(site.ID), PrimaryHostPort: primary.Host, PrimaryTLSName: site.PrimaryOrigin.TLSServerName,
-				PrimaryScheme: domain.ProxyScheme(primary.Scheme), UseTLS: domain.OriginUsesTLS(primary.Scheme), HostHeader: site.PrimaryOrigin.HostHeader, CacheGeneration: site.CacheGeneration, CacheInvalidations: renderedInvalidations,
-				GRPC: domain.IsGRPCScheme(primary.Scheme), Passthrough: site.Passthrough, HTTP3Enabled: options.HTTP3Capable && site.HTTP3Enabled, ClientMaxBodySizeMB: clientMaxBodySizeMB,
-				ClientKeepaliveTimeout:    fmt.Sprintf("%ds", clientKeepaliveTimeoutSeconds),
-				ReadWriteTimeout:          fmt.Sprintf("%ds", readWriteTimeoutSeconds),
-				CacheEnabled:              primary.Scheme == "http" || primary.Scheme == "https",
-				AlwaysUnbuffered:          alwaysUnbuffered,
-				RequestBodyBuffering:      site.RequestBodyBuffering && !alwaysUnbuffered,
-				OriginResponseBuffering:   site.OriginResponseBuffering && !alwaysUnbuffered,
-				DynamicCompressionEnabled: site.DynamicCompressionEnabled && !domain.IsGRPCScheme(primary.Scheme),
-				CompressionTypes:          strings.Join(compressionTypes, " "),
-				PrimaryProxyHTTPVersion:   nginxProxyHTTPVersion(primaryHTTPVersion),
-				PrimaryUsesHTTP2:          isHTTP2OriginVersion(primaryHTTPVersion),
-				StaticAssets:              staticAssetsBySite[site.ID],
-				StaticBytesVariable:       "cdn_static_bytes_" + strings.ReplaceAll(site.ID, "-", ""),
-			}
+		item := renderedSite{
+			ID: site.ID, DomainList: strings.Join(site.Domains, " "), HealthBody: SiteHealthBody(site.ID), PrimaryHostPort: primary.Host, PrimaryTLSName: site.PrimaryOrigin.TLSServerName,
+			PrimaryScheme: domain.ProxyScheme(primary.Scheme), UseTLS: domain.OriginUsesTLS(primary.Scheme), HostHeader: site.PrimaryOrigin.HostHeader, CacheGeneration: site.CacheGeneration, CacheInvalidations: renderedInvalidations,
+			GRPC: domain.IsGRPCScheme(primary.Scheme), Passthrough: site.Passthrough, HTTP3Enabled: options.HTTP3Capable && site.HTTP3Enabled, ClientMaxBodySizeMB: clientMaxBodySizeMB,
+			ClientKeepaliveTimeout:    fmt.Sprintf("%ds", clientKeepaliveTimeoutSeconds),
+			ReadWriteTimeout:          fmt.Sprintf("%ds", readWriteTimeoutSeconds),
+			CacheEnabled:              primary.Scheme == "http" || primary.Scheme == "https",
+			AlwaysUnbuffered:          alwaysUnbuffered,
+			RequestBodyBuffering:      site.RequestBodyBuffering && !alwaysUnbuffered,
+			OriginResponseBuffering:   site.OriginResponseBuffering && !alwaysUnbuffered,
+			DynamicCompressionEnabled: site.DynamicCompressionEnabled && !domain.IsGRPCScheme(primary.Scheme),
+			CompressionTypes:          strings.Join(compressionTypes, " "),
+			PrimaryProxyHTTPVersion:   nginxProxyHTTPVersion(primaryHTTPVersion),
+			PrimaryUsesHTTP2:          isHTTP2OriginVersion(primaryHTTPVersion),
+			StaticAssets:              staticAssetsBySite[site.ID],
+			StaticBytesVariable:       "cdn_static_bytes_" + strings.ReplaceAll(site.ID, "-", ""),
+		}
 		delete(staticAssetsBySite, site.ID)
 		http3Enabled = http3Enabled || item.HTTP3Enabled
 		item.PrimaryUpstreamName = "origin_" + item.ID
@@ -977,7 +977,7 @@ func RenderWithRuntimeOptions(sites []domain.Site, securityPolicies []domain.Sec
 		}
 		item.DedicatedWebSocket = item.PrimaryUsesHTTP2 || item.BackupUsesHTTP2
 		if options.ManagedOriginPools {
-			primaryPool, err := addOriginPool(poolBuilders, poolDirectory, item.PrimaryScheme, primaryHTTPVersion, item.PrimaryHostPort, item.HostHeader, tlsName(item.UseTLS, item.PrimaryTLSName), site.ID, "primary")
+			primaryPool, err := addOriginPool(poolBuilders, poolDirectory, item.PrimaryScheme, primaryHTTPVersion, item.PrimaryHostPort, item.HostHeader, tlsName(item.UseTLS, item.PrimaryTLSName), site.PrimaryOrigin.HealthCheckMethod, site.PrimaryOrigin.HealthCheckPath, site.ID, "primary")
 			if err != nil {
 				return "", fmt.Errorf("site %s primary origin pool: %w", site.Name, err)
 			}
@@ -987,7 +987,7 @@ func RenderWithRuntimeOptions(sites []domain.Site, securityPolicies []domain.Sec
 				item.PrimaryWebSocketUpstreamName = primaryPool.http1AliasName
 			}
 			if item.BackupHostPort != "" {
-				backupPool, err := addOriginPool(poolBuilders, poolDirectory, item.PrimaryScheme, item.BackupOriginHTTPVersion, item.BackupHostPort, item.BackupHostHeader, tlsName(item.UseTLS, item.BackupTLSName), site.ID, "backup")
+				backupPool, err := addOriginPool(poolBuilders, poolDirectory, item.PrimaryScheme, item.BackupOriginHTTPVersion, item.BackupHostPort, item.BackupHostHeader, tlsName(item.UseTLS, item.BackupTLSName), site.BackupOrigin.HealthCheckMethod, site.BackupOrigin.HealthCheckPath, site.ID, "backup")
 				if err != nil {
 					return "", fmt.Errorf("site %s backup origin pool: %w", site.Name, err)
 				}
@@ -1058,7 +1058,7 @@ func RenderWithRuntimeOptions(sites []domain.Site, securityPolicies []domain.Sec
 	return out.String(), nil
 }
 
-func addOriginPool(builders map[string]*originPoolBuilder, directory, scheme string, httpVersion domain.OriginHTTPVersion, address, hostHeader, serverName, siteID, role string) (*originPoolBuilder, error) {
+func addOriginPool(builders map[string]*originPoolBuilder, directory, scheme string, httpVersion domain.OriginHTTPVersion, address, hostHeader, serverName string, healthMethod domain.OriginHealthCheckMethod, healthPath, siteID, role string) (*originPoolBuilder, error) {
 	normalizedAddress, err := normalizeOriginPoolAddress(scheme, address)
 	if err != nil {
 		return nil, err
@@ -1066,9 +1066,20 @@ func addOriginPool(builders map[string]*originPoolBuilder, directory, scheme str
 	address = normalizedAddress
 	hostHeader = strings.ToLower(hostHeader)
 	serverName = strings.ToLower(serverName)
+	poolHealthMethod := domain.OriginHealthCheckMethod("")
+	poolHealthPath := ""
+	if scheme == "http" || scheme == "https" {
+		effectiveMethod, effectivePath := domain.EffectiveOriginHealthCheck(healthMethod, healthPath)
+		if effectiveMethod != domain.DefaultOriginHealthCheckMethod || effectivePath != domain.DefaultOriginHealthCheckPath {
+			poolHealthMethod, poolHealthPath = effectiveMethod, effectivePath
+		}
+	}
 	keyParts := []string{scheme, address, hostHeader, serverName}
 	if httpVersion != "" && httpVersion != domain.OriginHTTPVersionHTTP1 {
 		keyParts = append(keyParts, string(httpVersion))
+	}
+	if poolHealthMethod != "" {
+		keyParts = append(keyParts, string(poolHealthMethod), poolHealthPath)
 	}
 	key := strings.Join(keyParts, "\x00")
 	if existing := builders[key]; existing != nil {
@@ -1080,7 +1091,7 @@ func addOriginPool(builders map[string]*originPoolBuilder, directory, scheme str
 	builder := &originPoolBuilder{
 		name: "origin_pool_" + id, http1AliasName: "origin_pool_" + id + "_http1",
 		pool: domain.OriginPool{
-			ID: id, Address: address, Scheme: scheme, HTTPVersion: httpVersion, HostHeader: hostHeader, TLSServerName: serverName,
+			ID: id, Address: address, Scheme: scheme, HTTPVersion: httpVersion, HealthCheckMethod: poolHealthMethod, HealthCheckPath: poolHealthPath, HostHeader: hostHeader, TLSServerName: serverName,
 			ConfigPath: directory + "/" + id + ".conf",
 			References: []domain.OriginPoolReference{{SiteID: siteID, Role: role}},
 		},
