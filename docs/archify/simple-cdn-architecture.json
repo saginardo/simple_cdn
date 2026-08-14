@@ -1,0 +1,526 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "simple_cdn 系统架构",
+    "output": "docs/archify/simple-cdn-architecture.html",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1440,
+      680
+    ],
+    "repository": {
+      "url": "https://github.com/saginardo/simple_cdn",
+      "revision": "1a9a3e2d2f3160dbd10f443a0bb8b83aefe6c5ef"
+    },
+    "views": [
+      {
+        "id": "main-path",
+        "label": "主请求路径",
+        "focus": [
+          "users",
+          "dns",
+          "edge",
+          "origin"
+        ],
+        "note": "终端用户直连边缘节点；Cloudflare 仅解析 A 记录，不代理流量。"
+      },
+      {
+        "id": "control-edge",
+        "label": "控制面与边缘闭环",
+        "focus": [
+          "admin",
+          "control",
+          "edgeagent",
+          "edge",
+          "cert"
+        ],
+        "note": "mTLS 通道下发配置、证书与升级任务，节点确认加载后发布才成功。"
+      },
+      {
+        "id": "data-backup",
+        "label": "日志与备份",
+        "focus": [
+          "edgeagent",
+          "control",
+          "clickhouse",
+          "sqlite",
+          "backup"
+        ],
+        "note": "边缘访问日志经 mTLS 通道上报控制面并写入 ClickHouse，Restic 每日加密备份。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "users",
+      "type": "external",
+      "label": "终端用户",
+      "sublabel": "浏览器 · 移动端",
+      "pos": [
+        60,
+        150
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "dns",
+      "type": "cloud",
+      "label": "Cloudflare",
+      "sublabel": "权威 DNS（仅解析）",
+      "tag": "DNS-only",
+      "pos": [
+        60,
+        40
+      ],
+      "size": [
+        150,
+        64
+      ],
+      "sources": [
+        {
+          "path": "internal/control/server.go",
+          "label": "DNS A 记录对账"
+        }
+      ]
+    },
+    {
+      "id": "edge",
+      "type": "cloud",
+      "label": "边缘节点 ×3–10",
+      "sublabel": "自编译 Nginx",
+      "tag": "缓存 · WAF · 压缩",
+      "pos": [
+        500,
+        150
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "internal/nginx/render.go",
+          "label": "Nginx 配置渲染"
+        }
+      ]
+    },
+    {
+      "id": "edgeagent",
+      "type": "backend",
+      "label": "边缘代理",
+      "sublabel": "edge-agent · mTLS 轮询",
+      "pos": [
+        560,
+        250
+      ],
+      "size": [
+        150,
+        60
+      ],
+      "sources": [
+        {
+          "path": "cmd/edge-agent/main.go",
+          "label": "边缘代理入口"
+        },
+        {
+          "path": "internal/edge/logs.go",
+          "label": "日志上报"
+        }
+      ]
+    },
+    {
+      "id": "origin",
+      "type": "external",
+      "label": "源站",
+      "sublabel": "HTTP(S) / gRPC · 主备",
+      "pos": [
+        900,
+        150
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "wireguard",
+      "type": "security",
+      "label": "WireGuard 隧道",
+      "sublabel": "私有回源网络",
+      "tag": "按站点启用",
+      "pos": [
+        900,
+        250
+      ],
+      "size": [
+        150,
+        60
+      ],
+      "sources": [
+        {
+          "path": "internal/control/wireguard.go",
+          "label": "隧道管理"
+        },
+        {
+          "path": "internal/edge/wireguard.go",
+          "label": "边缘隧道"
+        }
+      ]
+    },
+    {
+      "id": "admin",
+      "type": "frontend",
+      "label": "管理控制台",
+      "sublabel": "React / Vite",
+      "pos": [
+        60,
+        350
+      ],
+      "size": [
+        150,
+        56
+      ],
+      "sources": [
+        {
+          "path": "frontend/src/main.tsx",
+          "label": "控制台入口"
+        }
+      ]
+    },
+    {
+      "id": "control",
+      "type": "backend",
+      "label": "控制面",
+      "sublabel": "Go API · 发布编排",
+      "pos": [
+        270,
+        350
+      ],
+      "size": [
+        160,
+        56
+      ],
+      "sources": [
+        {
+          "path": "cmd/control/main.go",
+          "label": "控制面入口"
+        }
+      ]
+    },
+    {
+      "id": "sqlite",
+      "type": "database",
+      "label": "SQLite",
+      "sublabel": "站点 · 节点 · 加密凭据",
+      "pos": [
+        60,
+        450
+      ],
+      "size": [
+        150,
+        56
+      ],
+      "sources": [
+        {
+          "path": "internal/store/migrations.go",
+          "label": "SQLite 迁移"
+        }
+      ]
+    },
+    {
+      "id": "clickhouse",
+      "type": "database",
+      "label": "ClickHouse",
+      "sublabel": "请求日志 · 分钟聚合",
+      "pos": [
+        270,
+        450
+      ],
+      "size": [
+        160,
+        56
+      ],
+      "sources": [
+        {
+          "path": "internal/logstore/clickhouse.go",
+          "label": "ClickHouse 客户端"
+        }
+      ]
+    },
+    {
+      "id": "cert",
+      "type": "security",
+      "label": "内部 CA / Certbot",
+      "sublabel": "mTLS 签发 · DNS-01 续期",
+      "pos": [
+        60,
+        550
+      ],
+      "size": [
+        150,
+        56
+      ],
+      "sources": [
+        {
+          "path": "internal/control/ca.go",
+          "label": "内部 CA"
+        },
+        {
+          "path": "internal/control/certificates.go",
+          "label": "DNS-01 证书"
+        }
+      ]
+    },
+    {
+      "id": "backup",
+      "type": "cloud",
+      "label": "Restic 备份",
+      "sublabel": "S3 / R2 · 每日加密",
+      "pos": [
+        270,
+        550
+      ],
+      "size": [
+        160,
+        56
+      ],
+      "sources": [
+        {
+          "path": "internal/control/restic_command.go",
+          "label": "Restic 备份"
+        }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "控制面 · 单台 Debian VPS",
+      "wraps": [
+        "admin",
+        "control",
+        "sqlite",
+        "clickhouse",
+        "cert",
+        "backup"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "边缘节点 ×3–10 · Debian 12/13 VPS",
+      "wraps": [
+        "edge",
+        "edgeagent"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "回源网络 · 客户侧",
+      "wraps": [
+        "origin",
+        "wireguard"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "from": "users",
+      "to": "edge",
+      "label": "HTTPS / QUIC",
+      "variant": "emphasis",
+      "labelAt": [
+        300,
+        174
+      ]
+    },
+    {
+      "from": "edge",
+      "to": "origin",
+      "label": "回源 HTTP(S) / gRPC",
+      "variant": "emphasis"
+    },
+    {
+      "from": "users",
+      "to": "dns",
+      "label": "DNS 查询",
+      "variant": "dashed"
+    },
+    {
+      "from": "dns",
+      "to": "edge",
+      "label": "A 记录解析",
+      "variant": "dashed"
+    },
+    {
+      "from": "control",
+      "to": "dns",
+      "label": "记录对账（健康检查）",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "left",
+      "via": [
+        [
+          350,
+          312
+        ],
+        [
+          30,
+          312
+        ],
+        [
+          30,
+          72
+        ]
+      ]
+    },
+    {
+      "from": "control",
+      "to": "edgeagent",
+      "label": "mTLS 通道",
+      "variant": "security",
+      "fromSide": "right",
+      "toSide": "left",
+      "via": [
+        [
+          452,
+          378
+        ],
+        [
+          452,
+          280
+        ],
+        [
+          560,
+          280
+        ]
+      ],
+      "labelAt": [
+        470,
+        272
+      ]
+    },
+    {
+      "from": "edgeagent",
+      "to": "edge",
+      "label": "渲染 · 原子重载",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "from": "edge",
+      "to": "wireguard",
+      "label": "隧道加密",
+      "variant": "security",
+      "labelAt": [
+        735,
+        315
+      ]
+    },
+    {
+      "from": "wireguard",
+      "to": "origin",
+      "label": "私网回源",
+      "variant": "security"
+    },
+    {
+      "from": "admin",
+      "to": "control",
+      "label": "管理操作",
+      "labelAt": [
+        240,
+        370
+      ]
+    },
+    {
+      "from": "control",
+      "to": "sqlite",
+      "label": "持久化",
+      "labelAt": [
+        150,
+        422
+      ]
+    },
+    {
+      "from": "control",
+      "to": "clickhouse",
+      "label": "写入 / 查询",
+      "labelAt": [
+        455,
+        415
+      ]
+    },
+    {
+      "from": "control",
+      "to": "cert",
+      "label": "签发请求 · 私钥加密",
+      "variant": "dashed",
+      "labelAt": [
+        55,
+        516
+      ]
+    },
+    {
+      "from": "control",
+      "to": "backup",
+      "label": "每日加密备份",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "via": [
+        [
+          350,
+          440
+        ],
+        [
+          452,
+          440
+        ],
+        [
+          452,
+          530
+        ],
+        [
+          350,
+          530
+        ]
+      ],
+      "labelAt": [
+        380,
+        522
+      ]
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "主链路",
+      "items": [
+        "终端用户直连边缘节点，Cloudflare 仅作权威 DNS，不代理流量",
+        "边缘 Nginx 承担缓存、WAF、压缩与证书终止",
+        "回源支持 HTTP(S) / gRPC 主备切换与 WireGuard 加密隧道"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "控制面闭环",
+      "items": [
+        "mTLS 通道下发站点配置、证书与升级任务，节点确认加载后发布才成功",
+        "失败自动回滚到上一份正常配置与 TLS 文件",
+        "DNS A 记录按节点健康状态对账，带滞回避免抖动"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "数据与可观测性",
+      "items": [
+        "SQLite 保存站点 / 节点 / 加密凭据，ClickHouse 保留原始日志与分钟聚合",
+        "边缘访问日志经 mTLS 通道上报控制面 /api/edge/v1/logs",
+        "Restic 每日加密备份 SQLite / ClickHouse / 证书材料"
+      ]
+    }
+  ]
+}
