@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -308,6 +309,74 @@ func TestMonitoringInitialHealthyReportDoesNotNotifyRecovery(t *testing.T) {
 	server.edgeMonitoringReport(response, request)
 	if response.Code != http.StatusOK || len(notifier.notifications) != 0 {
 		t.Fatalf("initial healthy response=%d notifications=%#v", response.Code, notifier.notifications)
+	}
+}
+
+func TestMonitoringScoreGateRefreshesDuringManualTakeover(t *testing.T) {
+	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	node, err := database.CreateNode("edge-takeover-alert", "203.0.113.133")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetNodeStatus(node.ID, domain.NodeActive); err != nil {
+		t.Fatal(err)
+	}
+	target, err := database.CreateMonitoringTarget("接管探针", "probe-takeover.example.test:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Now().UTC().Add(-time.Minute)
+	for round := 0; round < store.MonitoringAutoPauseAfter; round++ {
+		if _, err := database.RecordMonitoringRound(node.ID, []domain.MonitoringProbeResult{{
+			TargetID: target.ID, Attempts: 3, Error: "timeout", CheckedAt: base.Add(time.Duration(round) * time.Second),
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	paused, err := database.GetNode(node.ID)
+	if err != nil || paused.Status != domain.NodeDraining {
+		t.Fatalf("node before takeover = %#v, %v", paused, err)
+	}
+	disabled, err := database.SetNodeStatusManual(node.ID, domain.NodeActive)
+	if err != nil || !disabled {
+		t.Fatalf("manual takeover = %t, %v", disabled, err)
+	}
+	notifier := &recordingNotificationNotifier{}
+	server := &Server{Store: database, Notifier: notifier}
+	for round := 1; round <= store.SmartRoutingMinResumeRounds; round++ {
+		body, _ := json.Marshal(monitoringReportRequest{Results: []domain.MonitoringProbeResult{{
+			TargetID: target.ID, Attempts: 3, SuccessfulAttempts: 3, AverageLatencyMS: 20,
+			CheckedAt: base.Add(time.Duration(store.MonitoringAutoPauseAfter+round) * time.Second),
+		}}})
+		request := httptest.NewRequest(http.MethodPost, "/api/edge/v1/monitoring-results", bytes.NewReader(body))
+		request = request.WithContext(context.WithValue(request.Context(), edgeContextKey{}, node.ID))
+		response := httptest.NewRecorder()
+		server.edgeMonitoringReport(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("round %d status = %d, body = %s", round, response.Code, response.Body.String())
+		}
+	}
+	policy, err := database.SmartRoutingPolicy(node.ID)
+	if err != nil || policy.ScoreGate != store.SmartRoutingScoreAllowed || policy.Enabled {
+		t.Fatalf("gate did not refresh during takeover: %#v, %v", policy, err)
+	}
+	active, err := database.GetNode(node.ID)
+	if err != nil || active.Status != domain.NodeActive || active.MonitorAutoPaused {
+		t.Fatalf("takeover node state = %#v, %v", active, err)
+	}
+	if len(notifier.notifications) != 1 {
+		t.Fatalf("takeover recovery notifications = %#v", notifier.notifications)
+	}
+	recovery := notifier.notifications[0]
+	if !recovery.Resolved || !recovery.NotifyOnResolve || recovery.Severity != integrations.NotificationSeveritySuccess {
+		t.Fatalf("takeover recovery notification = %#v", recovery)
+	}
+	if !strings.Contains(recovery.Message, "人工") || strings.Contains(recovery.Message, "加入边缘调度") {
+		t.Fatalf("takeover recovery message = %q", recovery.Message)
 	}
 }
 

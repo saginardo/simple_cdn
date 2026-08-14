@@ -639,7 +639,10 @@ func (s *Server) notifyMonitoringTransition(ctx context.Context, nodeID string, 
 		notification.SuppressUntilResolved = true
 	} else {
 		notification.Severity = integrations.NotificationSeveritySuccess
-		if outcome.NodeStatus == domain.NodeActive {
+		if !policy.Enabled {
+			notification.Subject = "[CDN] 节点评分恢复（人工接管期间）"
+			notification.Message = "节点评分已满足恢复规则；智能路由当前未接管该节点，调度状态由人工控制。"
+		} else if outcome.NodeStatus == domain.NodeActive {
 			notification.Subject = "[CDN] 节点评分恢复，已加入调度"
 			notification.Message = "节点评分已满足恢复规则，智能路由已将该节点重新加入边缘调度。"
 		} else if slices.Contains(outcome.Transition.BlockedBy, "schedule") {

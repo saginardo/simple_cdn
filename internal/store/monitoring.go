@@ -312,7 +312,7 @@ func (s *Store) RecordMonitoringRound(nodeID string, results []domain.Monitoring
 		NodeID: nodeID, PreviousScoreGate: policy.ScoreGate, ScoreGate: policy.ScoreGate,
 		PreviousScheduleGate: policy.ScheduleGate, ScheduleGate: policy.ScheduleGate,
 	}
-	if policy.Enabled && policy.ScoreEnabled {
+	if policy.ScoreEnabled {
 		transition.ScoreGateChanged = advanceSmartRoutingScore(&policy, status.Score)
 		transition.ScoreGate = policy.ScoreGate
 		policy.UpdatedAt = recordedAt

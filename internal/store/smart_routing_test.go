@@ -156,13 +156,17 @@ func TestSmartRoutingUsesPerNodeHysteresisAndConsecutiveRounds(t *testing.T) {
 	if whileDisabled.NodeStatus != domain.NodeActive || whileDisabled.Transition.ScoreGate != SmartRoutingScoreBlocked {
 		t.Fatalf("healthy round while disabled = %#v", whileDisabled)
 	}
+	policy, err := database.SmartRoutingPolicy(node.ID)
+	if err != nil || policy.ScoreRecoveryStreak != 1 {
+		t.Fatalf("healthy round while disabled did not count recovery: policy = %#v, %v", policy, err)
+	}
 	config.Enabled = true
 	reenabled, err := database.UpdateSmartRoutingPolicy(node.ID, config, time.Now().UTC(), monitoringStaleAfterForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reenabled.Policy.ScoreGate != SmartRoutingScoreBlocked || reenabled.Policy.ScoreRecoveryStreak != 0 || reenabled.Transition.NodeStatus != domain.NodeDraining {
-		t.Fatalf("smart routing handoff did not restore score blocker: %#v", reenabled)
+	if reenabled.Policy.ScoreGate != SmartRoutingScoreBlocked || reenabled.Policy.ScoreRecoveryStreak != 1 || reenabled.Transition.NodeStatus != domain.NodeDraining {
+		t.Fatalf("smart routing handoff did not restore score blocker or dropped recovery rounds: %#v", reenabled)
 	}
 	firstRecovery, err := database.RecordMonitoringRound(node.ID, []domain.MonitoringProbeResult{healthyResult(checkedAt.Add(3 * time.Second))})
 	if err != nil {
@@ -175,7 +179,7 @@ func TestSmartRoutingUsesPerNodeHysteresisAndConsecutiveRounds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	policy, err := database.SmartRoutingPolicy(node.ID)
+	policy, err = database.SmartRoutingPolicy(node.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,6 +202,106 @@ func TestSmartRoutingUsesPerNodeHysteresisAndConsecutiveRounds(t *testing.T) {
 		if outcome.NodeStatus != domain.NodeActive || !outcome.Transition.ScoreGateChanged || outcome.Transition.ScoreGate != SmartRoutingScoreAllowed {
 			t.Fatalf("final recovery round = %#v", outcome)
 		}
+	}
+}
+
+func TestSmartRoutingManualTakeoverKeepsScoreGateRefreshing(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	node, err := database.CreateNode("edge-takeover-refresh", "203.0.113.132")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetNodeStatus(node.ID, domain.NodeActive); err != nil {
+		t.Fatal(err)
+	}
+	target, err := database.CreateMonitoringTarget("接管刷新探针", "probe-takeover.example.test:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := DefaultSmartRoutingConfig()
+	config.Score.PauseBelowScore = 70
+	config.Score.PauseAfterRounds = 2
+	config.Score.ResumeAtScore = 90
+	config.Score.ResumeAfterRounds = SmartRoutingMinResumeRounds
+	if _, err := database.UpdateSmartRoutingPolicy(node.ID, config, time.Now().UTC(), monitoringStaleAfterForTest); err != nil {
+		t.Fatal(err)
+	}
+	checkedAt := time.Now().UTC().Add(time.Second)
+	for round := 1; round <= 2; round++ {
+		if _, err := database.RecordMonitoringRound(node.ID, []domain.MonitoringProbeResult{
+			failedMonitoringResult(target.ID, checkedAt.Add(time.Duration(round)*time.Second)),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	paused, err := database.GetNode(node.ID)
+	if err != nil || paused.Status != domain.NodeDraining || !paused.MonitorAutoPaused {
+		t.Fatalf("low rounds did not auto-pause node: %#v, %v", paused, err)
+	}
+	takenOver, err := database.SetNodeStatusManual(node.ID, domain.NodeActive)
+	if err != nil || !takenOver {
+		t.Fatalf("manual takeover = %t, %v", takenOver, err)
+	}
+	healthyResult := func(at time.Time) domain.MonitoringProbeResult {
+		return domain.MonitoringProbeResult{TargetID: target.ID, Attempts: 3, SuccessfulAttempts: 3, AverageLatencyMS: 20, CheckedAt: at}
+	}
+	for round := 1; round <= SmartRoutingMinResumeRounds; round++ {
+		outcome, err := database.RecordMonitoringRound(node.ID, []domain.MonitoringProbeResult{
+			healthyResult(checkedAt.Add(time.Duration(2+round) * time.Second)),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if outcome.NodeStatus != domain.NodeActive || outcome.AutoPaused {
+			t.Fatalf("manual takeover round %d changed node status: %#v", round, outcome)
+		}
+		if round < SmartRoutingMinResumeRounds {
+			if outcome.Transition.ScoreGate != SmartRoutingScoreBlocked || outcome.Transition.ScoreGateChanged {
+				t.Fatalf("takeover recovery round %d = %#v", round, outcome)
+			}
+			continue
+		}
+		if outcome.Transition.ScoreGate != SmartRoutingScoreAllowed || !outcome.Transition.ScoreGateChanged {
+			t.Fatalf("takeover recovery final round = %#v", outcome)
+		}
+	}
+	policy, err := database.SmartRoutingPolicy(node.ID)
+	if err != nil || policy.ScoreGate != SmartRoutingScoreAllowed || policy.ScoreRecoveryStreak != 0 || policy.Enabled {
+		t.Fatalf("gate refresh during takeover = %#v, %v", policy, err)
+	}
+	config.Enabled = true
+	reenabled, err := database.UpdateSmartRoutingPolicy(node.ID, config, time.Now().UTC(), monitoringStaleAfterForTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reenabled.Policy.ScoreGate != SmartRoutingScoreAllowed || reenabled.Transition.NodeStatus != domain.NodeActive || reenabled.Transition.StatusChanged || reenabled.Transition.AutoPaused {
+		t.Fatalf("reenable after recovery re-drained node: %#v", reenabled)
+	}
+	fresh, err := database.GetNode(node.ID)
+	if err != nil || fresh.Status != domain.NodeActive || fresh.MonitorAutoPaused {
+		t.Fatalf("node state after reenable = %#v, %v", fresh, err)
+	}
+	firstLow, err := database.RecordMonitoringRound(node.ID, []domain.MonitoringProbeResult{
+		failedMonitoringResult(target.ID, checkedAt.Add(6 * time.Second)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstLow.Transition.ScoreGate != SmartRoutingScoreAllowed || firstLow.Transition.ScoreGateChanged || firstLow.NodeStatus != domain.NodeActive {
+		t.Fatalf("first low round after handover = %#v", firstLow)
+	}
+	secondLow, err := database.RecordMonitoringRound(node.ID, []domain.MonitoringProbeResult{
+		failedMonitoringResult(target.ID, checkedAt.Add(7 * time.Second)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondLow.Transition.ScoreGate != SmartRoutingScoreBlocked || !secondLow.Transition.ScoreGateChanged || secondLow.NodeStatus != domain.NodeDraining || !secondLow.AutoPaused {
+		t.Fatalf("genuine fault after handover = %#v", secondLow)
 	}
 }
 

@@ -365,7 +365,6 @@ func (s *Store) UpdateSmartRoutingPolicy(nodeID string, input SmartRoutingConfig
 	scoreConfigChanged := current.ScoreEnabled != config.Score.Enabled ||
 		current.ScorePauseBelow != config.Score.PauseBelowScore || current.ScorePauseRounds != config.Score.PauseAfterRounds ||
 		current.ScoreResumeAt != config.Score.ResumeAtScore || current.ScoreResumeRounds != config.Score.ResumeAfterRounds
-	controlReturned := !current.Enabled && config.Enabled
 	next := current
 	next.Enabled = config.Enabled
 	next.ScoreEnabled = config.Score.Enabled
@@ -375,7 +374,7 @@ func (s *Store) UpdateSmartRoutingPolicy(nodeID string, input SmartRoutingConfig
 	next.ScoreResumeRounds = config.Score.ResumeAfterRounds
 	next.ScheduleEnabled = config.Schedule.Enabled
 	next.ScheduleWindows = config.Schedule.Windows
-	if scoreConfigChanged || controlReturned {
+	if scoreConfigChanged {
 		next.ScoreLowStreak = 0
 		next.ScoreRecoveryStreak = 0
 		if !next.ScoreEnabled {
