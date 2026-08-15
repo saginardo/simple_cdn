@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -29,6 +30,11 @@ type WireGuardManager interface {
 	RunPerformance(context.Context, domain.WireGuardPerformanceTest, domain.WireGuardEdgeConfig) (*domain.WireGuardPerformanceResult, error)
 }
 
+const (
+	wireGuardCommandTimeout      = 5 * time.Second
+	wireGuardResolutionCacheSize = 256
+)
+
 type linuxWireGuardManager struct {
 	stateDirectory          string
 	configDirectory         string
@@ -39,8 +45,29 @@ type linuxWireGuardManager struct {
 	iperf3Path              string
 	resolveHostIPs          func(context.Context, string) ([]net.IP, error)
 	localIPs                func() ([]net.IP, error)
+	linkProbe               func(string) bool
 	appliedEgressLimitsMbps map[string]int
 	mu                      sync.Mutex
+	keyMu                   sync.Mutex
+	keyCache                map[string]wireGuardKeyCache
+	resolutionMu            sync.Mutex
+	resolutionCache         map[string]cachedWireGuardResolution
+}
+
+type wireGuardKeyCache struct {
+	pair    wireGuardKeyPair
+	size    int64
+	modTime time.Time
+}
+
+type wireGuardKeyPair struct {
+	privateKey string
+	publicKey  string
+}
+
+type cachedWireGuardResolution struct {
+	ips       []net.IP
+	expiresAt time.Time
 }
 
 type wireGuardManagedState struct {
@@ -61,6 +88,10 @@ func newLinuxWireGuardManager(stateDirectory, configDirectory string) WireGuardM
 		return net.DefaultResolver.LookupIP(ctx, "ip4", host)
 	}
 	manager.localIPs = wireGuardLocalInterfaceIPs
+	manager.linkProbe = func(interfaceName string) bool {
+		_, err := net.InterfaceByName(interfaceName)
+		return err == nil
+	}
 	manager.appliedEgressLimitsMbps = make(map[string]int)
 	return manager
 }
@@ -95,6 +126,10 @@ func (m *linuxWireGuardManager) Reconcile(ctx context.Context, configs []domain.
 	if stateErr != nil {
 		problems = append(problems, stateErr)
 	}
+	handshakes, transfers, statusErr := []byte(nil), []byte(nil), error(nil)
+	if len(configs) > 0 {
+		handshakes, transfers, statusErr = m.readAllPeerStatus(ctx)
+	}
 	for _, config := range configs {
 		if err := validateWireGuardEdgeConfig(config); err != nil {
 			problems = append(problems, fmt.Errorf("invalid tunnel %q: %w", config.TunnelID, err))
@@ -105,7 +140,7 @@ func (m *linuxWireGuardManager) Reconcile(ctx context.Context, configs []domain.
 			continue
 		}
 		desired[config.TunnelID] = true
-		report, err := m.reconcileTunnel(ctx, config)
+		report, err := m.reconcileTunnel(ctx, config, handshakes, transfers, statusErr)
 		if err != nil {
 			problems = append(problems, fmt.Errorf("reconcile %s: %w", config.Name, err))
 		}
@@ -125,8 +160,11 @@ func (m *linuxWireGuardManager) Reconcile(ctx context.Context, configs []domain.
 	for tunnelID := range desired {
 		wantedIDs = append(wantedIDs, tunnelID)
 	}
-	if err := m.saveManagedState(wantedIDs); err != nil {
-		problems = append(problems, err)
+	sort.Strings(wantedIDs)
+	if !slices.Equal(previous.TunnelIDs, wantedIDs) {
+		if err := m.saveManagedState(wantedIDs); err != nil {
+			problems = append(problems, err)
+		}
 	}
 	return reports, errors.Join(problems...)
 }
@@ -179,7 +217,12 @@ func validateWireGuardEdgeConfig(config domain.WireGuardEdgeConfig) error {
 	return nil
 }
 
-func (m *linuxWireGuardManager) reconcileTunnel(ctx context.Context, config domain.WireGuardEdgeConfig) (domain.WireGuardPeerReport, error) {
+func (m *linuxWireGuardManager) reconcileTunnel(
+	ctx context.Context,
+	config domain.WireGuardEdgeConfig,
+	handshakes, transfers []byte,
+	statusErr error,
+) (domain.WireGuardPeerReport, error) {
 	privateKey, publicKey, err := m.loadOrCreateKey(config.TunnelID)
 	report := domain.WireGuardPeerReport{
 		TunnelID: config.TunnelID, Revision: config.Revision, InterfaceName: config.InterfaceName,
@@ -188,6 +231,29 @@ func (m *linuxWireGuardManager) reconcileTunnel(ctx context.Context, config doma
 	if err != nil {
 		return report, err
 	}
+	contents := renderWireGuardEdgeConfig(config, privateKey)
+	current, readErr := os.ReadFile(m.configPath(config))
+	unchanged := readErr == nil && bytes.Equal(current, contents)
+	if unchanged && config.OriginPublicKey != "" && m.interfaceExists(config.InterfaceName) {
+		if err := m.applyEgressLimit(ctx, config, false); err != nil {
+			report.Error = wireGuardErrorDetail(err)
+			return report, err
+		}
+		if statusErr != nil {
+			report.Error = wireGuardErrorDetail(statusErr)
+			return report, statusErr
+		}
+		handshake, rxBytes, txBytes, err := readPeerStatusFromAll(config, handshakes, transfers)
+		if err != nil {
+			report.Error = wireGuardErrorDetail(err)
+			return report, err
+		}
+		report.LatestHandshake = handshake
+		report.RXBytes = rxBytes
+		report.TXBytes = txBytes
+		return report, nil
+	}
+
 	localEndpoint, err := m.endpointResolvesToLocal(ctx, config.Endpoint)
 	if err != nil {
 		report.Error = wireGuardErrorDetail(err)
@@ -199,7 +265,7 @@ func (m *linuxWireGuardManager) reconcileTunnel(ctx context.Context, config doma
 		return report, err
 	}
 	if config.OriginPublicKey == "" {
-		if m.interfaceExists(ctx, config.InterfaceName) {
+		if m.interfaceExists(config.InterfaceName) {
 			if downErr := m.run(ctx, m.wgQuickPath, "down", m.configPath(config)); downErr != nil {
 				report.Error = wireGuardErrorDetail(downErr)
 				return report, downErr
@@ -209,7 +275,6 @@ func (m *linuxWireGuardManager) reconcileTunnel(ctx context.Context, config doma
 		report.Error = "waiting for the origin WireGuard public key"
 		return report, nil
 	}
-	contents := renderWireGuardEdgeConfig(config, privateKey)
 	interfaceChanged, err := m.applyConfig(ctx, config, contents)
 	if err != nil {
 		report.Error = wireGuardErrorDetail(err)
@@ -230,6 +295,92 @@ func (m *linuxWireGuardManager) reconcileTunnel(ctx context.Context, config doma
 	return report, nil
 }
 
+func (m *linuxWireGuardManager) readAllPeerStatus(ctx context.Context) ([]byte, []byte, error) {
+	handshakes, handshakeErr := m.runOutput(ctx, m.wgPath, "show", "all", "latest-handshakes")
+	transfers, transferErr := m.runOutput(ctx, m.wgPath, "show", "all", "transfer")
+	return handshakes, transfers, errors.Join(handshakeErr, transferErr)
+}
+
+func readPeerStatusFromAll(
+	config domain.WireGuardEdgeConfig,
+	handshakes, transfers []byte,
+) (*time.Time, int64, int64, error) {
+	seconds, err := wireGuardHandshakeSeconds(config.InterfaceName, config.OriginPublicKey, handshakes)
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("read latest handshake: %w", err)
+	}
+	var handshake *time.Time
+	if seconds > 0 {
+		value := time.Unix(seconds, 0).UTC()
+		handshake = &value
+	}
+	rxBytes, txBytes, err := wireGuardTransferCounters(config.InterfaceName, config.OriginPublicKey, transfers)
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("read peer transfer counters: %w", err)
+	}
+	return handshake, rxBytes, txBytes, nil
+}
+
+func wireGuardHandshakeSeconds(interfaceName, publicKey string, output []byte) (int64, error) {
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		fields := strings.Fields(line)
+		index := wireGuardFieldIndex(fields, publicKey)
+		if index < 0 {
+			continue
+		}
+		var raw string
+		switch {
+		case index == 0 && len(fields) == 2:
+			raw = fields[1]
+		case index == 1 && len(fields) >= 3 && fields[0] == interfaceName:
+			raw = fields[2]
+		default:
+			continue
+		}
+		seconds, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || seconds < 0 {
+			return 0, errors.New("wg returned an invalid handshake timestamp")
+		}
+		return seconds, nil
+	}
+	return 0, nil
+}
+
+func wireGuardTransferCounters(interfaceName, publicKey string, output []byte) (int64, int64, error) {
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		fields := strings.Fields(line)
+		index := wireGuardFieldIndex(fields, publicKey)
+		if index < 0 {
+			continue
+		}
+		var rxText, txText string
+		switch {
+		case index == 0 && len(fields) == 3:
+			rxText, txText = fields[1], fields[2]
+		case index == 1 && len(fields) == 4 && fields[0] == interfaceName:
+			rxText, txText = fields[2], fields[3]
+		default:
+			continue
+		}
+		rxBytes, rxErr := strconv.ParseInt(rxText, 10, 64)
+		txBytes, txErr := strconv.ParseInt(txText, 10, 64)
+		if rxErr != nil || txErr != nil || rxBytes < 0 || txBytes < 0 {
+			return 0, 0, errors.New("wg returned invalid transfer counters")
+		}
+		return rxBytes, txBytes, nil
+	}
+	return 0, 0, errors.New("origin peer is absent from the WireGuard interface")
+}
+
+func wireGuardFieldIndex(fields []string, wanted string) int {
+	for index, field := range fields {
+		if field == wanted {
+			return index
+		}
+	}
+	return -1
+}
+
 func (m *linuxWireGuardManager) endpointResolvesToLocal(ctx context.Context, endpoint string) (bool, error) {
 	host, _, err := net.SplitHostPort(endpoint)
 	if err != nil {
@@ -239,13 +390,7 @@ func (m *linuxWireGuardManager) endpointResolvesToLocal(ctx context.Context, end
 	if literal := net.ParseIP(host); literal != nil {
 		endpointIPs = []net.IP{literal}
 	} else {
-		resolver := m.resolveHostIPs
-		if resolver == nil {
-			resolver = func(ctx context.Context, host string) ([]net.IP, error) {
-				return net.DefaultResolver.LookupIP(ctx, "ip4", host)
-			}
-		}
-		endpointIPs, err = resolver(ctx, host)
+		endpointIPs, err = m.cachedResolveHost(ctx, host)
 		if err != nil {
 			return false, fmt.Errorf("resolve origin endpoint %s: %w", host, err)
 		}
@@ -268,6 +413,53 @@ func (m *linuxWireGuardManager) endpointResolvesToLocal(ctx context.Context, end
 	return false, nil
 }
 
+func (m *linuxWireGuardManager) cachedResolveHost(ctx context.Context, host string) ([]net.IP, error) {
+	now := time.Now()
+	m.resolutionMu.Lock()
+	if m.resolutionCache == nil {
+		m.resolutionCache = make(map[string]cachedWireGuardResolution)
+	}
+	if cached, found := m.resolutionCache[host]; found && now.Before(cached.expiresAt) {
+		ips := append([]net.IP(nil), cached.ips...)
+		m.resolutionMu.Unlock()
+		return ips, nil
+	}
+	m.resolutionMu.Unlock()
+
+	resolver := m.resolveHostIPs
+	if resolver == nil {
+		resolver = func(ctx context.Context, host string) ([]net.IP, error) {
+			return net.DefaultResolver.LookupIP(ctx, "ip4", host)
+		}
+	}
+	resolved, err := resolver(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	ips := make([]net.IP, 0, len(resolved))
+	for _, ip := range resolved {
+		if ip == nil || ip.To4() == nil {
+			continue
+		}
+		ips = append(ips, append(net.IP(nil), ip...))
+	}
+	if len(ips) == 0 {
+		return nil, errors.New("no IPv4 addresses")
+	}
+
+	m.resolutionMu.Lock()
+	if len(m.resolutionCache) >= wireGuardResolutionCacheSize {
+		for key, cached := range m.resolutionCache {
+			if !now.Before(cached.expiresAt) {
+				delete(m.resolutionCache, key)
+			}
+		}
+	}
+	m.resolutionCache[host] = cachedWireGuardResolution{ips: ips, expiresAt: now.Add(time.Minute)}
+	m.resolutionMu.Unlock()
+	return append([]net.IP(nil), ips...), nil
+}
+
 func wireGuardLocalInterfaceIPs() ([]net.IP, error) {
 	addresses, err := net.InterfaceAddrs()
 	if err != nil {
@@ -288,13 +480,31 @@ func wireGuardLocalInterfaceIPs() ([]net.IP, error) {
 
 func (m *linuxWireGuardManager) loadOrCreateKey(tunnelID string) (string, string, error) {
 	path := m.keyPath(tunnelID)
+	info, statErr := os.Stat(path)
+	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return "", "", fmt.Errorf("read local WireGuard key: %w", statErr)
+	}
+
+	m.keyMu.Lock()
+	defer m.keyMu.Unlock()
+	if m.keyCache == nil {
+		m.keyCache = make(map[string]wireGuardKeyCache)
+	}
+	if statErr == nil {
+		if cached, found := m.keyCache[tunnelID]; found && cached.size == info.Size() && cached.modTime.Equal(info.ModTime()) {
+			return cached.pair.privateKey, cached.pair.publicKey, nil
+		}
+	}
 	contents, err := os.ReadFile(path)
 	if err == nil {
 		privateKey := strings.TrimSpace(string(contents))
 		publicKey, keyErr := wireGuardPublicKey(privateKey)
 		if keyErr != nil {
+			delete(m.keyCache, tunnelID)
 			return "", "", fmt.Errorf("read local WireGuard key: %w", keyErr)
 		}
+		pair := wireGuardKeyPair{privateKey: privateKey, publicKey: publicKey}
+		m.keyCache[tunnelID] = wireGuardKeyCache{pair: pair, size: info.Size(), modTime: info.ModTime()}
 		return privateKey, publicKey, nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {
@@ -314,6 +524,12 @@ func (m *linuxWireGuardManager) loadOrCreateKey(tunnelID string) (string, string
 	}
 	if err := atomicWriteFile(path, []byte(privateKey+"\n"), 0o600); err != nil {
 		return "", "", fmt.Errorf("persist local WireGuard key: %w", err)
+	}
+	pair := wireGuardKeyPair{privateKey: privateKey, publicKey: publicKey}
+	if info, err := os.Stat(path); err == nil {
+		m.keyCache[tunnelID] = wireGuardKeyCache{pair: pair, size: info.Size(), modTime: info.ModTime()}
+	} else {
+		m.keyCache[tunnelID] = wireGuardKeyCache{pair: pair}
 	}
 	return privateKey, publicKey, nil
 }
@@ -430,7 +646,7 @@ func (m *linuxWireGuardManager) applyConfig(ctx context.Context, config domain.W
 	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
 		return false, fmt.Errorf("read current configuration: %w", readErr)
 	}
-	exists := m.interfaceExists(ctx, config.InterfaceName)
+	exists := m.interfaceExists(config.InterfaceName)
 	if readErr == nil && bytes.Equal(previous, contents) && exists {
 		return false, nil
 	}
@@ -667,8 +883,11 @@ func (m *linuxWireGuardManager) readPeerStatus(ctx context.Context, config domai
 	return nil, 0, 0, errors.New("origin peer is absent from the WireGuard interface")
 }
 
-func (m *linuxWireGuardManager) interfaceExists(ctx context.Context, interfaceName string) bool {
-	command := exec.CommandContext(ctx, m.ipPath, "link", "show", "dev", interfaceName)
+func (m *linuxWireGuardManager) interfaceExists(interfaceName string) bool {
+	if m.linkProbe != nil {
+		return m.linkProbe(interfaceName)
+	}
+	command := exec.Command(m.ipPath, "link", "show", "dev", interfaceName)
 	return command.Run() == nil
 }
 
@@ -678,7 +897,7 @@ func (m *linuxWireGuardManager) removeTunnel(ctx context.Context, tunnelID strin
 	}
 	config := domain.WireGuardEdgeConfig{TunnelID: tunnelID, InterfaceName: domain.WireGuardInterfaceName(tunnelID)}
 	path := m.configPath(config)
-	if m.interfaceExists(ctx, config.InterfaceName) {
+	if m.interfaceExists(config.InterfaceName) {
 		if err := m.run(ctx, m.wgQuickPath, "down", path); err != nil {
 			return fmt.Errorf("remove WireGuard tunnel %s: %w", tunnelID, err)
 		}
@@ -737,7 +956,9 @@ func (m *linuxWireGuardManager) run(ctx context.Context, name string, arguments 
 }
 
 func (m *linuxWireGuardManager) runOutput(ctx context.Context, name string, arguments ...string) ([]byte, error) {
-	output, err := exec.CommandContext(ctx, name, arguments...).CombinedOutput()
+	commandContext, cancel := context.WithTimeout(ctx, wireGuardCommandTimeout)
+	defer cancel()
+	output, err := exec.CommandContext(commandContext, name, arguments...).CombinedOutput()
 	if err != nil {
 		detail := strings.TrimSpace(string(output))
 		if len(detail) > 1000 {
@@ -785,7 +1006,7 @@ func (m *linuxWireGuardManager) RunPerformance(ctx context.Context, test domain.
 		}
 		return nil, fmt.Errorf("invalid WireGuard performance configuration: %w", err)
 	}
-	if !m.interfaceExists(ctx, config.InterfaceName) {
+	if !m.interfaceExists(config.InterfaceName) {
 		return nil, errors.New("WireGuard interface is not active")
 	}
 

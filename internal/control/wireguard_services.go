@@ -67,8 +67,16 @@ type wireGuardOriginServiceBuilder struct {
 	expectedReferences map[string]map[string]struct{}
 }
 
+const wireGuardTunnelDetailCacheTTL = 2 * time.Second
+
 func (s *Server) getWireGuardTunnel(response http.ResponseWriter, request *http.Request) {
-	tunnel, err := s.Store.GetWireGuardTunnel(request.PathValue("id"))
+	tunnelID := request.PathValue("id")
+	now := time.Now()
+	if cached, found := s.cachedWireGuardTunnelDetail(tunnelID, now); found {
+		writeJSON(response, http.StatusOK, cached)
+		return
+	}
+	tunnel, err := s.Store.GetWireGuardTunnel(tunnelID)
 	if err != nil {
 		writeStoreError(response, err)
 		return
@@ -78,15 +86,36 @@ func (s *Server) getWireGuardTunnel(response http.ResponseWriter, request *http.
 		writeStoreError(response, err)
 		return
 	}
-	at := time.Now().UTC()
+	at := now.UTC()
 	services, err := s.wireGuardOriginServices(tunnel, nodes, at)
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(response, http.StatusOK, wireGuardTunnelDetailResponse{
+	detail := wireGuardTunnelDetailResponse{
 		Tunnel: tunnel, OriginServices: services, PeerRuntime: s.wireGuardPeerRuntime(tunnel, nodes, at),
-	})
+	}
+	s.cacheWireGuardTunnelDetail(tunnelID, detail, at)
+	writeJSON(response, http.StatusOK, detail)
+}
+
+func (s *Server) cachedWireGuardTunnelDetail(tunnelID string, now time.Time) (wireGuardTunnelDetailResponse, bool) {
+	s.wireGuardDetailMu.Lock()
+	defer s.wireGuardDetailMu.Unlock()
+	cached, found := s.wireGuardDetailCache[tunnelID]
+	if !found || !now.Before(cached.expiresAt) {
+		return wireGuardTunnelDetailResponse{}, false
+	}
+	return cached.detail, true
+}
+
+func (s *Server) cacheWireGuardTunnelDetail(tunnelID string, detail wireGuardTunnelDetailResponse, at time.Time) {
+	s.wireGuardDetailMu.Lock()
+	if s.wireGuardDetailCache == nil {
+		s.wireGuardDetailCache = make(map[string]wireGuardTunnelDetailCache)
+	}
+	s.wireGuardDetailCache[tunnelID] = wireGuardTunnelDetailCache{detail: detail, expiresAt: at.Add(wireGuardTunnelDetailCacheTTL)}
+	s.wireGuardDetailMu.Unlock()
 }
 
 func (s *Server) wireGuardOriginServices(

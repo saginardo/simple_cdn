@@ -113,14 +113,15 @@ type Agent struct {
 	jitterOnce      sync.Once
 	jitterSeed      [sha256.Size]byte
 
-	monitoringMu       sync.RWMutex
-	monitoringTargets  []domain.MonitoringTarget
-	monitoringRevision string
-	monitoringLoaded   bool
-	wireGuardMu        sync.RWMutex
-	wireGuardConfigs   []domain.WireGuardEdgeConfig
-	wireGuardRevision  string
-	wireGuardLoaded    bool
+	monitoringMu             sync.RWMutex
+	monitoringTargets        []domain.MonitoringTarget
+	monitoringRevision       string
+	monitoringLoaded         bool
+	wireGuardMu              sync.RWMutex
+	wireGuardConfigs         []domain.WireGuardEdgeConfig
+	wireGuardRevision        string
+	wireGuardLoaded          bool
+	wireGuardAppliedRevision string
 
 	clientMu          sync.Mutex
 	controlClient     *http.Client
@@ -363,8 +364,12 @@ func (a *Agent) Run(ctx context.Context) error {
 	start(func() { a.runPeriodic(ctx, "configuration", a.runConfigurationRound) })
 	start(func() { a.runPeriodic(ctx, "monitoring", a.runMonitoringRound) })
 	start(func() { a.runPeriodic(ctx, "upgrade", a.runUpgradeRound) })
-	if wireGuardAvailable, _ := a.wireGuard.Available(); wireGuardAvailable {
+	wireGuardAvailable, wireGuardPerformanceAvailable := a.wireGuard.Available()
+	if wireGuardAvailable {
 		start(func() { a.runWireGuardLoop(ctx) })
+	}
+	if wireGuardPerformanceAvailable {
+		start(func() { a.runWireGuardPerformanceLoop(ctx) })
 	}
 	err := a.runHeartbeatLoop(ctx)
 	group.Wait()
@@ -521,7 +526,7 @@ func (a *Agent) heartbeatError() string {
 	a.statusMu.Lock()
 	defer a.statusMu.Unlock()
 	for _, component := range []string{
-		"certificate", "configuration", "wireguard", "origin_health_service", "origin_health_cold", "monitoring", "upgrade", "machine_status",
+		"certificate", "configuration", "wireguard", "wireguard_performance", "origin_health_service", "origin_health_cold", "monitoring", "upgrade", "machine_status",
 	} {
 		if detail := a.componentFailures[component]; detail != "" {
 			return detail

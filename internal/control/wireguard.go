@@ -307,14 +307,20 @@ func wireGuardTokenHash(token string) string {
 }
 
 func (s *Server) edgeWireGuardConfig(response http.ResponseWriter, request *http.Request) {
-	configs, err := s.Store.WireGuardEdgeConfigs(edgeNodeID(request.Context()))
+	nodeID := edgeNodeID(request.Context())
+	configRevisionMarker, err := s.Store.WireGuardEdgeConfigRevision(nodeID)
 	if err != nil {
 		writeStoreError(response, err)
 		return
 	}
-	revision := revisionDigest(configs)
+	revision := revisionDigest(configRevisionMarker)
 	if requestHasRevision(request, revision) {
 		writeRevisionNotModified(response, revision)
+		return
+	}
+	configs, err := s.Store.WireGuardEdgeConfigs(nodeID)
+	if err != nil {
+		writeStoreError(response, err)
 		return
 	}
 	response.Header().Set("ETag", revisionETag(revision))

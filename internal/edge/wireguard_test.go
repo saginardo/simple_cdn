@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"simple_cdn/internal/domain"
 )
@@ -49,7 +50,7 @@ func (manager *fakeWireGuardManager) RunPerformance(_ context.Context, _ domain.
 	}, errors.New("WireGuard UDP: blocked")
 }
 
-func TestWireGuardRoundCachesConfigurationReportsStatusAndPartialPerformance(t *testing.T) {
+func TestWireGuardRoundsDecouplePerformanceFromConfiguration(t *testing.T) {
 	const tunnelID = "12345678-1234-4234-8234-123456789abc"
 	revision := strings.Repeat("a", 64)
 	config := domain.WireGuardEdgeConfig{
@@ -64,6 +65,7 @@ func TestWireGuardRoundCachesConfigurationReportsStatusAndPartialPerformance(t *
 	}
 	configGets := 0
 	statusReports := 0
+	performanceClaims := 0
 	var performanceReport struct {
 		Result *domain.WireGuardPerformanceResult `json:"result"`
 		Error  string                             `json:"error"`
@@ -87,7 +89,8 @@ func TestWireGuardRoundCachesConfigurationReportsStatusAndPartialPerformance(t *
 			statusReports++
 			return response(http.StatusAccepted, `{}`, make(http.Header))
 		case "/api/edge/v1/wireguard/performance-test":
-			if configGets > 1 {
+			performanceClaims++
+			if performanceClaims > 1 {
 				return response(http.StatusNoContent, "", make(http.Header))
 			}
 			encoded, _ := json.Marshal(map[string]any{"test": test, "config": config})
@@ -104,7 +107,8 @@ func TestWireGuardRoundCachesConfigurationReportsStatusAndPartialPerformance(t *
 	manager := &fakeWireGuardManager{}
 	agent, err := New(Config{
 		ControlURL: "https://control.example.test", StateDir: t.TempDir(), CertificateDir: filepath.Join(t.TempDir(), "certs"),
-		AgentSHA256: strings.Repeat("b", 64), HTTPClient: client, Runner: &fakeRunner{}, WireGuardManager: manager,
+		OriginPoolConfigDirectory: filepath.Join(t.TempDir(), "origin-pools"),
+		AgentSHA256:               strings.Repeat("b", 64), HTTPClient: client, Runner: &fakeRunner{}, WireGuardManager: manager,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -114,17 +118,29 @@ func TestWireGuardRoundCachesConfigurationReportsStatusAndPartialPerformance(t *
 		!slicesContain(agent.Config.Capabilities, domain.EdgeCapabilityWireGuardPerformanceV2) {
 		t.Fatalf("WireGuard capabilities = %#v", agent.Config.Capabilities)
 	}
-	if err := agent.runWireGuardRound(context.Background()); err == nil || !strings.Contains(err.Error(), "blocked") {
-		t.Fatalf("partial performance round error = %v", err)
+	if err := agent.runWireGuardPerformanceRound(context.Background()); err != nil {
+		t.Fatal(err)
 	}
-	if performanceReport.Result == nil || performanceReport.Result.DirectTCP == nil || !strings.Contains(performanceReport.Error, "blocked") {
-		t.Fatalf("partial performance report = %#v", performanceReport)
+	if performanceClaims != 0 || manager.performanceCount != 0 {
+		t.Fatalf("performance ran before initial reconciliation: claims:%d runs:%d", performanceClaims, manager.performanceCount)
 	}
 	if err := agent.runWireGuardRound(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if configGets != 2 || statusReports != 2 || manager.reconcileCount != 2 || manager.performanceCount != 1 || len(manager.configs) != 1 {
-		t.Fatalf("round calls = configs:%d status:%d reconcile:%d performance:%d", configGets, statusReports, manager.reconcileCount, manager.performanceCount)
+	if err := agent.runWireGuardRound(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.runWireGuardPerformanceRound(context.Background()); err == nil || !strings.Contains(err.Error(), "blocked") {
+		t.Fatalf("partial performance round error = %v", err)
+	}
+	if err := agent.runWireGuardPerformanceRound(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if performanceReport.Result == nil || performanceReport.Result.DirectTCP == nil || !strings.Contains(performanceReport.Error, "blocked") {
+		t.Fatalf("partial performance report = %#v", performanceReport)
+	}
+	if configGets != 2 || statusReports != 2 || performanceClaims != 2 || manager.reconcileCount != 2 || manager.performanceCount != 1 || len(manager.configs) != 1 {
+		t.Fatalf("round calls = configs:%d status:%d claims:%d reconcile:%d performance:%d", configGets, statusReports, performanceClaims, manager.reconcileCount, manager.performanceCount)
 	}
 }
 
@@ -344,13 +360,97 @@ func TestWireGuardSameHostGuardPreservesExistingConfig(t *testing.T) {
 	if err := os.WriteFile(path, []byte("origin configuration must survive\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	report, err := manager.reconcileTunnel(context.Background(), config)
+	report, err := manager.reconcileTunnel(context.Background(), config, nil, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "same-host WireGuard is unsupported") || !strings.Contains(report.Error, "same-host") {
 		t.Fatalf("same-host reconcile = %#v, %v", report, err)
 	}
 	contents, readErr := os.ReadFile(path)
 	if readErr != nil || string(contents) != "origin configuration must survive\n" {
 		t.Fatalf("existing config after guard = %q, %v", contents, readErr)
+	}
+}
+
+func TestWireGuardReconcileFastPathUsesAllPeerStatusWithoutConfigurationCommands(t *testing.T) {
+	const tunnelID = "12345678-1234-4234-8234-123456789abc"
+	stateDirectory := filepath.Join(t.TempDir(), "state")
+	configDirectory := filepath.Join(t.TempDir(), "configs")
+	if err := os.MkdirAll(stateDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(configDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	commandLog := filepath.Join(t.TempDir(), "commands.log")
+	wgPath := writeWireGuardTestCommand(t, filepath.Dir(commandLog), "wg", commandLog, fmt.Sprintf(`
+if [ "$1" = "show" ] && [ "$2" = "all" ]; then
+  case "$3" in
+    latest-handshakes) printf 'scwg1234567812\t%s\t1700000000\n' %q ;;
+    transfer) printf 'scwg1234567812\t%s\t1234\t5678\n' %q ;;
+  esac
+fi
+exit 0`, wireGuardEdgeTestKey(1), wireGuardEdgeTestKey(1), wireGuardEdgeTestKey(1), wireGuardEdgeTestKey(1)))
+	manager := &linuxWireGuardManager{
+		stateDirectory: stateDirectory, configDirectory: configDirectory, wgPath: wgPath,
+		wgQuickPath: "/usr/bin/true", ipPath: "/usr/bin/true", tcPath: "/usr/bin/true",
+		resolveHostIPs: func(context.Context, string) ([]net.IP, error) {
+			return nil, errors.New("fast path must not resolve the endpoint")
+		},
+		linkProbe: func(string) bool { return true },
+	}
+	config := domain.WireGuardEdgeConfig{
+		TunnelID: tunnelID, Name: "origin", Revision: 3, InterfaceName: domain.WireGuardInterfaceName(tunnelID),
+		Address: "10.253.30.2/32", OriginAddress: "10.253.30.1", OriginPublicKey: wireGuardEdgeTestKey(1),
+		Endpoint: "origin.example.test:51820", MTU: 1420, PersistentKeepaliveSecs: 25,
+		PerformancePort: 5201, DirectPerformanceHost: "origin.example.test",
+	}
+	manager.appliedEgressLimitsMbps = map[string]int{tunnelID: 0}
+	privateKey := wireGuardEdgeTestKey(9)
+	if err := os.WriteFile(manager.keyPath(tunnelID), []byte(privateKey+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manager.configPath(config), renderWireGuardEdgeConfig(config, privateKey), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	reports, err := manager.Reconcile(context.Background(), []domain.WireGuardEdgeConfig{config})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) != 1 || reports[0].RXBytes != 1234 || reports[0].TXBytes != 5678 ||
+		reports[0].LatestHandshake == nil || !reports[0].LatestHandshake.Equal(time.Unix(1700000000, 0).UTC()) {
+		t.Fatalf("fast path reports = %#v", reports)
+	}
+	log := readWireGuardTestFile(t, commandLog)
+	for _, expected := range []string{
+		"wg show all latest-handshakes",
+		"wg show all transfer",
+	} {
+		if !strings.Contains(log, expected) {
+			t.Fatalf("fast path command log is missing %q:\n%s", expected, log)
+		}
+	}
+	for _, forbidden := range []string{"ip link show", "wg syncconf", "wg show scwg1234567812 latest-handshakes", "wg show scwg1234567812 transfer"} {
+		if strings.Contains(log, forbidden) {
+			t.Fatalf("fast path command log contains %q:\n%s", forbidden, log)
+		}
+	}
+}
+
+func TestWireGuardPeerStatusFromAllParsesInterfacePrefixedOutput(t *testing.T) {
+	config := domain.WireGuardEdgeConfig{
+		InterfaceName: "scwg1234567812", OriginPublicKey: wireGuardEdgeTestKey(1),
+	}
+	handshakes := []byte("scwg1234567812\t" + wireGuardEdgeTestKey(1) + "\t1700000000\n")
+	transfers := []byte("scwg1234567812\t" + wireGuardEdgeTestKey(1) + "\t1234\t5678\n")
+	handshake, rxBytes, txBytes, err := readPeerStatusFromAll(config, handshakes, transfers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if handshake == nil || !handshake.Equal(time.Unix(1700000000, 0).UTC()) || rxBytes != 1234 || txBytes != 5678 {
+		t.Fatalf("all-interface peer status = %v %d %d", handshake, rxBytes, txBytes)
+	}
+	if _, _, _, err := readPeerStatusFromAll(config, nil, nil); err == nil || !strings.Contains(err.Error(), "absent") {
+		t.Fatalf("missing transfer error = %v", err)
 	}
 }
 

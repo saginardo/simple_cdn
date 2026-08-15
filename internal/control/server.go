@@ -87,6 +87,13 @@ type Server struct {
 	edgeSecurityExpiresAt     time.Time
 	edgeSecurityRevisionSet   bool
 	staticAssetMu             sync.Mutex
+	wireGuardDetailMu         sync.Mutex
+	wireGuardDetailCache      map[string]wireGuardTunnelDetailCache
+}
+
+type wireGuardTunnelDetailCache struct {
+	detail    wireGuardTunnelDetailResponse
+	expiresAt time.Time
 }
 
 func (s *Server) Handler() http.Handler {

@@ -10,6 +10,9 @@ ORIGIN_ADDRESS=""
 UNINSTALL=0
 STATE_ROOT="/var/lib/simple-cdn-origin-wireguard"
 CONFIG_ROOT="/etc/wireguard"
+sysctl_profile_dir="/etc/sysctl.d"
+sysctl_profile_file="$sysctl_profile_dir/40-simple-cdn-origin-wireguard.conf"
+sysctl_baseline="$STATE_ROOT/sysctl-baseline.conf"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -33,7 +36,7 @@ if [[ ! "$TUNNEL_ID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F
 fi
 
 compact_id=${TUNNEL_ID//-/}
-compact_id=${compact_id,,}
+compact_id=$(printf '%s' "$compact_id" | tr '[:upper:]' '[:lower:]')
 interface="scwg${compact_id:0:10}"
 table_name="scwg_${compact_id:0:10}"
 config_file="$CONFIG_ROOT/$interface.conf"
@@ -123,18 +126,135 @@ strip_wg_quick_config() {
   ' "$1"
 }
 
+origin_sysctl_snapshot_value() {
+  local snapshot="$1" wanted="$2"
+  awk -v wanted="$wanted" '
+    {
+      line = $0
+      key = line
+      sub(/[[:space:]]*=.*/, "", key)
+      gsub(/[[:space:]]/, "", key)
+      if (key == wanted) {
+        sub(/^[^=]*=[[:space:]]*/, "", line)
+        print line
+        found = 1
+        exit
+      }
+    }
+    END { exit found ? 0 : 1 }
+  ' "$snapshot"
+}
+
 export DEBIAN_FRONTEND=noninteractive
 if command -v apt-get >/dev/null 2>&1; then
   apt-get update
-  apt-get install -y --no-install-recommends ca-certificates curl jq wireguard-tools iperf3 nftables iproute2
+  apt-get install -y --no-install-recommends ca-certificates curl jq wireguard-tools iperf3 nftables iproute2 procps kmod
 elif command -v dnf >/dev/null 2>&1; then
-  dnf install -y ca-certificates curl jq wireguard-tools iperf3 nftables iproute
+  dnf install -y ca-certificates curl jq wireguard-tools iperf3 nftables iproute procps-ng kmod
 elif command -v yum >/dev/null 2>&1; then
-  yum install -y ca-certificates curl jq wireguard-tools iperf3 nftables iproute
+  yum install -y ca-certificates curl jq wireguard-tools iperf3 nftables iproute procps-ng kmod
 else
   echo "supported package manager not found (apt-get, dnf, or yum required)" >&2
   exit 1
 fi
+
+configure_origin_sysctl() {
+  local key value buffer_max mem_total_kib profile_next buffer_supported assignment baseline_next runtime_before
+  local -a sysctl_keys=(
+    net.core.default_qdisc net.ipv4.tcp_congestion_control net.ipv4.tcp_mtu_probing
+    net.core.rmem_max net.core.wmem_max net.ipv4.tcp_rmem net.ipv4.tcp_wmem
+  )
+
+  install -d -m 0700 "$STATE_ROOT"
+  runtime_before=$(mktemp "$STATE_ROOT/.sysctl-runtime.XXXXXX")
+  for key in "${sysctl_keys[@]}"; do
+    if value=$(sysctl -n "$key" 2>/dev/null); then
+      value=$(awk '{$1=$1; print}' <<<"$value")
+      if [[ -n "$value" ]]; then printf '%s = %s\n' "$key" "$value" >>"$runtime_before"; fi
+    fi
+  done
+  if [[ ! -s "$sysctl_baseline" ]]; then
+    baseline_next=$(mktemp "$STATE_ROOT/.sysctl-baseline.XXXXXX")
+    printf '%s\n' '# Values that preceded simple_cdn origin WireGuard sysctl management.' >"$baseline_next"
+    if [[ -s "$runtime_before" ]]; then cat "$runtime_before" >>"$baseline_next"; fi
+    install -m 0600 "$baseline_next" "$sysctl_baseline"
+    rm -f "$baseline_next"
+  fi
+  if [[ ! -d "$sysctl_profile_dir" ]]; then
+    echo "warning: sysctl directory $sysctl_profile_dir is unavailable; leaving origin sysctl tuning unchanged" >&2
+    rm -f "$runtime_before"
+    return
+  fi
+
+  buffer_max=16777216
+  mem_total_kib=""
+  if [[ -r /proc/meminfo ]]; then mem_total_kib=$(awk '$1 == "MemTotal:" { print $2; exit }' /proc/meminfo); fi
+  if [[ "$mem_total_kib" =~ ^[0-9]+$ ]] && ((mem_total_kib > 4194304)); then buffer_max=33554432; fi
+
+  profile_next=$(mktemp "$sysctl_profile_dir/.40-simple-cdn-origin-wireguard.XXXXXX")
+  chmod 0644 "$profile_next"
+  printf '%s\n' '# Managed by simple_cdn origin WireGuard installer.' >"$profile_next"
+
+  modprobe sch_fq >/dev/null 2>&1 || true
+  if origin_sysctl_snapshot_value "$runtime_before" net.core.default_qdisc >/dev/null &&
+      sysctl -q -w net.core.default_qdisc=fq >/dev/null 2>&1; then
+    printf '%s\n' '-net.core.default_qdisc = fq' >>"$profile_next"
+  else
+    echo "warning: fq is unavailable; leaving net.core.default_qdisc unchanged" >&2
+  fi
+  modprobe tcp_bbr >/dev/null 2>&1 || true
+  if origin_sysctl_snapshot_value "$runtime_before" net.ipv4.tcp_congestion_control >/dev/null &&
+      sysctl -q -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1; then
+    printf '%s\n' '-net.ipv4.tcp_congestion_control = bbr' >>"$profile_next"
+  else
+    echo "warning: BBR is unavailable; leaving net.ipv4.tcp_congestion_control unchanged" >&2
+  fi
+  if origin_sysctl_snapshot_value "$runtime_before" net.ipv4.tcp_mtu_probing >/dev/null &&
+      sysctl -q -w net.ipv4.tcp_mtu_probing=1 >/dev/null 2>&1; then
+    printf '%s\n' '-net.ipv4.tcp_mtu_probing = 1' >>"$profile_next"
+  fi
+
+  buffer_supported=1
+  for assignment in \
+    "net.core.rmem_max=$buffer_max" "net.core.wmem_max=$buffer_max" \
+    "net.ipv4.tcp_rmem=4096 131072 $buffer_max" "net.ipv4.tcp_wmem=4096 16384 $buffer_max"; do
+    key="${assignment%%=*}"
+    if ! origin_sysctl_snapshot_value "$runtime_before" "$key" >/dev/null ||
+        ! sysctl -q -w "$assignment" >/dev/null 2>&1; then buffer_supported=0; fi
+  done
+  if ((buffer_supported == 1)); then
+    printf -- '-net.core.rmem_max = %s\n' "$buffer_max" >>"$profile_next"
+    printf -- '-net.core.wmem_max = %s\n' "$buffer_max" >>"$profile_next"
+    printf -- '-net.ipv4.tcp_rmem = 4096 131072 %s\n' "$buffer_max" >>"$profile_next"
+    printf -- '-net.ipv4.tcp_wmem = 4096 16384 %s\n' "$buffer_max" >>"$profile_next"
+  else
+    echo "warning: TCP buffer tuning is not fully supported; leaving the buffer group unchanged" >&2
+    for key in net.core.rmem_max net.core.wmem_max net.ipv4.tcp_rmem net.ipv4.tcp_wmem; do
+      if value=$(origin_sysctl_snapshot_value "$runtime_before" "$key"); then
+        sysctl -q -w "$key=$value" >/dev/null 2>&1 || true
+      fi
+    done
+    if [[ -s "$sysctl_profile_file" ]]; then
+      awk '
+        {
+          key = $0
+          sub(/[[:space:]]*=.*/, "", key)
+          sub(/^-/, "", key)
+          gsub(/[[:space:]]/, "", key)
+          if (key == "net.core.rmem_max" || key == "net.core.wmem_max" ||
+              key == "net.ipv4.tcp_rmem" || key == "net.ipv4.tcp_wmem") print
+        }
+      ' "$sysctl_profile_file" >>"$profile_next"
+    fi
+  fi
+
+  install -m 0644 "$profile_next" "$sysctl_profile_file"
+  rm -f "$profile_next"
+  sysctl --system >/dev/null 2>&1 || echo "warning: one or more system sysctl files could not be applied" >&2
+  rm -f "$runtime_before"
+}
+
+configure_origin_sysctl
 
 install -d -m 0700 "$STATE_ROOT" "$CONFIG_ROOT"
 if [[ ! -s "$key_file" ]]; then

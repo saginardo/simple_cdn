@@ -267,6 +267,282 @@ func TestWireGuardTunnelEgressLimitsAndSameHostProtection(t *testing.T) {
 	}
 }
 
+func TestWireGuardListTunnelsIncludesEveryPeer(t *testing.T) {
+	database, err := Open(t.TempDir() + "/control.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	first, err := database.CreateNode("list-edge-a", "203.0.113.70")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := database.CreateNode("list-edge-b", "203.0.113.71")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstTunnel, err := database.CreateWireGuardTunnel(domain.WireGuardTunnel{
+		Name: "a-origin", EndpointHost: "198.51.100.70", AddressCIDR: "10.253.70.0/24",
+	}, []string{first.ID}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondTunnel, err := database.CreateWireGuardTunnel(domain.WireGuardTunnel{
+		Name: "b-origin", EndpointHost: "198.51.100.71", AddressCIDR: "10.253.71.0/24",
+	}, []string{first.ID, second.ID}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tunnels, err := database.ListWireGuardTunnels()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tunnels) != 2 || len(tunnels[0].Peers) != 1 || len(tunnels[1].Peers) != 2 {
+		t.Fatalf("listed tunnels = %#v", tunnels)
+	}
+	byID := make(map[string]domain.WireGuardTunnel, len(tunnels))
+	for _, tunnel := range tunnels {
+		byID[tunnel.ID] = tunnel
+	}
+	if byID[firstTunnel.ID].Peers[0].NodeID != first.ID ||
+		len(byID[secondTunnel.ID].Peers) != 2 {
+		t.Fatalf("listed peer assignment = %#v", byID)
+	}
+}
+
+func TestWireGuardTunnelReferencesQueriesSitesDirectly(t *testing.T) {
+	database, err := Open(t.TempDir() + "/control.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	node, err := database.CreateNode("reference-edge", "203.0.113.72")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tunnel, err := database.CreateWireGuardTunnel(domain.WireGuardTunnel{
+		Name: "reference-origin", EndpointHost: "198.51.100.72", AddressCIDR: "10.253.72.0/24",
+	}, []string{node.ID}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	primarySite, err := database.CreateSite(domain.Site{
+		Name: "Primary", Domains: []string{"primary.example.test"}, Nodes: []string{node.ID},
+		PrimaryOrigin: domain.Origin{URL: "http://primary.example.test:8080", WireGuardTunnelID: tunnel.ID, Enabled: true}, Enabled: true,
+	}, "zone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	backupOrigin := &domain.Origin{URL: "http://backup.example.test:8080", WireGuardTunnelID: tunnel.ID, Enabled: true}
+	backupSite, err := database.CreateSite(domain.Site{
+		Name: "Backup", Domains: []string{"backup.example.test"}, Nodes: []string{node.ID},
+		PrimaryOrigin: domain.Origin{URL: "http://direct.example.test:8080", Enabled: true},
+		BackupOrigin:  backupOrigin, Enabled: true,
+	}, "zone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.CreateSite(domain.Site{
+		Name: "Unrelated", Domains: []string{"unrelated.example.test"}, Nodes: []string{node.ID},
+		PrimaryOrigin: domain.Origin{URL: "http://unrelated.example.test:8080", Enabled: true}, Enabled: true,
+	}, "zone"); err != nil {
+		t.Fatal(err)
+	}
+	references, err := database.WireGuardTunnelReferences(tunnel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(references) != 2 || references[0].ID != backupSite.ID || references[1].ID != primarySite.ID {
+		t.Fatalf("direct tunnel references = %#v", references)
+	}
+}
+
+func TestWireGuardEdgeConfigRevisionTracksPublishedChanges(t *testing.T) {
+	database, err := Open(t.TempDir() + "/control.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	node, err := database.CreateNode("revision-edge", "203.0.113.73")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tunnel, err := database.CreateWireGuardTunnel(domain.WireGuardTunnel{
+		Name: "revision-origin", EndpointHost: "198.51.100.73", AddressCIDR: "10.253.73.0/24",
+	}, []string{node.ID}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision, err := database.WireGuardEdgeConfigRevision(node.ID)
+	if err != nil || revision == "" {
+		t.Fatalf("initial edge config revision = %q, %v", revision, err)
+	}
+	tunnel.MTU = 1380
+	if _, err := database.UpdateWireGuardTunnel(tunnel, []string{node.ID}, nil); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := database.WireGuardEdgeConfigRevision(node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated == revision {
+		t.Fatalf("edge config revision did not change after tunnel update: %q", revision)
+	}
+	otherNode, err := database.CreateNode("revision-other-edge", "203.0.113.74")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if otherRevision, err := database.WireGuardEdgeConfigRevision(otherNode.ID); err != nil || otherRevision != "" {
+		t.Fatalf("unassigned edge revision = %q, %v", otherRevision, err)
+	}
+	if _, err := database.CreateWireGuardTunnel(domain.WireGuardTunnel{
+		Name: "revision-newest", EndpointHost: "198.51.100.74", AddressCIDR: "10.253.74.0/24",
+	}, []string{node.ID}, nil); err != nil {
+		t.Fatal(err)
+	}
+	withSecondTunnel, err := database.WireGuardEdgeConfigRevision(node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.UpdateWireGuardTunnel(tunnel, []string{otherNode.ID}, nil); err != nil {
+		t.Fatal(err)
+	}
+	afterRemoval, err := database.WireGuardEdgeConfigRevision(node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterRemoval == withSecondTunnel {
+		t.Fatalf("edge config revision did not change after removing a non-latest tunnel: %q", afterRemoval)
+	}
+}
+
+func TestWireGuardClaimSweepsOnlyStaleRunningTests(t *testing.T) {
+	database, err := Open(t.TempDir() + "/control.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	node, err := database.CreateNode("claim-edge", "203.0.113.75")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tunnel, err := database.CreateWireGuardTunnel(domain.WireGuardTunnel{
+		Name: "claim-origin", EndpointHost: "198.51.100.75", AddressCIDR: "10.253.75.0/24",
+	}, []string{node.ID}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	test, err := database.CreateWireGuardPerformanceTest(tunnel.ID, node.ID, 100, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`UPDATE wireguard_performance_tests SET status=?, started_at=? WHERE id=?`,
+		domain.WireGuardPerformanceRunning, stamp(time.Now().UTC().Add(-11*time.Minute)), test.ID); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := database.ClaimWireGuardPerformanceTest(node.ID)
+	if err != nil || claimed != nil {
+		t.Fatalf("claim after stale sweep = %#v, %v", claimed, err)
+	}
+	finished, err := database.GetWireGuardPerformanceTest(test.ID)
+	if err != nil || finished.Status != domain.WireGuardPerformanceFailed || !strings.Contains(finished.Error, "deadline") {
+		t.Fatalf("stale test after sweep = %#v, %v", finished, err)
+	}
+}
+
+func TestWireGuardClaimWaitsForCurrentAppliedRevision(t *testing.T) {
+	database, err := Open(t.TempDir() + "/control.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	node, err := database.CreateNode("claim-revision-edge", "203.0.113.76")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tunnel, err := database.CreateWireGuardTunnel(domain.WireGuardTunnel{
+		Name: "claim-revision-origin", EndpointHost: "198.51.100.76", AddressCIDR: "10.253.76.0/24",
+	}, []string{node.ID}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicKey := wireGuardTestKey(7)
+	if _, err := database.db.Exec(`UPDATE wireguard_tunnels
+		SET origin_public_key=?, origin_configured_revision=revision WHERE id=?`, publicKey, tunnel.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`UPDATE wireguard_tunnel_nodes
+		SET public_key=?, applied_revision=? WHERE tunnel_id=? AND node_id=?`, publicKey, tunnel.Revision, tunnel.ID, node.ID); err != nil {
+		t.Fatal(err)
+	}
+	test, err := database.CreateWireGuardPerformanceTest(tunnel.ID, node.ID, 100, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tunnel.MTU = 1380
+	updated, err := database.UpdateWireGuardTunnel(tunnel, []string{node.ID}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := database.ClaimWireGuardPerformanceTest(node.ID)
+	if err != nil || claimed != nil {
+		t.Fatalf("claim with stale applied revision = %#v, %v", claimed, err)
+	}
+	queued, err := database.GetWireGuardPerformanceTest(test.ID)
+	if err != nil || queued.Status != domain.WireGuardPerformanceQueued {
+		t.Fatalf("test after deferred claim = %#v, %v", queued, err)
+	}
+	if _, err := database.db.Exec(`UPDATE wireguard_tunnels SET origin_configured_revision=revision WHERE id=?`, tunnel.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`UPDATE wireguard_tunnel_nodes SET applied_revision=?
+		WHERE tunnel_id=? AND node_id=?`, updated.Revision, tunnel.ID, node.ID); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err = database.ClaimWireGuardPerformanceTest(node.ID)
+	if err != nil || claimed == nil || claimed.ID != test.ID {
+		t.Fatalf("claim after revision convergence = %#v, %v", claimed, err)
+	}
+}
+
+func TestWireGuardClaimFailsQueuedTestAfterPeerRemoval(t *testing.T) {
+	database, err := Open(t.TempDir() + "/control.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	first, err := database.CreateNode("claim-removed-edge", "203.0.113.77")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := database.CreateNode("claim-remaining-edge", "203.0.113.78")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tunnel, err := database.CreateWireGuardTunnel(domain.WireGuardTunnel{
+		Name: "claim-removed-origin", EndpointHost: "198.51.100.77", AddressCIDR: "10.253.77.0/24",
+	}, []string{first.ID}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	test, err := database.CreateWireGuardPerformanceTest(tunnel.ID, first.ID, 100, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.UpdateWireGuardTunnel(tunnel, []string{second.ID}, nil); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := database.ClaimWireGuardPerformanceTest(first.ID)
+	if err != nil || claimed != nil {
+		t.Fatalf("claim after peer removal = %#v, %v", claimed, err)
+	}
+	finished, err := database.GetWireGuardPerformanceTest(test.ID)
+	if err != nil || finished.Status != domain.WireGuardPerformanceFailed ||
+		!strings.Contains(finished.Error, "configuration disappeared") {
+		t.Fatalf("test after peer removal = %#v, %v", finished, err)
+	}
+}
+
 func wireGuardTestKey(fill byte) string {
 	raw := make([]byte, 32)
 	for index := range raw {

@@ -142,6 +142,18 @@ func TestInstallOriginWireGuardScriptLiveUpdateExecution(t *testing.T) {
 		!strings.Contains(configuration, "MTU = 1380") {
 		t.Fatalf("source live update did not persist the desired configuration:\n%s", configuration)
 	}
+	profile := harness.read(t, harness.sysctlProfileFile)
+	for _, expected := range []string{
+		"-net.core.default_qdisc = fq",
+		"-net.ipv4.tcp_congestion_control = bbr",
+		"-net.ipv4.tcp_mtu_probing = 1",
+		"-net.core.rmem_max = ",
+		"-net.core.wmem_max = ",
+	} {
+		if !strings.Contains(profile, expected) {
+			t.Fatalf("origin sysctl profile is missing %q:\n%s", expected, profile)
+		}
+	}
 	if err := os.WriteFile(harness.commandLog, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -174,6 +186,79 @@ func TestInstallOriginWireGuardScriptSyncFailureKeepsPreviousConfig(t *testing.T
 	log := harness.read(t, harness.commandLog)
 	if strings.Contains(log, "wg-quick down ") || strings.Contains(log, "systemctl restart wg-quick@") {
 		t.Fatalf("source sync failure fell back to a disruptive restart:\n%s", log)
+	}
+}
+
+func TestInstallOriginWireGuardScriptSysctlFailureRestoresCurrentRuntime(t *testing.T) {
+	harness := newOriginWireGuardInstallHarness(t, false)
+	baseline := `net.core.rmem_max = 1000000
+net.core.wmem_max = 1100000
+net.ipv4.tcp_rmem = 4096 80000 1200000
+net.ipv4.tcp_wmem = 4096 12000 1300000
+`
+	if err := os.WriteFile(harness.sysctlBaselineFile, []byte(baseline), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previousProfile := `# Managed by simple_cdn origin WireGuard installer.
+-net.core.rmem_max = 2000000
+-net.core.wmem_max = 2100000
+-net.ipv4.tcp_rmem = 4096 100000 2200000
+-net.ipv4.tcp_wmem = 4096 16000 2300000
+`
+	if err := os.WriteFile(harness.sysctlProfileFile, []byte(previousProfile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeOriginInstallCommand(t, filepath.Join(harness.root, "bin"), "sysctl", harness.commandLog, `
+if [ "$1" = "-n" ]; then
+  case "$2" in
+    net.core.default_qdisc) printf '%s\n' fq ;;
+    net.ipv4.tcp_congestion_control) printf '%s\n' bbr ;;
+    net.ipv4.tcp_mtu_probing) printf '%s\n' 1 ;;
+    net.core.rmem_max) printf '%s\n' 2000000 ;;
+    net.core.wmem_max) printf '%s\n' 2100000 ;;
+    net.ipv4.tcp_rmem) printf '%s\n' '4096 100000 2200000' ;;
+    net.ipv4.tcp_wmem) printf '%s\n' '4096 16000 2300000' ;;
+  esac
+  exit 0
+fi
+if [ "$1" = "-q" ] && [ "$2" = "-w" ]; then
+  case "$3" in
+    "net.ipv4.tcp_wmem=4096 16384 "*) exit 1 ;;
+  esac
+fi
+exit 0
+`)
+	if err := os.WriteFile(harness.commandLog, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output, err := harness.run(t)
+	if err != nil {
+		t.Fatalf("source deployment with partial sysctl support failed: %v\n%s", err, output)
+	}
+	log := harness.read(t, harness.commandLog)
+	for _, expected := range []string{
+		"sysctl -q -w net.core.rmem_max=2000000",
+		"sysctl -q -w net.core.wmem_max=2100000",
+		"sysctl -q -w net.ipv4.tcp_rmem=4096 100000 2200000",
+		"sysctl -q -w net.ipv4.tcp_wmem=4096 16000 2300000",
+	} {
+		if !strings.Contains(log, expected) {
+			t.Fatalf("sysctl rollback is missing %q:\n%s", expected, log)
+		}
+	}
+	if strings.Contains(log, "sysctl -q -w net.core.rmem_max=1000000") {
+		t.Fatalf("sysctl rollback used the original installation baseline:\n%s", log)
+	}
+	profile := harness.read(t, harness.sysctlProfileFile)
+	for _, expected := range []string{
+		"-net.core.rmem_max = 2000000",
+		"-net.core.wmem_max = 2100000",
+		"-net.ipv4.tcp_rmem = 4096 100000 2200000",
+		"-net.ipv4.tcp_wmem = 4096 16000 2300000",
+	} {
+		if !strings.Contains(profile, expected) {
+			t.Fatalf("sysctl profile did not preserve %q:\n%s", expected, profile)
+		}
 	}
 }
 
@@ -223,11 +308,13 @@ func requireScriptOrder(t *testing.T, script string, commands ...string) {
 }
 
 type originWireGuardInstallHarness struct {
-	root          string
-	script        string
-	commandLog    string
-	runtimeConfig string
-	configFile    string
+	root               string
+	script             string
+	commandLog         string
+	runtimeConfig      string
+	configFile         string
+	sysctlProfileFile  string
+	sysctlBaselineFile string
 }
 
 const originWireGuardTestTunnelID = "12345678-1234-4234-8234-123456789abc"
@@ -245,8 +332,9 @@ func newOriginWireGuardUninstallHarness(t *testing.T) originWireGuardUninstallHa
 	root := t.TempDir()
 	stateRoot := filepath.Join(root, "state")
 	configRoot := filepath.Join(root, "wireguard")
+	sysctlRoot := filepath.Join(root, "sysctl.d")
 	binRoot := filepath.Join(root, "bin")
-	for _, directory := range []string{stateRoot, configRoot, binRoot} {
+	for _, directory := range []string{stateRoot, configRoot, sysctlRoot, binRoot} {
 		if err := os.MkdirAll(directory, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -275,6 +363,7 @@ func newOriginWireGuardUninstallHarness(t *testing.T) originWireGuardUninstallHa
 	script = replaceOriginInstallScriptOnce(t, script, `if [[ $EUID -ne 0 ]]; then`, `if false; then`)
 	script = replaceOriginInstallScriptOnce(t, script, `STATE_ROOT="/var/lib/simple-cdn-origin-wireguard"`, fmt.Sprintf("STATE_ROOT=%q", stateRoot))
 	script = replaceOriginInstallScriptOnce(t, script, `CONFIG_ROOT="/etc/wireguard"`, fmt.Sprintf("CONFIG_ROOT=%q", configRoot))
+	script = replaceOriginInstallScriptOnce(t, script, `sysctl_profile_dir="/etc/sysctl.d"`, fmt.Sprintf("sysctl_profile_dir=%q", sysctlRoot))
 	script = replaceOriginInstallScriptOnce(t, script,
 		`service_file="/etc/systemd/system/simple-cdn-origin-iperf-$interface.service"`,
 		`service_file="$STATE_ROOT/simple-cdn-origin-iperf-$interface.service"`)
@@ -322,8 +411,9 @@ func newOriginWireGuardInstallHarness(t *testing.T, failSync bool) originWireGua
 	root := t.TempDir()
 	stateRoot := filepath.Join(root, "state")
 	configRoot := filepath.Join(root, "wireguard")
+	sysctlRoot := filepath.Join(root, "sysctl.d")
 	binRoot := filepath.Join(root, "bin")
-	for _, directory := range []string{stateRoot, configRoot, binRoot} {
+	for _, directory := range []string{stateRoot, configRoot, sysctlRoot, binRoot} {
 		if err := os.MkdirAll(directory, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -338,6 +428,19 @@ func newOriginWireGuardInstallHarness(t *testing.T, failSync bool) originWireGua
 		}
 	}
 	writeOriginInstallCommand(t, binRoot, "apt-get", commandLog, "exit 0")
+	writeOriginInstallCommand(t, binRoot, "sysctl", commandLog, `
+if [ "$1" = "-n" ]; then
+  case "$2" in
+    net.core.default_qdisc) printf '%s\n' pfifo_fast ;;
+    net.ipv4.tcp_congestion_control) printf '%s\n' cubic ;;
+    net.ipv4.tcp_mtu_probing) printf '%s\n' 0 ;;
+    net.core.rmem_max|net.core.wmem_max) printf '%s\n' 4194304 ;;
+    net.ipv4.tcp_rmem) printf '%s\n' '4096 131072 4194304' ;;
+    net.ipv4.tcp_wmem) printf '%s\n' '4096 16384 4194304' ;;
+  esac
+fi
+exit 0
+`)
 	writeOriginInstallCommand(t, binRoot, "curl", commandLog, fmt.Sprintf(`
 output=""
 while [ "$#" -gt 0 ]; do
@@ -428,6 +531,7 @@ AllowedIPs = 10.253.40.2/32
 	script = replaceOriginInstallScriptOnce(t, script, `if [[ $EUID -ne 0 ]]; then`, `if false; then`)
 	script = replaceOriginInstallScriptOnce(t, script, `STATE_ROOT="/var/lib/simple-cdn-origin-wireguard"`, fmt.Sprintf("STATE_ROOT=%q", stateRoot))
 	script = replaceOriginInstallScriptOnce(t, script, `CONFIG_ROOT="/etc/wireguard"`, fmt.Sprintf("CONFIG_ROOT=%q", configRoot))
+	script = replaceOriginInstallScriptOnce(t, script, `sysctl_profile_dir="/etc/sysctl.d"`, fmt.Sprintf("sysctl_profile_dir=%q", sysctlRoot))
 	script = replaceOriginInstallScriptOnce(t, script,
 		`service_file="/etc/systemd/system/simple-cdn-origin-iperf-$interface.service"`,
 		`service_file="$STATE_ROOT/simple-cdn-origin-iperf-$interface.service"`)
@@ -440,6 +544,8 @@ AllowedIPs = 10.253.40.2/32
 	}
 	return originWireGuardInstallHarness{
 		root: root, script: scriptPath, commandLog: commandLog, runtimeConfig: runtimeConfig, configFile: configFile,
+		sysctlProfileFile:  filepath.Join(sysctlRoot, "40-simple-cdn-origin-wireguard.conf"),
+		sysctlBaselineFile: filepath.Join(stateRoot, "sysctl-baseline.conf"),
 	}
 }
 

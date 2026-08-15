@@ -63,6 +63,13 @@ WireGuard 只使用 UDP。部分运营商、跨境线路或云厂商可能对 UD
 
 WireGuard 减少的是应用层 TLS 握手和源站证书运维，不会消除客户端 TLS，也不会保证每条线路都更快。长期连接本来就会复用 TLS/HTTP/2，因此实际收益通常更多来自源站暴露面收敛和运维简化。
 
+## 系统调优与已知限制
+
+源站安装脚本会像边缘安装器一样写入 `/etc/sysctl.d/40-simple-cdn-origin-wireguard.conf`：`default_qdisc=fq`、`tcp_congestion_control=bbr`、`tcp_mtu_probing=1`，并把 `net.core.rmem_max/wmem_max` 提升到按内存规模计算的 16/32MB。WireGuard 外层是 UDP，源站侧 socket 缓冲不足会直接限制高带宽×高延迟链路的吞吐；重新执行安装命令会保持这些参数并记录原始基线。
+
+- WireGuard 接口上的 `fq_codel` 只能看到同一个外层 UDP 五元组，因此 FQ 无法按隧道内连接做公平排队，只保留 CoDel 的主动队列管理；对高突发多条内层流仍建议在 nginx/入口侧规划整形，而不是只依赖隧道 qdisc。
+- 隧道 MTU 不会自动探测。默认 `1420` 适配 1500 MTU 链路；`tcp_mtu_probing=1` 只能让隧道内 TCP 按更低路径 MTU 调整 MSS，WireGuard 外层包仍受接口 MTU 限制。UDP 测试丢包和抖动偏高时，优先按 `1420 → 1380 → 1280` 降低 MTU 并重新发布，而不是等待自动恢复。
+
 ## 排查与卸载
 
 ```bash

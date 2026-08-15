@@ -27,18 +27,40 @@ func (a *Agent) runWireGuardLoop(ctx context.Context) {
 	}
 }
 
+func (a *Agent) runWireGuardPerformanceLoop(ctx context.Context) {
+	interval := min(a.Config.PollInterval, 10*time.Second)
+	if interval <= 0 {
+		interval = 10 * time.Second
+	}
+	for {
+		a.setComponentFailure("wireguard_performance", "run WireGuard performance test", a.runWireGuardPerformanceRound(ctx))
+		if !waitContext(ctx, interval) {
+			return
+		}
+	}
+}
+
 func (a *Agent) runWireGuardRound(ctx context.Context) error {
-	configs, err := a.pullWireGuardConfigs(ctx)
+	a.setWireGuardAppliedRevision("")
+	configs, revision, err := a.pullWireGuardConfigs(ctx)
 	if err != nil {
 		return err
 	}
 	reports, reconcileErr := a.wireGuard.Reconcile(ctx, configs)
 	reportErr := a.reportWireGuardStatus(ctx, reports)
-	if reconcileErr != nil || reportErr != nil {
-		return errors.Join(reconcileErr, reportErr)
+	roundErr := errors.Join(reconcileErr, reportErr)
+	if roundErr == nil {
+		a.setWireGuardAppliedRevision(revision)
 	}
+	return roundErr
+}
+
+func (a *Agent) runWireGuardPerformanceRound(ctx context.Context) error {
 	_, performanceAvailable := a.wireGuard.Available()
 	if !performanceAvailable {
+		return nil
+	}
+	if a.appliedWireGuardRevision() == "" {
 		return nil
 	}
 	job, err := a.claimWireGuardPerformanceTest(ctx)
@@ -56,46 +78,46 @@ func (a *Agent) runWireGuardRound(ctx context.Context) error {
 	return performanceErr
 }
 
-func (a *Agent) pullWireGuardConfigs(ctx context.Context) ([]domain.WireGuardEdgeConfig, error) {
+func (a *Agent) pullWireGuardConfigs(ctx context.Context) ([]domain.WireGuardEdgeConfig, string, error) {
 	cached, revision, loaded := a.cachedWireGuardConfigs()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, a.Config.ControlURL+"/api/edge/v1/wireguard/config", nil)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if revision != "" {
 		request.Header.Set("If-None-Match", `"`+revision+`"`)
 	}
 	response, err := a.client().Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("pull WireGuard configuration: %w", err)
+		return nil, "", fmt.Errorf("pull WireGuard configuration: %w", err)
 	}
 	defer drainAndClose(response.Body)
 	responseRevision := revisionFromETag(response.Header.Get("ETag"))
 	if response.StatusCode == http.StatusNotModified {
 		if !loaded {
-			return nil, errors.New("control returned unchanged WireGuard configuration before a local snapshot existed")
+			return nil, "", errors.New("control returned unchanged WireGuard configuration before a local snapshot existed")
 		}
-		return cached, nil
+		return cached, revision, nil
 	}
 	if response.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-		return nil, fmt.Errorf("pull WireGuard configuration: %s: %s", response.Status, strings.TrimSpace(string(body)))
+		return nil, "", fmt.Errorf("pull WireGuard configuration: %s: %s", response.Status, strings.TrimSpace(string(body)))
 	}
 	var payload struct {
 		Revision string                       `json:"revision"`
 		Tunnels  []domain.WireGuardEdgeConfig `json:"tunnels"`
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&payload); err != nil {
-		return nil, fmt.Errorf("decode WireGuard configuration: %w", err)
+		return nil, "", fmt.Errorf("decode WireGuard configuration: %w", err)
 	}
 	if !validDigest(payload.Revision) || responseRevision != "" && responseRevision != payload.Revision {
-		return nil, errors.New("control returned an invalid WireGuard configuration revision")
+		return nil, "", errors.New("control returned an invalid WireGuard configuration revision")
 	}
 	if len(payload.Tunnels) > domain.MaxWireGuardPeersPerTunnel {
-		return nil, errors.New("control returned too many WireGuard tunnels")
+		return nil, "", errors.New("control returned too many WireGuard tunnels")
 	}
 	a.cacheWireGuardConfigs(payload.Tunnels, payload.Revision)
-	return append([]domain.WireGuardEdgeConfig(nil), payload.Tunnels...), nil
+	return append([]domain.WireGuardEdgeConfig(nil), payload.Tunnels...), payload.Revision, nil
 }
 
 func (a *Agent) cachedWireGuardConfigs() ([]domain.WireGuardEdgeConfig, string, bool) {
@@ -110,6 +132,18 @@ func (a *Agent) cacheWireGuardConfigs(configs []domain.WireGuardEdgeConfig, revi
 	a.wireGuardRevision = revision
 	a.wireGuardLoaded = true
 	a.wireGuardMu.Unlock()
+}
+
+func (a *Agent) setWireGuardAppliedRevision(revision string) {
+	a.wireGuardMu.Lock()
+	a.wireGuardAppliedRevision = revision
+	a.wireGuardMu.Unlock()
+}
+
+func (a *Agent) appliedWireGuardRevision() string {
+	a.wireGuardMu.RLock()
+	defer a.wireGuardMu.RUnlock()
+	return a.wireGuardAppliedRevision
 }
 
 func (a *Agent) reportWireGuardStatus(ctx context.Context, reports []domain.WireGuardPeerReport) error {

@@ -48,7 +48,7 @@ export function WireGuardDetailPage() {
       api<WireGuardTunnelDetail>(
         `/api/wireguard/tunnels/${encodeURIComponent(tunnelId)}`,
       ),
-    refetchInterval: 5_000,
+    refetchInterval: 10_000,
   });
   const tunnel = detail.data?.tunnel;
 

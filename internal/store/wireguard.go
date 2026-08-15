@@ -315,7 +315,7 @@ func (s *Store) GetWireGuardTunnel(id string) (domain.WireGuardTunnel, error) {
 func (s *Store) ListWireGuardTunnels() ([]domain.WireGuardTunnel, error) {
 	rows, err := s.db.Query(`SELECT id, name, endpoint_host, listen_port, address_cidr,
 		origin_address, mtu, persistent_keepalive_seconds, performance_port, origin_egress_limit_mbps, origin_public_key, revision,
-		origin_configured_revision, origin_configured_at, created_at, updated_at FROM wireguard_tunnels ORDER BY name`)
+		origin_configured_revision, origin_configured_at, created_at, updated_at FROM wireguard_tunnels ORDER BY name, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -335,13 +335,61 @@ func (s *Store) ListWireGuardTunnels() ([]domain.WireGuardTunnel, error) {
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
+	peers, err := s.listAllWireGuardPeers()
+	if err != nil {
+		return nil, err
+	}
 	for index := range tunnels {
-		tunnels[index].Peers, err = s.listWireGuardPeers(tunnels[index].ID)
-		if err != nil {
-			return nil, err
-		}
+		tunnels[index].Peers = peers[tunnels[index].ID]
 	}
 	return tunnels, nil
+}
+
+func (s *Store) listAllWireGuardPeers() (map[string][]domain.WireGuardPeer, error) {
+	rows, err := s.db.Query(`SELECT peers.tunnel_id, peers.node_id, nodes.name, nodes.public_ipv4, peers.address, peers.edge_egress_limit_mbps,
+		peers.public_key, peers.applied_revision,
+		peers.latest_handshake_at, peers.rx_bytes, peers.tx_bytes, peers.rx_bytes_per_second, peers.tx_bytes_per_second,
+		peers.transfer_sample_seconds, peers.last_reported_at, peers.last_error
+		FROM wireguard_tunnel_nodes peers JOIN nodes ON nodes.id=peers.node_id
+		ORDER BY peers.tunnel_id, nodes.name, nodes.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[string][]domain.WireGuardPeer)
+	for rows.Next() {
+		var tunnelID string
+		var peer domain.WireGuardPeer
+		var handshake, reported sql.NullString
+		var rxBytesPerSecond, txBytesPerSecond, transferSampleSeconds sql.NullFloat64
+		if err := rows.Scan(&tunnelID, &peer.NodeID, &peer.NodeName, &peer.NodePublicIPv4, &peer.Address, &peer.EdgeEgressLimitMbps,
+			&peer.PublicKey, &peer.AppliedRevision,
+			&handshake, &peer.RXBytes, &peer.TXBytes, &rxBytesPerSecond, &txBytesPerSecond,
+			&transferSampleSeconds, &reported, &peer.LastError); err != nil {
+			return nil, err
+		}
+		if rxBytesPerSecond.Valid && txBytesPerSecond.Valid && transferSampleSeconds.Valid {
+			peer.RXBytesPerSecond = &rxBytesPerSecond.Float64
+			peer.TXBytesPerSecond = &txBytesPerSecond.Float64
+			peer.TransferSampleSecs = &transferSampleSeconds.Float64
+		}
+		if handshake.Valid {
+			value, parseErr := parseTime(handshake.String)
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			peer.LatestHandshakeAt = &value
+		}
+		if reported.Valid {
+			value, parseErr := parseTime(reported.String)
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			peer.LastReportedAt = &value
+		}
+		result[tunnelID] = append(result[tunnelID], peer)
+	}
+	return result, rows.Err()
 }
 
 func scanWireGuardTunnel(row scanner) (domain.WireGuardTunnel, error) {
@@ -423,17 +471,23 @@ func (s *Store) listWireGuardPeers(tunnelID string) ([]domain.WireGuardPeer, err
 }
 
 func (s *Store) WireGuardTunnelReferences(tunnelID string) ([]domain.Site, error) {
-	sites, err := s.ListSites()
+	pattern := `%"wireguard_tunnel_id":"` + tunnelID + `"%`
+	rows, err := s.db.Query(`SELECT `+siteSelectColumns+` FROM sites
+		WHERE CAST(primary_origin_json AS TEXT) LIKE ? OR CAST(backup_origin_json AS TEXT) LIKE ?
+		ORDER BY name`, pattern, pattern)
 	if err != nil {
 		return nil, err
 	}
+	defer rows.Close()
 	result := make([]domain.Site, 0)
-	for _, site := range sites {
-		if site.PrimaryOrigin.WireGuardTunnelID == tunnelID || site.BackupOrigin != nil && site.BackupOrigin.WireGuardTunnelID == tunnelID {
-			result = append(result, site)
+	for rows.Next() {
+		site, _, err := scanSite(rows)
+		if err != nil {
+			return nil, err
 		}
+		result = append(result, site)
 	}
-	return result, nil
+	return result, rows.Err()
 }
 
 func (s *Store) DeleteWireGuardTunnel(id string) error {
@@ -483,6 +537,30 @@ func (s *Store) WireGuardEdgeConfigs(nodeID string) ([]domain.WireGuardEdgeConfi
 		configs = append(configs, config)
 	}
 	return configs, rows.Err()
+}
+
+// WireGuardEdgeConfigRevision returns a cheap, stable revision marker for the
+// complete WireGuard configuration set published to one edge node. Tunnel IDs
+// make assignment changes visible, while tunnel revisions cover every mutation
+// of an assigned configuration without serializing the full payload.
+func (s *Store) WireGuardEdgeConfigRevision(nodeID string) (string, error) {
+	rows, err := s.db.Query(`SELECT tunnels.id, tunnels.revision FROM wireguard_tunnel_nodes peers
+		JOIN wireguard_tunnels tunnels ON tunnels.id=peers.tunnel_id
+		WHERE peers.node_id=? ORDER BY tunnels.id`, nodeID)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	var marker strings.Builder
+	for rows.Next() {
+		var tunnelID string
+		var revision int64
+		if err := rows.Scan(&tunnelID, &revision); err != nil {
+			return "", err
+		}
+		fmt.Fprintf(&marker, "%s:%d\n", tunnelID, revision)
+	}
+	return marker.String(), rows.Err()
 }
 
 const wireGuardTransferMaxSampleInterval = 30 * time.Second
@@ -742,15 +820,30 @@ func (s *Store) ClaimWireGuardPerformanceTest(nodeID string) (*domain.WireGuardP
 	}
 	defer tx.Rollback()
 	staleBefore := stamp(now().Add(-10 * time.Minute))
-	if _, err := tx.Exec(`UPDATE wireguard_performance_tests SET status=?, error=?, finished_at=?
+	var staleRunning int
+	if err := tx.QueryRow(`SELECT 1 FROM wireguard_performance_tests
+		WHERE node_id=? AND status=? AND started_at<? LIMIT 1`, nodeID,
+		domain.WireGuardPerformanceRunning, staleBefore).Scan(&staleRunning); errors.Is(err, sql.ErrNoRows) {
+		// No stale job; skip the write-heavy deadline sweep.
+	} else if err != nil {
+		return nil, err
+	} else if _, err := tx.Exec(`UPDATE wireguard_performance_tests SET status=?, error=?, finished_at=?
 		WHERE node_id=? AND status=? AND started_at<?`, domain.WireGuardPerformanceFailed,
 		"edge did not report the performance result before the execution deadline", stamp(now()), nodeID,
 		domain.WireGuardPerformanceRunning, staleBefore); err != nil {
 		return nil, err
 	}
 	var id string
-	err = tx.QueryRow(`SELECT id FROM wireguard_performance_tests WHERE node_id=? AND status=? ORDER BY created_at LIMIT 1`,
-		nodeID, domain.WireGuardPerformanceQueued).Scan(&id)
+	var assigned, ready int
+	err = tx.QueryRow(`SELECT tests.id,
+		CASE WHEN peers.tunnel_id IS NULL THEN 0 ELSE 1 END,
+		CASE WHEN tunnels.origin_public_key<>'' AND tunnels.origin_configured_revision=tunnels.revision
+			AND peers.public_key<>'' AND peers.applied_revision=tunnels.revision AND peers.last_error='' THEN 1 ELSE 0 END
+		FROM wireguard_performance_tests tests
+		JOIN wireguard_tunnels tunnels ON tunnels.id=tests.tunnel_id
+		LEFT JOIN wireguard_tunnel_nodes peers ON peers.tunnel_id=tests.tunnel_id AND peers.node_id=tests.node_id
+		WHERE tests.node_id=? AND tests.status=?
+		ORDER BY tests.created_at LIMIT 1`, nodeID, domain.WireGuardPerformanceQueued).Scan(&id, &assigned, &ready)
 	if errors.Is(err, sql.ErrNoRows) {
 		if err := tx.Commit(); err != nil {
 			return nil, err
@@ -759,6 +852,24 @@ func (s *Store) ClaimWireGuardPerformanceTest(nodeID string) (*domain.WireGuardP
 	}
 	if err != nil {
 		return nil, err
+	}
+	if assigned == 0 {
+		if _, err := tx.Exec(`UPDATE wireguard_performance_tests SET status=?, error=?, finished_at=?
+			WHERE id=? AND status=?`, domain.WireGuardPerformanceFailed,
+			"WireGuard tunnel configuration disappeared before the test started", stamp(now()), id,
+			domain.WireGuardPerformanceQueued); err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+	if ready == 0 {
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		return nil, nil
 	}
 	startedAt := now()
 	result, err := tx.Exec(`UPDATE wireguard_performance_tests SET status=?, started_at=? WHERE id=? AND status=?`,
