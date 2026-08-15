@@ -103,7 +103,7 @@ func (s *Server) nodeDetail(response http.ResponseWriter, request *http.Request)
 		writeError(response, http.StatusInternalServerError, err)
 		return
 	}
-	configuredSites, err := s.Store.ListSites()
+	configuredSites, err := s.Store.ListSitesForNode(node.ID)
 	if err != nil {
 		writeStoreError(response, err)
 		return

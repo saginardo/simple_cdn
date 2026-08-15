@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,6 +39,8 @@ const (
 )
 
 var errAccessLogQueueFull = errors.New("access-log queue is full")
+
+var upstreamTimingValuePattern = regexp.MustCompile(`[0-9]+[.]?[0-9]*`)
 
 type LogForwarder struct {
 	stateDir        string
@@ -415,15 +418,64 @@ func decodeNginxLog(line []byte) (domain.AccessLogEvent, error) {
 		Host: raw.Host, Scheme: raw.Scheme, Protocol: raw.Protocol, Method: raw.Method,
 		Path: strings.SplitN(raw.Path, "?", 2)[0], Status: raw.Status, RequestBytes: raw.RequestBytes,
 		Bytes: raw.Bytes, DurationMS: int64(duration * 1000), RequestCompletion: requestCompletion,
-		Upstream:       raw.Upstream,
-		UpstreamStatus: raw.UpstreamStatus, UpstreamConnectTime: raw.UpstreamConnectTime,
-		UpstreamHeaderTime: raw.UpstreamHeaderTime, UpstreamResponseTime: raw.UpstreamResponseTime,
-		UpstreamBytesSent: raw.UpstreamBytesSent, UpstreamBytesReceived: raw.UpstreamBytesReceived,
-		CacheStatus: raw.CacheStatus, UserAgent: raw.UserAgent, Referer: raw.Referer,
-		ContentType: raw.ContentType, ResponseContentType: raw.ResponseContentType,
-		ContentEncoding: contentEncoding, CompressionRatio: compressionRatio, CompressionSavedBytes: compressionSavedBytes,
-		Accept: raw.Accept, Range: raw.Range,
+		Upstream:              raw.Upstream,
+		UpstreamStatus:        raw.UpstreamStatus,
+		UpstreamConnectTime:   raw.UpstreamConnectTime,
+		UpstreamHeaderTime:    raw.UpstreamHeaderTime,
+		UpstreamResponseTime:  raw.UpstreamResponseTime,
+		UpstreamBytesSent:     raw.UpstreamBytesSent,
+		UpstreamBytesReceived: raw.UpstreamBytesReceived,
+		UpstreamConnectMS:     parseUpstreamTimingMS(raw.UpstreamConnectTime),
+		UpstreamHeaderMS:      parseUpstreamTimingMS(raw.UpstreamHeaderTime),
+		UpstreamResponseMS:    parseUpstreamTimingMS(raw.UpstreamResponseTime),
+		UpstreamRequestIDs:    parseUpstreamRequestIDs(raw.UpstreamRequestID),
+		CacheStatus:           raw.CacheStatus,
+		UserAgent:             raw.UserAgent,
+		Referer:               raw.Referer,
+		ContentType:           raw.ContentType,
+		ResponseContentType:   raw.ResponseContentType,
+		ContentEncoding:       contentEncoding,
+		CompressionRatio:      compressionRatio,
+		CompressionSavedBytes: compressionSavedBytes,
+		Accept:                raw.Accept,
+		Range:                 raw.Range,
 	}, nil
+}
+
+func parseUpstreamTimingMS(raw string) []float64 {
+	matches := upstreamTimingValuePattern.FindAllString(strings.TrimSpace(raw), -1)
+	if len(matches) == 0 {
+		return []float64{}
+	}
+	values := make([]float64, 0, len(matches))
+	for _, match := range matches {
+		seconds, err := strconv.ParseFloat(match, 64)
+		if err != nil || math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds < 0 {
+			continue
+		}
+		values = append(values, seconds*1000)
+	}
+	return values
+}
+
+func parseUpstreamRequestIDs(raw string) []string {
+	fields := strings.FieldsFunc(strings.TrimSpace(raw), func(character rune) bool {
+		return character == ',' || character == ':'
+	})
+	seen := make(map[string]struct{}, len(fields))
+	values := make([]string, 0, len(fields))
+	for _, field := range fields {
+		value := strings.TrimSpace(field)
+		if value == "" {
+			continue
+		}
+		if _, duplicate := seen[value]; duplicate {
+			continue
+		}
+		seen[value] = struct{}{}
+		values = append(values, value)
+	}
+	return values
 }
 
 func nginxCompressionSavings(raw nginxLog, contentEncoding string) (float64, int64) {

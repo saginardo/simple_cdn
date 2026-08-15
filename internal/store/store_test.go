@@ -979,3 +979,112 @@ func TestOpenMigratesSiteColumnsForExistingDatabase(t *testing.T) {
 		t.Fatalf("legacy node capacity = %#v, err=%v", node.NginxCapacity, err)
 	}
 }
+
+func TestListSiteSummariesAndSitesForNodeAvoidFullParsing(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	first, err := database.CreateNode("summary-edge-a", "203.0.113.81")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := database.CreateNode("summary-edge-b", "203.0.113.82")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.CreateSite(domain.Site{
+		Name: "Alpha", Domains: []string{"alpha.example.test", "www.alpha.example.test"}, Nodes: []string{first.ID},
+		PrimaryOrigin: domain.Origin{URL: "https://alpha-origin.example.test", Enabled: true}, Enabled: true,
+	}, "zone"); err != nil {
+		t.Fatal(err)
+	}
+	backupOrigin := &domain.Origin{URL: "https://beta-origin.example.test", Enabled: true}
+	if _, err := database.CreateSite(domain.Site{
+		Name: "Beta", Domains: []string{"beta.example.test"}, Nodes: []string{first.ID},
+		BackupOrigin: backupOrigin, Enabled: true,
+		PrimaryOrigin: domain.Origin{URL: "https://beta-primary.example.test", Enabled: true},
+	}, "zone"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.CreateSite(domain.Site{
+		Name: "Gamma", Domains: []string{"gamma.example.test"}, Nodes: []string{second.ID},
+		PrimaryOrigin: domain.Origin{URL: "https://gamma-origin.example.test", Enabled: true}, Enabled: true,
+	}, "zone"); err != nil {
+		t.Fatal(err)
+	}
+
+	summaries, err := database.ListSiteSummaries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summaries) != 3 || summaries[0].Name != "Alpha" || len(summaries[0].Domains) != 2 || summaries[0].Domains[1] != "www.alpha.example.test" {
+		t.Fatalf("site summaries = %#v", summaries)
+	}
+	for _, summary := range summaries {
+		if summary.ID == "" || summary.Name == "" || len(summary.Domains) == 0 {
+			t.Fatalf("incomplete site summary = %#v", summary)
+		}
+	}
+
+	firstSites, err := database.ListSitesForNode(first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(firstSites) != 2 || firstSites[0].Name != "Alpha" || firstSites[1].Name != "Beta" {
+		t.Fatalf("sites for first node = %#v", firstSites)
+	}
+	secondSites, err := database.ListSitesForNode(second.ID)
+	if err != nil || len(secondSites) != 1 || secondSites[0].Name != "Gamma" {
+		t.Fatalf("sites for second node = %#v, %v", secondSites, err)
+	}
+}
+
+func TestListSitesSnapshotInvalidatesAfterMutation(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	node, err := database.CreateNode("snapshot-edge", "203.0.113.83")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := database.CreateSite(domain.Site{
+		Name: "Snapshot", Domains: []string{"snapshot.example.test"}, Nodes: []string{node.ID},
+		PrimaryOrigin: domain.Origin{URL: "https://snapshot-origin.example.test", Enabled: true}, Enabled: true,
+	}, "zone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sites, err := database.ListSites(); err != nil || len(sites) != 1 {
+		t.Fatalf("initial site snapshot = %#v, %v", sites, err)
+	}
+	first.Name = "Snapshot Renamed"
+	if _, err := database.UpdateSite(first, "zone"); err != nil {
+		t.Fatal(err)
+	}
+	sites, err := database.ListSites()
+	if err != nil || len(sites) != 1 || sites[0].Name != "Snapshot Renamed" {
+		t.Fatalf("site snapshot after mutation = %#v, %v", sites, err)
+	}
+
+	second, err := database.CreateSite(domain.Site{
+		Name: "Snapshot Newer", Domains: []string{"newer.example.test"}, Nodes: []string{node.ID},
+		PrimaryOrigin: domain.Origin{URL: "https://newer-origin.example.test", Enabled: true}, Enabled: true,
+	}, "zone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sites, err := database.ListSites(); err != nil || len(sites) != 2 {
+		t.Fatalf("two-site snapshot = %#v, %v", sites, err)
+	}
+	if _, err := database.db.Exec(`DELETE FROM sites WHERE id = ?`, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	sites, err = database.ListSites()
+	if err != nil || len(sites) != 1 || sites[0].ID != second.ID {
+		t.Fatalf("site snapshot after non-latest deletion = %#v, %v", sites, err)
+	}
+}

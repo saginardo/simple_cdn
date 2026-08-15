@@ -10,7 +10,9 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -34,6 +36,16 @@ var (
 type Store struct {
 	db       *sql.DB
 	readOnly bool
+
+	siteCacheMu sync.Mutex
+	siteCache   siteSnapshotCache
+}
+
+type siteSnapshotCache struct {
+	marker    string
+	sites     []domain.Site
+	summaries []domain.SiteSummary
+	loaded    bool
 }
 
 func (s *Store) ReadOnly() bool { return s.readOnly }
@@ -1594,6 +1606,18 @@ func (s *Store) GetSite(id string) (domain.Site, string, error) {
 }
 
 func (s *Store) ListSites() ([]domain.Site, error) {
+	marker, err := s.siteSnapshotMarker()
+	if err != nil {
+		return nil, err
+	}
+	s.siteCacheMu.Lock()
+	if s.siteCache.loaded && s.siteCache.marker == marker && s.siteCache.sites != nil {
+		sites := cloneSites(s.siteCache.sites)
+		s.siteCacheMu.Unlock()
+		return sites, nil
+	}
+	s.siteCacheMu.Unlock()
+
 	rows, err := s.db.Query(`SELECT ` + siteSelectColumns + ` FROM sites ORDER BY name`)
 	if err != nil {
 		return nil, err
@@ -1607,7 +1631,136 @@ func (s *Store) ListSites() ([]domain.Site, error) {
 		}
 		sites = append(sites, site)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	s.siteCacheMu.Lock()
+	s.siteCache = siteSnapshotCache{marker: marker, sites: sites, summaries: s.siteCache.summaries, loaded: true}
+	s.siteCacheMu.Unlock()
+	return cloneSites(sites), nil
+}
+
+// ListSiteSummaries returns only the fields the overview and node pages need,
+// avoiding full origin/policy JSON deserialization on every poll.
+func (s *Store) ListSiteSummaries() ([]domain.SiteSummary, error) {
+	marker, err := s.siteSnapshotMarker()
+	if err != nil {
+		return nil, err
+	}
+	s.siteCacheMu.Lock()
+	if s.siteCache.loaded && s.siteCache.marker == marker && s.siteCache.summaries != nil {
+		summaries := cloneSiteSummaries(s.siteCache.summaries)
+		s.siteCacheMu.Unlock()
+		return summaries, nil
+	}
+	s.siteCacheMu.Unlock()
+
+	rows, err := s.db.Query(`SELECT id, name, domains_json FROM sites ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	summaries := make([]domain.SiteSummary, 0)
+	for rows.Next() {
+		var summary domain.SiteSummary
+		var domains string
+		if err := rows.Scan(&summary.ID, &summary.Name, &domains); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(domains), &summary.Domains); err != nil {
+			return nil, err
+		}
+		summaries = append(summaries, summary)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	s.siteCacheMu.Lock()
+	s.siteCache = siteSnapshotCache{marker: marker, sites: s.siteCache.sites, summaries: summaries, loaded: true}
+	s.siteCacheMu.Unlock()
+	return cloneSiteSummaries(summaries), nil
+}
+
+// ListSitesForNode returns only sites whose primary or backup node assignment
+// contains the node, without deserializing every site in the database.
+func (s *Store) ListSitesForNode(nodeID string) ([]domain.Site, error) {
+	pattern := `%"` + nodeID + `"%`
+	rows, err := s.db.Query(`SELECT `+siteSelectColumns+` FROM sites
+		WHERE CAST(node_ids_json AS TEXT) LIKE ? OR CAST(backup_node_ids_json AS TEXT) LIKE ?
+		ORDER BY name`, pattern, pattern)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	sites := make([]domain.Site, 0)
+	for rows.Next() {
+		site, _, err := scanSite(rows)
+		if err != nil {
+			return nil, err
+		}
+		sites = append(sites, site)
+	}
 	return sites, rows.Err()
+}
+
+func (s *Store) siteSnapshotMarker() (string, error) {
+	var count int64
+	var latest sql.NullString
+	if err := s.db.QueryRow(`SELECT COUNT(*), MAX(updated_at) FROM sites`).Scan(&count, &latest); err != nil {
+		return "", err
+	}
+	if !latest.Valid {
+		return strconv.FormatInt(count, 10) + ":", nil
+	}
+	return strconv.FormatInt(count, 10) + ":" + latest.String, nil
+}
+
+func cloneSites(sites []domain.Site) []domain.Site {
+	cloned := make([]domain.Site, len(sites))
+	for index, site := range sites {
+		cloned[index] = cloneSite(site)
+	}
+	return cloned
+}
+
+func cloneSite(site domain.Site) domain.Site {
+	site.Domains = append([]string(nil), site.Domains...)
+	site.Nodes = append([]string(nil), site.Nodes...)
+	site.BackupNodes = append([]string(nil), site.BackupNodes...)
+	site.StreamPaths = append([]string(nil), site.StreamPaths...)
+	site.CompressionExcludedMIMETypes = append([]string(nil), site.CompressionExcludedMIMETypes...)
+	site.TCPForwards = append([]domain.TCPForward(nil), site.TCPForwards...)
+	site.CacheInvalidations = append([]domain.CacheInvalidationRule(nil), site.CacheInvalidations...)
+	if len(site.CacheWarmups) > 0 {
+		site.CacheWarmups = append([]domain.CacheWarmup(nil), site.CacheWarmups...)
+		for index := range site.CacheWarmups {
+			site.CacheWarmups[index].Paths = append([]string(nil), site.CacheWarmups[index].Paths...)
+		}
+	}
+	if site.BackupOrigin != nil {
+		backup := *site.BackupOrigin
+		site.BackupOrigin = &backup
+	}
+	if site.DNSTTLSeconds != nil {
+		value := *site.DNSTTLSeconds
+		site.DNSTTLSeconds = &value
+	}
+	if site.CacheMaxSizeGB != nil {
+		value := *site.CacheMaxSizeGB
+		site.CacheMaxSizeGB = &value
+	}
+	return site
+}
+
+func cloneSiteSummaries(summaries []domain.SiteSummary) []domain.SiteSummary {
+	cloned := make([]domain.SiteSummary, len(summaries))
+	for index, summary := range summaries {
+		cloned[index] = summary
+		cloned[index].Domains = append([]string(nil), summary.Domains...)
+	}
+	return cloned
 }
 
 func scanSite(row scanner) (domain.Site, string, error) {

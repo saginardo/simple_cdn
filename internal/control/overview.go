@@ -74,7 +74,7 @@ func (s *Server) overview(response http.ResponseWriter, request *http.Request) {
 			return
 		}
 	}
-	sites, err := s.Store.ListSites()
+	sites, err := s.Store.ListSiteSummaries()
 	if err != nil {
 		writeStoreError(response, err)
 		return
@@ -82,7 +82,7 @@ func (s *Server) overview(response http.ResponseWriter, request *http.Request) {
 	writeJSON(response, http.StatusOK, buildOverviewPayload(from, to, sites, buckets))
 }
 
-func buildOverviewPayload(from, to time.Time, configuredSites []domain.Site, buckets []logstore.OverviewBucket) overviewPayload {
+func buildOverviewPayload(from, to time.Time, configuredSites []domain.SiteSummary, buckets []logstore.OverviewBucket) overviewPayload {
 	times := overviewBucketTimes(from, to)
 	series := make([]overviewSeriesPoint, len(times))
 	timeIndexes := make(map[int64]int, len(times))

@@ -74,7 +74,7 @@ func TestOverviewHandlerReturnsConfiguredSitesAndLogData(t *testing.T) {
 func TestBuildOverviewPayloadAggregatesAndZeroFills(t *testing.T) {
 	from := time.Date(2026, 7, 13, 12, 30, 0, 0, time.UTC)
 	to := from.Add(24 * time.Hour)
-	sites := []domain.Site{
+	sites := []domain.SiteSummary{
 		{ID: "quiet", Name: "Quiet", Domains: []string{"quiet.example.test"}},
 		{ID: "busy", Name: "Busy", Domains: []string{"busy.example.test"}},
 	}

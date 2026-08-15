@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -31,6 +32,8 @@ var (
 	ErrUnavailable = errors.New("log store unavailable")
 	ErrNotFound    = errors.New("log entry not found")
 )
+
+var upstreamTimingValuePattern = regexp.MustCompile(`[0-9]+[.]?[0-9]*`)
 
 type LogQuery struct {
 	From        time.Time
@@ -103,11 +106,15 @@ func (c ClickHouse) EnsureSchema(ctx context.Context) error {
 	}
 	statements := []string{
 		`CREATE TABLE IF NOT EXISTS ` + identifier(c.database()) + `.cdn_access_logs (
-		 request_id String, client_request_id String, upstream_request_id String, timestamp DateTime64(3, 'UTC'), node_id String, site_id String, client_ip String, host String, scheme LowCardinality(String), protocol LowCardinality(String), method LowCardinality(String), path String, status UInt16, request_bytes Int64, bytes Int64, duration_ms Int64, request_completion LowCardinality(String) DEFAULT 'UNKNOWN', upstream String, upstream_status String, upstream_connect_time String, upstream_header_time String, upstream_response_time String, upstream_bytes_sent String, upstream_bytes_received String, cache_status LowCardinality(String), user_agent String, referer String, request_content_type String, response_content_type String, content_encoding LowCardinality(String), compression_ratio Float64, compression_saved_bytes Int64, request_accept String, request_range String
+		 request_id String, client_request_id String, upstream_request_id String, upstream_request_ids Array(String), timestamp DateTime64(3, 'UTC'), node_id String, site_id String, client_ip String, host String, scheme LowCardinality(String), protocol LowCardinality(String), method LowCardinality(String), path String, status UInt16, request_bytes Int64, bytes Int64, duration_ms Int64, request_completion LowCardinality(String) DEFAULT 'UNKNOWN', upstream String, upstream_status String, upstream_connect_time String, upstream_header_time String, upstream_response_time String, upstream_connect_ms Array(Float64), upstream_header_ms Array(Float64), upstream_response_ms Array(Float64), upstream_bytes_sent String, upstream_bytes_received String, cache_status LowCardinality(String), user_agent String, referer String, request_content_type String, response_content_type String, content_encoding LowCardinality(String), compression_ratio Float64, compression_saved_bytes Int64, request_accept String, request_range String
 ) ENGINE = MergeTree PARTITION BY toDate(timestamp) ORDER BY (site_id, timestamp, node_id) TTL timestamp + INTERVAL 7 DAY DELETE`,
 		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS request_id String`,
 		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS client_request_id String`,
 		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS upstream_request_id String`,
+		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS upstream_request_ids Array(String)`,
+		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS upstream_connect_ms Array(Float64)`,
+		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS upstream_header_ms Array(Float64)`,
+		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS upstream_response_ms Array(Float64)`,
 		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS host String`,
 		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS scheme LowCardinality(String)`,
 		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS protocol LowCardinality(String)`,
@@ -134,25 +141,49 @@ func (c ClickHouse) EnsureSchema(ctx context.Context) error {
 		`CREATE MATERIALIZED VIEW IF NOT EXISTS ` + identifier(c.database()) + `.cdn_access_to_minute TO ` + identifier(c.database()) + `.cdn_site_minute AS
 	 SELECT toStartOfMinute(timestamp) AS minute, site_id, node_id, count() AS requests, sum(bytes) AS bytes, countIf(status >= 500) AS errors, countIf(cache_status = 'HIT') AS cache_hits
 	 FROM ` + identifier(c.database()) + `.cdn_access_logs GROUP BY minute, site_id, node_id`,
+		`CREATE TABLE IF NOT EXISTS ` + identifier(c.database()) + `.cdn_status_minute (
+	 minute DateTime('UTC'), site_id String, status UInt16, requests UInt64, downstream_bytes Int64, upstream_bytes Int64
+) ENGINE = SummingMergeTree PARTITION BY toDate(minute) ORDER BY (site_id, minute, status) TTL minute + INTERVAL 30 DAY DELETE`,
+		`CREATE MATERIALIZED VIEW IF NOT EXISTS ` + identifier(c.database()) + `.cdn_access_to_status_minute TO ` + identifier(c.database()) + `.cdn_status_minute AS
+	 SELECT toStartOfMinute(timestamp) AS minute, site_id, status, count() AS requests, sum(bytes) AS downstream_bytes, sum(request_bytes) AS upstream_bytes
+	 FROM ` + identifier(c.database()) + `.cdn_access_logs GROUP BY minute, site_id, status`,
+		`CREATE TABLE IF NOT EXISTS ` + identifier(c.database()) + `.cdn_cache_minute (
+	 minute DateTime('UTC'), node_id String, cache_status LowCardinality(String), requests UInt64, bytes Int64
+) ENGINE = SummingMergeTree PARTITION BY toDate(minute) ORDER BY (node_id, minute, cache_status) TTL minute + INTERVAL 30 DAY DELETE`,
+		`CREATE MATERIALIZED VIEW IF NOT EXISTS ` + identifier(c.database()) + `.cdn_access_to_cache_minute TO ` + identifier(c.database()) + `.cdn_cache_minute AS
+	 SELECT toStartOfMinute(timestamp) AS minute, node_id, cache_status, count() AS requests, sum(bytes) AS bytes
+	 FROM ` + identifier(c.database()) + `.cdn_access_logs GROUP BY minute, node_id, cache_status`,
+		`CREATE TABLE IF NOT EXISTS ` + identifier(c.database()) + `.cdn_aggregation_migrations (
+	 name LowCardinality(String)
+) ENGINE = MergeTree ORDER BY name`,
+		`INSERT INTO ` + identifier(c.database()) + `.cdn_status_minute
+	 SELECT toStartOfMinute(timestamp) AS minute, site_id, status, count() AS requests, sum(bytes) AS downstream_bytes, sum(request_bytes) AS upstream_bytes
+	 FROM ` + identifier(c.database()) + `.cdn_access_logs
+	 WHERE timestamp >= now() - INTERVAL 7 DAY
+	   AND (SELECT count() FROM ` + identifier(c.database()) + `.cdn_aggregation_migrations WHERE name = 'status_minute_v1') = 0
+	 GROUP BY minute, site_id, status`,
+		`INSERT INTO ` + identifier(c.database()) + `.cdn_aggregation_migrations (name) VALUES ('status_minute_v1')`,
+		`INSERT INTO ` + identifier(c.database()) + `.cdn_cache_minute
+	 SELECT toStartOfMinute(timestamp) AS minute, node_id, cache_status, count() AS requests, sum(bytes) AS bytes
+	 FROM ` + identifier(c.database()) + `.cdn_access_logs
+	 WHERE timestamp >= now() - INTERVAL 7 DAY
+	   AND (SELECT count() FROM ` + identifier(c.database()) + `.cdn_aggregation_migrations WHERE name = 'cache_minute_v1') = 0
+	 GROUP BY minute, node_id, cache_status`,
+		`INSERT INTO ` + identifier(c.database()) + `.cdn_aggregation_migrations (name) VALUES ('cache_minute_v1')`,
 		`CREATE TABLE IF NOT EXISTS ` + identifier(c.database()) + `.cdn_origin_minute (
 	 minute DateTime('UTC'), site_id String, node_id String, connect_samples UInt64, header_samples UInt64, response_samples UInt64, reused UInt64, connect_seconds Float64, header_seconds Float64, response_seconds Float64
 ) ENGINE = SummingMergeTree PARTITION BY toDate(minute) ORDER BY (site_id, minute, node_id) TTL minute + INTERVAL 30 DAY DELETE`,
-		`CREATE MATERIALIZED VIEW IF NOT EXISTS ` + identifier(c.database()) + `.cdn_access_to_origin_minute TO ` + identifier(c.database()) + `.cdn_origin_minute AS
-		 SELECT minute, site_id, node_id,
-			sum(length(connect_values)) AS connect_samples,
-			sum(length(header_values)) AS header_samples,
-			sum(length(response_values)) AS response_samples,
-			sum(arrayCount(value -> value = 0, connect_values)) AS reused,
-			sum(arraySum(connect_values)) AS connect_seconds,
-			sum(arraySum(header_values)) AS header_seconds,
-			sum(arraySum(response_values)) AS response_seconds
-		 FROM (
-			SELECT toStartOfMinute(timestamp) AS minute, site_id, node_id,
-				arrayMap(value -> toFloat64(value), extractAll(upstream_connect_time, '([0-9]+[.]?[0-9]*)')) AS connect_values,
-				arrayMap(value -> toFloat64(value), extractAll(upstream_header_time, '([0-9]+[.]?[0-9]*)')) AS header_values,
-				arrayMap(value -> toFloat64(value), extractAll(upstream_response_time, '([0-9]+[.]?[0-9]*)')) AS response_values
-			FROM ` + identifier(c.database()) + `.cdn_access_logs
-		 ) GROUP BY minute, site_id, node_id`,
+		`DROP VIEW IF EXISTS ` + identifier(c.database()) + `.cdn_access_to_origin_minute`,
+		`CREATE MATERIALIZED VIEW ` + identifier(c.database()) + `.cdn_access_to_origin_minute TO ` + identifier(c.database()) + `.cdn_origin_minute AS
+	 SELECT toStartOfMinute(timestamp) AS minute, site_id, node_id,
+		sum(length(upstream_connect_ms)) AS connect_samples,
+		sum(length(upstream_header_ms)) AS header_samples,
+		sum(length(upstream_response_ms)) AS response_samples,
+		sum(arrayCount(value -> value = 0, upstream_connect_ms)) AS reused,
+		sum(arraySum(upstream_connect_ms)) / 1000 AS connect_seconds,
+		sum(arraySum(upstream_header_ms)) / 1000 AS header_seconds,
+		sum(arraySum(upstream_response_ms)) / 1000 AS response_seconds
+	 FROM ` + identifier(c.database()) + `.cdn_access_logs GROUP BY minute, site_id, node_id`,
 		`CREATE TABLE IF NOT EXISTS ` + identifier(c.database()) + `.cdn_compression_minute (
 	 minute DateTime('UTC'), site_id String, node_id String, compressed_requests UInt64, gzip_requests UInt64, brotli_requests UInt64, zstd_requests UInt64, compression_saved_bytes Int64
 ) ENGINE = SummingMergeTree PARTITION BY toDate(minute) ORDER BY (site_id, minute, node_id) TTL minute + INTERVAL 30 DAY DELETE`,
@@ -185,10 +216,27 @@ func (c ClickHouse) Append(ctx context.Context, events []domain.AccessLogEvent) 
 			event.Timestamp = time.Now().UTC()
 		}
 		event.Path = stripQuery(event.Path)
+		connectMS := event.UpstreamConnectMS
+		if len(connectMS) == 0 {
+			connectMS = parseClickHouseTimingMS(event.UpstreamConnectTime)
+		}
+		headerMS := event.UpstreamHeaderMS
+		if len(headerMS) == 0 {
+			headerMS = parseClickHouseTimingMS(event.UpstreamHeaderTime)
+		}
+		responseMS := event.UpstreamResponseMS
+		if len(responseMS) == 0 {
+			responseMS = parseClickHouseTimingMS(event.UpstreamResponseTime)
+		}
+		requestIDs := event.UpstreamRequestIDs
+		if len(requestIDs) == 0 {
+			requestIDs = parseClickHouseRequestIDs(event.UpstreamRequestID)
+		}
 		row := accessLogInsert{
 			ID:                    event.ID,
 			ClientRequestID:       event.ClientRequestID,
 			UpstreamRequestID:     event.UpstreamRequestID,
+			UpstreamRequestIDs:    requestIDs,
 			Timestamp:             event.Timestamp.UTC().Format("2006-01-02 15:04:05.000"),
 			NodeID:                event.NodeID,
 			SiteID:                event.SiteID,
@@ -208,6 +256,9 @@ func (c ClickHouse) Append(ctx context.Context, events []domain.AccessLogEvent) 
 			UpstreamConnectTime:   event.UpstreamConnectTime,
 			UpstreamHeaderTime:    event.UpstreamHeaderTime,
 			UpstreamResponseTime:  event.UpstreamResponseTime,
+			UpstreamConnectMS:     connectMS,
+			UpstreamHeaderMS:      headerMS,
+			UpstreamResponseMS:    responseMS,
 			UpstreamBytesSent:     event.UpstreamBytesSent,
 			UpstreamBytesReceived: event.UpstreamBytesReceived,
 			CacheStatus:           event.CacheStatus,
@@ -221,6 +272,42 @@ func (c ClickHouse) Append(ctx context.Context, events []domain.AccessLogEvent) 
 		}
 	}
 	return c.query(ctx, "INSERT INTO "+identifier(c.database())+".cdn_access_logs FORMAT JSONEachRow", &body)
+}
+
+func parseClickHouseTimingMS(raw string) []float64 {
+	matches := upstreamTimingValuePattern.FindAllString(strings.TrimSpace(raw), -1)
+	if len(matches) == 0 {
+		return []float64{}
+	}
+	values := make([]float64, 0, len(matches))
+	for _, match := range matches {
+		seconds, err := strconv.ParseFloat(match, 64)
+		if err != nil || seconds < 0 {
+			continue
+		}
+		values = append(values, seconds*1000)
+	}
+	return values
+}
+
+func parseClickHouseRequestIDs(raw string) []string {
+	fields := strings.FieldsFunc(strings.TrimSpace(raw), func(character rune) bool {
+		return character == ',' || character == ':'
+	})
+	seen := make(map[string]struct{}, len(fields))
+	values := make([]string, 0, len(fields))
+	for _, field := range fields {
+		value := strings.TrimSpace(field)
+		if value == "" {
+			continue
+		}
+		if _, duplicate := seen[value]; duplicate {
+			continue
+		}
+		seen[value] = struct{}{}
+		values = append(values, value)
+	}
+	return values
 }
 
 const accessLogSelectColumns = `request_id, client_request_id, upstream_request_id, timestamp, node_id, site_id, client_ip, host, scheme, protocol, method, path, status, request_bytes, bytes, duration_ms, request_completion, upstream, upstream_status, upstream_connect_time, upstream_header_time, upstream_response_time, upstream_bytes_sent, upstream_bytes_received, cache_status, user_agent, referer, request_content_type, response_content_type, content_encoding, compression_ratio, compression_saved_bytes, request_accept, request_range`
@@ -287,7 +374,7 @@ func (c ClickHouse) Search(ctx context.Context, search LogQuery) (LogPage, error
 		"param_to":   {search.To.UTC().Format("2006-01-02 15:04:05.000")},
 	}
 	if search.RequestID != "" {
-		conditions = append(conditions, "(request_id = {request_id:String} OR client_request_id = {request_id:String} OR upstream_request_id = {request_id:String} OR has(arrayMap(value -> trimBoth(value), splitByRegexp('[,:]', upstream_request_id)), {request_id:String}))")
+		conditions = append(conditions, "(request_id = {request_id:String} OR client_request_id = {request_id:String} OR upstream_request_id = {request_id:String} OR has(upstream_request_ids, {request_id:String}) OR has(arrayMap(value -> trimBoth(value), splitByRegexp('[,:]', upstream_request_id)), {request_id:String}))")
 		parameters.Set("param_request_id", search.RequestID)
 	}
 	if search.SiteID != "" {
@@ -415,10 +502,10 @@ func (c ClickHouse) Metrics(ctx context.Context, siteID string, since time.Time)
 }
 
 func (c ClickHouse) Overview(ctx context.Context, from, to time.Time) ([]OverviewBucket, error) {
-	query := `SELECT toStartOfHour(timestamp) AS hour, site_id, status, count() AS requests,
-		sum(bytes) AS downstream_bytes, sum(request_bytes) AS upstream_bytes
-		FROM ` + identifier(c.database()) + `.cdn_access_logs
-		WHERE timestamp >= {from:DateTime} AND timestamp < {to:DateTime}
+	query := `SELECT toStartOfHour(minute) AS hour, site_id, status, sum(requests) AS requests,
+		sum(downstream_bytes) AS downstream_bytes, sum(upstream_bytes) AS upstream_bytes
+		FROM ` + identifier(c.database()) + `.cdn_status_minute
+		WHERE minute >= {from:DateTime} AND minute < {to:DateTime}
 		GROUP BY hour, site_id, status ORDER BY hour, site_id, status FORMAT JSONEachRow`
 	parameters := url.Values{
 		"param_from": {from.UTC().Format("2006-01-02 15:04:05")},
@@ -445,15 +532,15 @@ func (c ClickHouse) Overview(ctx context.Context, from, to time.Time) ([]Overvie
 }
 
 func (c ClickHouse) NodeCache(ctx context.Context, nodeID string, from, to time.Time) ([]NodeCacheBucket, error) {
-	query := `SELECT upper(cache_status) AS cache_status, count() AS requests, sum(bytes) AS bytes,
-		max(timestamp) AS last_seen_at FROM ` + identifier(c.database()) + `.cdn_access_logs
-		PREWHERE timestamp >= {from:DateTime64(3)} AND timestamp < {to:DateTime64(3)}
-		WHERE node_id = {node_id:String}
+	query := `SELECT upper(cache_status) AS cache_status, sum(requests) AS requests, sum(bytes) AS bytes,
+		max(minute) AS last_seen_at FROM ` + identifier(c.database()) + `.cdn_cache_minute
+		WHERE minute >= {from:DateTime} AND minute < {to:DateTime}
+		AND node_id = {node_id:String}
 		GROUP BY cache_status ORDER BY requests DESC, cache_status FORMAT JSONEachRow`
 	parameters := url.Values{
 		"param_node_id": {nodeID},
-		"param_from":    {from.UTC().Format("2006-01-02 15:04:05.000")},
-		"param_to":      {to.UTC().Format("2006-01-02 15:04:05.000")},
+		"param_from":    {from.UTC().Format("2006-01-02 15:04:05")},
+		"param_to":      {to.UTC().Format("2006-01-02 15:04:05")},
 	}
 	response, err := c.request(ctx, c.database(), query, nil, parameters)
 	if err != nil {
@@ -619,40 +706,44 @@ type accessLogRow struct {
 }
 
 type accessLogInsert struct {
-	ID                    string  `json:"request_id"`
-	ClientRequestID       string  `json:"client_request_id"`
-	UpstreamRequestID     string  `json:"upstream_request_id"`
-	Timestamp             string  `json:"timestamp"`
-	NodeID                string  `json:"node_id"`
-	SiteID                string  `json:"site_id"`
-	ClientIP              string  `json:"client_ip"`
-	Host                  string  `json:"host"`
-	Scheme                string  `json:"scheme"`
-	Protocol              string  `json:"protocol"`
-	Method                string  `json:"method"`
-	Path                  string  `json:"path"`
-	Status                int     `json:"status"`
-	RequestBytes          int64   `json:"request_bytes"`
-	Bytes                 int64   `json:"bytes"`
-	DurationMS            int64   `json:"duration_ms"`
-	RequestCompletion     string  `json:"request_completion"`
-	Upstream              string  `json:"upstream"`
-	UpstreamStatus        string  `json:"upstream_status"`
-	UpstreamConnectTime   string  `json:"upstream_connect_time"`
-	UpstreamHeaderTime    string  `json:"upstream_header_time"`
-	UpstreamResponseTime  string  `json:"upstream_response_time"`
-	UpstreamBytesSent     string  `json:"upstream_bytes_sent"`
-	UpstreamBytesReceived string  `json:"upstream_bytes_received"`
-	CacheStatus           string  `json:"cache_status"`
-	UserAgent             string  `json:"user_agent"`
-	Referer               string  `json:"referer"`
-	ContentType           string  `json:"request_content_type"`
-	ResponseContentType   string  `json:"response_content_type"`
-	ContentEncoding       string  `json:"content_encoding"`
-	CompressionRatio      float64 `json:"compression_ratio"`
-	CompressionSavedBytes int64   `json:"compression_saved_bytes"`
-	Accept                string  `json:"request_accept"`
-	Range                 string  `json:"request_range"`
+	ID                    string    `json:"request_id"`
+	ClientRequestID       string    `json:"client_request_id"`
+	UpstreamRequestID     string    `json:"upstream_request_id"`
+	UpstreamRequestIDs    []string  `json:"upstream_request_ids"`
+	Timestamp             string    `json:"timestamp"`
+	NodeID                string    `json:"node_id"`
+	SiteID                string    `json:"site_id"`
+	ClientIP              string    `json:"client_ip"`
+	Host                  string    `json:"host"`
+	Scheme                string    `json:"scheme"`
+	Protocol              string    `json:"protocol"`
+	Method                string    `json:"method"`
+	Path                  string    `json:"path"`
+	Status                int       `json:"status"`
+	RequestBytes          int64     `json:"request_bytes"`
+	Bytes                 int64     `json:"bytes"`
+	DurationMS            int64     `json:"duration_ms"`
+	RequestCompletion     string    `json:"request_completion"`
+	Upstream              string    `json:"upstream"`
+	UpstreamStatus        string    `json:"upstream_status"`
+	UpstreamConnectTime   string    `json:"upstream_connect_time"`
+	UpstreamHeaderTime    string    `json:"upstream_header_time"`
+	UpstreamResponseTime  string    `json:"upstream_response_time"`
+	UpstreamConnectMS     []float64 `json:"upstream_connect_ms"`
+	UpstreamHeaderMS      []float64 `json:"upstream_header_ms"`
+	UpstreamResponseMS    []float64 `json:"upstream_response_ms"`
+	UpstreamBytesSent     string    `json:"upstream_bytes_sent"`
+	UpstreamBytesReceived string    `json:"upstream_bytes_received"`
+	CacheStatus           string    `json:"cache_status"`
+	UserAgent             string    `json:"user_agent"`
+	Referer               string    `json:"referer"`
+	ContentType           string    `json:"request_content_type"`
+	ResponseContentType   string    `json:"response_content_type"`
+	ContentEncoding       string    `json:"content_encoding"`
+	CompressionRatio      float64   `json:"compression_ratio"`
+	CompressionSavedBytes int64     `json:"compression_saved_bytes"`
+	Accept                string    `json:"request_accept"`
+	Range                 string    `json:"request_range"`
 }
 
 func (r accessLogRow) event() (domain.AccessLogEvent, error) {

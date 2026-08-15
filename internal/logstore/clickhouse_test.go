@@ -77,7 +77,8 @@ func TestSearchAppliesFiltersAndReportsMoreRows(t *testing.T) {
 		for _, expected := range []string{
 			"PREWHERE timestamp >= {from:DateTime64(3)} AND timestamp < {to:DateTime64(3)}",
 			"request_id = {request_id:String}", "client_request_id = {request_id:String}",
-			"upstream_request_id = {request_id:String}", "splitByRegexp('[,:]', upstream_request_id)",
+			"upstream_request_id = {request_id:String}", "has(upstream_request_ids, {request_id:String})",
+			"splitByRegexp('[,:]', upstream_request_id)",
 			"site_id = {site_id:String}", "node_id = {node_id:String}", "method = {method:String}",
 			"status >= {status_min:UInt16}", "status <= {status_max:UInt16}",
 			"positionCaseInsensitive(path, {path:String}) > 0", "client_ip = {client_ip:String}",
@@ -171,7 +172,11 @@ func TestEnsureSchemaCreatesOriginTimingAggregate(t *testing.T) {
 	joined := strings.Join(queries, "\n")
 	for _, expected := range []string{
 		"cdn_origin_minute", "cdn_access_to_origin_minute", "upstream_connect_time",
-		"connect_samples UInt64", "sum(length(connect_values))", "sum(arraySum(connect_values))",
+		"connect_samples UInt64", "upstream_connect_ms Array(Float64)", "sum(length(upstream_connect_ms))", "sum(arraySum(upstream_connect_ms)) / 1000",
+		"cdn_status_minute", "cdn_access_to_status_minute", "downstream_bytes Int64", "upstream_bytes Int64",
+		"cdn_cache_minute", "cdn_access_to_cache_minute",
+		"cdn_aggregation_migrations", "status_minute_v1", "cache_minute_v1", "INTERVAL 7 DAY",
+		"upstream_request_ids Array(String)",
 		"client_request_id String", "upstream_request_id String",
 		"request_completion LowCardinality(String) DEFAULT 'UNKNOWN'",
 		"upstream_bytes_sent String", "upstream_bytes_received String",
@@ -189,8 +194,9 @@ func TestOverviewDecodesHourlyStatusRows(t *testing.T) {
 	to := from.Add(24 * time.Hour)
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		query := request.URL.Query().Get("query")
-		if !strings.Contains(query, "toStartOfHour(timestamp)") || !strings.Contains(query, "GROUP BY hour, site_id, status") ||
-			!strings.Contains(query, "sum(bytes) AS downstream_bytes") || !strings.Contains(query, "sum(request_bytes) AS upstream_bytes") {
+		if !strings.Contains(query, "toStartOfHour(minute)") || !strings.Contains(query, "GROUP BY hour, site_id, status") ||
+			!strings.Contains(query, "sum(downstream_bytes) AS downstream_bytes") || !strings.Contains(query, "sum(upstream_bytes) AS upstream_bytes") ||
+			!strings.Contains(query, "cdn_status_minute") {
 			t.Fatalf("unexpected query: %s", query)
 		}
 		if request.URL.Query().Get("param_from") != "2026-01-02 03:04:05" || request.URL.Query().Get("param_to") != "2026-01-03 03:04:05" {
@@ -216,17 +222,18 @@ func TestNodeCacheAggregatesStatusRowsForRequestedWindow(t *testing.T) {
 		query := request.URL.Query().Get("query")
 		for _, expected := range []string{
 			"upper(cache_status)", "node_id = {node_id:String}", "GROUP BY cache_status",
-			"timestamp >= {from:DateTime64(3)}", "timestamp < {to:DateTime64(3)}",
+			"minute >= {from:DateTime}", "minute < {to:DateTime}",
+			"cdn_cache_minute", "max(minute) AS last_seen_at",
 		} {
 			if !strings.Contains(query, expected) {
 				t.Fatalf("query does not contain %q: %s", expected, query)
 			}
 		}
 		parameters := request.URL.Query()
-		if parameters.Get("param_node_id") != "node-1" || parameters.Get("param_from") != "2026-07-16 02:03:04.005" || parameters.Get("param_to") != "2026-07-17 02:03:04.005" {
+		if parameters.Get("param_node_id") != "node-1" || parameters.Get("param_from") != "2026-07-16 02:03:04" || parameters.Get("param_to") != "2026-07-17 02:03:04" {
 			t.Fatalf("unexpected parameters: %s", request.URL.RawQuery)
 		}
-		_, _ = io.WriteString(response, "{\"cache_status\":\"HIT\",\"requests\":\"12\",\"bytes\":\"1200\",\"last_seen_at\":\"2026-07-17 01:02:03.456\"}\n")
+		_, _ = io.WriteString(response, "{\"cache_status\":\"HIT\",\"requests\":\"12\",\"bytes\":\"1200\",\"last_seen_at\":\"2026-07-17 01:02:00\"}\n")
 	}))
 	defer server.Close()
 
@@ -234,7 +241,8 @@ func TestNodeCacheAggregatesStatusRowsForRequestedWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(buckets) != 1 || buckets[0].Status != "HIT" || buckets[0].Requests != 12 || buckets[0].Bytes != 1200 || buckets[0].LastSeenAt.Nanosecond() != 456000000 {
+	if len(buckets) != 1 || buckets[0].Status != "HIT" || buckets[0].Requests != 12 || buckets[0].Bytes != 1200 ||
+		buckets[0].LastSeenAt.Minute() != 2 || buckets[0].LastSeenAt.Second() != 0 {
 		t.Fatalf("unexpected node cache buckets: %#v", buckets)
 	}
 }
@@ -294,6 +302,7 @@ func TestAppendUsesClickHouseDateTimeFormat(t *testing.T) {
 		ID: "request-1", Timestamp: time.Date(2026, 1, 2, 3, 4, 5, 123000000, time.UTC), SiteID: "site", NodeID: "node",
 		ClientRequestID: "client-1", UpstreamRequestID: "origin-1", RequestCompletion: "OK",
 		RequestBytes: 512, UpstreamBytesSent: "640", UpstreamBytesReceived: "2304",
+		UpstreamConnectTime: "0.004", UpstreamHeaderTime: "0.020", UpstreamResponseTime: "0.036",
 		UserAgent: "test-agent", ContentType: "application/json", Range: "bytes=0-10",
 		ContentEncoding: "br", CompressionRatio: 2.75, CompressionSavedBytes: 896,
 	}})
@@ -303,7 +312,7 @@ func TestAppendUsesClickHouseDateTimeFormat(t *testing.T) {
 	if !strings.Contains(body, `"timestamp":"2026-01-02 03:04:05.123"`) {
 		t.Fatalf("unexpected insert body: %s", body)
 	}
-	for _, expected := range []string{`"request_id":"request-1"`, `"client_request_id":"client-1"`, `"upstream_request_id":"origin-1"`, `"request_completion":"OK"`, `"request_bytes":512`, `"upstream_bytes_sent":"640"`, `"upstream_bytes_received":"2304"`, `"user_agent":"test-agent"`, `"request_content_type":"application/json"`, `"content_encoding":"br"`, `"compression_ratio":2.75`, `"compression_saved_bytes":896`, `"request_range":"bytes=0-10"`} {
+	for _, expected := range []string{`"request_id":"request-1"`, `"client_request_id":"client-1"`, `"upstream_request_id":"origin-1"`, `"upstream_request_ids":["origin-1"]`, `"upstream_connect_ms":[4]`, `"upstream_header_ms":[20]`, `"upstream_response_ms":[36]`, `"request_completion":"OK"`, `"request_bytes":512`, `"upstream_bytes_sent":"640"`, `"upstream_bytes_received":"2304"`, `"user_agent":"test-agent"`, `"request_content_type":"application/json"`, `"content_encoding":"br"`, `"compression_ratio":2.75`, `"compression_saved_bytes":896`, `"request_range":"bytes=0-10"`} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("insert body is missing %s: %s", expected, body)
 		}

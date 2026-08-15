@@ -35,8 +35,32 @@ func TestDecodeNginxLogIncludesRequestDetails(t *testing.T) {
 	if event.UpstreamConnectTime != "0.004" || event.UpstreamHeaderTime != "0.020" || event.UpstreamResponseTime != "0.036" {
 		t.Fatalf("decoded upstream timings = %#v", event)
 	}
+	if len(event.UpstreamConnectMS) != 1 || event.UpstreamConnectMS[0] != 4 ||
+		len(event.UpstreamHeaderMS) != 1 || event.UpstreamHeaderMS[0] != 20 ||
+		len(event.UpstreamResponseMS) != 1 || event.UpstreamResponseMS[0] != 36 {
+		t.Fatalf("decoded numeric upstream timings = %#v", event)
+	}
+	if len(event.UpstreamRequestIDs) != 1 || event.UpstreamRequestIDs[0] != "origin-1" {
+		t.Fatalf("decoded upstream request IDs = %#v", event.UpstreamRequestIDs)
+	}
 	if event.ClientRequestID != "client-1" || event.UpstreamRequestID != "origin-1" || event.RequestCompletion != "OK" || event.UpstreamBytesSent != "640" || event.UpstreamBytesReceived != "2304" {
 		t.Fatalf("decoded trace details = %#v", event)
+	}
+}
+
+func TestDecodeNginxLogParsesMultiAttemptTimingsAndRequestIDs(t *testing.T) {
+	event, err := decodeNginxLog([]byte(`{"timestamp":"2026-07-18T10:20:30Z","duration_seconds":0,"upstream_connect_time":"0.003 : 0.000","upstream_header_time":"0.030 : 0.010","upstream_response_time":"0.050 : 0.020","upstream_request_id":"origin-1, origin-2:origin-3"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(event.UpstreamConnectMS) != 2 || event.UpstreamConnectMS[0] != 3 || event.UpstreamConnectMS[1] != 0 ||
+		len(event.UpstreamHeaderMS) != 2 || event.UpstreamHeaderMS[1] != 10 ||
+		len(event.UpstreamResponseMS) != 2 || event.UpstreamResponseMS[1] != 20 {
+		t.Fatalf("multi-attempt numeric timings = %#v", event)
+	}
+	if len(event.UpstreamRequestIDs) != 3 || event.UpstreamRequestIDs[0] != "origin-1" ||
+		event.UpstreamRequestIDs[1] != "origin-2" || event.UpstreamRequestIDs[2] != "origin-3" {
+		t.Fatalf("multi-attempt request IDs = %#v", event.UpstreamRequestIDs)
 	}
 }
 

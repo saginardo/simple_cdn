@@ -175,6 +175,12 @@ type TCPForward struct {
 	IdleTimeoutSeconds    int    `json:"idle_timeout_seconds"`
 }
 
+type SiteSummary struct {
+	ID      string   `json:"id"`
+	Name    string   `json:"name"`
+	Domains []string `json:"domains"`
+}
+
 type Site struct {
 	ID            string   `json:"id"`
 	Name          string   `json:"name"`
@@ -410,6 +416,13 @@ type AccessLogEvent struct {
 	UpstreamResponseTime  string    `json:"upstream_response_time"`
 	UpstreamBytesSent     string    `json:"upstream_bytes_sent"`
 	UpstreamBytesReceived string    `json:"upstream_bytes_received"`
+	// Upstream timing values in milliseconds, one entry per upstream attempt.
+	// The string fields above remain the source of truth for API compatibility;
+	// these arrays are parsed once on the edge for ClickHouse aggregation.
+	UpstreamConnectMS     []float64 `json:"upstream_connect_ms,omitempty"`
+	UpstreamHeaderMS      []float64 `json:"upstream_header_ms,omitempty"`
+	UpstreamResponseMS    []float64 `json:"upstream_response_ms,omitempty"`
+	UpstreamRequestIDs    []string  `json:"upstream_request_ids,omitempty"`
 	CacheStatus           string    `json:"cache_status"`
 	UserAgent             string    `json:"user_agent"`
 	Referer               string    `json:"referer"`
