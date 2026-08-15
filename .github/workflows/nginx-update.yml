@@ -2,7 +2,7 @@ name: Managed Nginx stable update
 
 on:
   schedule:
-    - cron: "23 3 * * *"
+    - cron: "23 3 * * 3"
   workflow_dispatch:
 
 concurrency:
