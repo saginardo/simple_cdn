@@ -404,6 +404,48 @@ func TestSiteDNSTTLAPIHandlesOverrideInheritanceAndOmission(t *testing.T) {
 	}
 }
 
+func TestSiteIPv6DNSAPIIsOptInAndPreservedWhenOmitted(t *testing.T) {
+	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.CreateInitialAdmin("hash", "secret"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CreateSession("admin", "session-token", "csrf-token", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	node, err := database.CreateNodeWithAddresses("edge-ipv6", "203.0.113.84", "2001:db8::84")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{Store: database}
+	base := map[string]any{
+		"name": "ipv6", "zone_id": "zone", "domains": []string{"ipv6.example.test"}, "node_ids": []string{node.ID},
+		"primary_origin": map[string]any{"url": "https://origin.example.test", "enabled": true}, "enabled": true,
+	}
+	created := requestSite(t, server, http.MethodPost, "/api/sites", base)
+	if created.IPv6Enabled {
+		t.Fatal("site enabled IPv6 DNS without an explicit opt-in")
+	}
+	base["ipv6_enabled"] = true
+	updated := requestSite(t, server, http.MethodPut, "/api/sites/"+created.ID, base)
+	if !updated.IPv6Enabled {
+		t.Fatal("site did not persist IPv6 DNS opt-in")
+	}
+	delete(base, "ipv6_enabled")
+	preserved := requestSite(t, server, http.MethodPut, "/api/sites/"+created.ID, base)
+	if !preserved.IPv6Enabled {
+		t.Fatal("omitted IPv6 DNS setting was not preserved")
+	}
+	base["ipv6_enabled"] = false
+	disabled := requestSite(t, server, http.MethodPut, "/api/sites/"+created.ID, base)
+	if disabled.IPv6Enabled {
+		t.Fatal("site did not disable IPv6 DNS")
+	}
+}
+
 func TestSiteTCPForwardAPIHandlesTCPOnlyDrafts(t *testing.T) {
 	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
 	if err != nil {

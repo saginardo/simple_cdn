@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -122,6 +123,15 @@ func (c CloudflareDNS) Reconcile(ctx context.Context, zoneID, owner string, desi
 		if record.Name == "" || record.Content == "" || !strings.HasPrefix(record.Comment, ManagedRecordPrefix) {
 			return fmt.Errorf("invalid managed DNS record")
 		}
+		record.Type = canonicalRecordType(record)
+		parsed := net.ParseIP(strings.TrimSpace(record.Content))
+		if parsed == nil || (record.Type == "A" && parsed.To4() == nil) || (record.Type == "AAAA" && parsed.To4() != nil) {
+			return fmt.Errorf("invalid managed %s record content %q", record.Type, record.Content)
+		}
+		if record.Type != "A" && record.Type != "AAAA" {
+			return fmt.Errorf("unsupported managed DNS record type %q", record.Type)
+		}
+		record.Content = parsed.String()
 		if record.TTL == 0 {
 			record.TTL = 60
 		}
@@ -131,13 +141,13 @@ func (c CloudflareDNS) Reconcile(ctx context.Context, zoneID, owner string, desi
 	managed := make(map[string]DNSRecord)
 	ownerPrefix := ManagedRecordPrefix + owner + ";"
 	for _, record := range existing {
-		if recordIsA(record) && strings.HasPrefix(record.Comment, ownerPrefix) {
+		if recordIsAddress(record) && strings.HasPrefix(record.Comment, ownerPrefix) {
 			managed[recordKey(record)] = record
 		}
 	}
 	for key, desiredRecord := range wanted {
 		for _, existingRecord := range existing {
-			if canonicalRecordName(existingRecord.Name) == canonicalRecordName(desiredRecord.Name) && (!recordIsA(existingRecord) || !strings.HasPrefix(existingRecord.Comment, ownerPrefix)) {
+			if canonicalRecordName(existingRecord.Name) == canonicalRecordName(desiredRecord.Name) && (!recordIsAddress(existingRecord) || !strings.HasPrefix(existingRecord.Comment, ownerPrefix)) {
 				return fmt.Errorf("refusing to manage DNS name %s because record %s (%s) is not owned by %s", desiredRecord.Name, existingRecord.ID, recordTypeLabel(existingRecord), owner)
 			}
 		}
@@ -254,12 +264,12 @@ func (c CloudflareDNS) removeManagedRecords(ctx context.Context, zoneID string, 
 	if token == "" {
 		return fmt.Errorf("Cloudflare API token is empty")
 	}
-	records, err := c.listRecords(ctx, zoneID, token, "A")
+	records, err := c.listRecords(ctx, zoneID, token, "")
 	if err != nil {
 		return err
 	}
 	for _, record := range records {
-		if !recordIsA(record) || !matches(record.Comment) {
+		if !recordIsAddress(record) || !matches(record.Comment) {
 			continue
 		}
 		if err := c.deleteRecord(ctx, zoneID, token, record.ID); err != nil {
@@ -299,22 +309,31 @@ func managedRecordMatchesFields(comment string, required map[string]string) bool
 }
 
 func recordKey(record DNSRecord) string {
-	return canonicalRecordName(record.Name) + "\x00" + record.Content + "\x00" + record.Comment
+	content := strings.TrimSpace(record.Content)
+	if parsed := net.ParseIP(content); parsed != nil {
+		content = parsed.String()
+	}
+	return canonicalRecordType(record) + "\x00" + canonicalRecordName(record.Name) + "\x00" + content + "\x00" + record.Comment
 }
 
 func canonicalRecordName(name string) string {
 	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(name), "."))
 }
 
-func recordIsA(record DNSRecord) bool {
-	return record.Type == "" || strings.EqualFold(record.Type, "A")
+func canonicalRecordType(record DNSRecord) string {
+	if strings.TrimSpace(record.Type) == "" {
+		return "A"
+	}
+	return strings.ToUpper(strings.TrimSpace(record.Type))
+}
+
+func recordIsAddress(record DNSRecord) bool {
+	recordType := canonicalRecordType(record)
+	return recordType == "A" || recordType == "AAAA"
 }
 
 func recordTypeLabel(record DNSRecord) string {
-	if record.Type == "" {
-		return "A"
-	}
-	return record.Type
+	return canonicalRecordType(record)
 }
 
 func (c CloudflareDNS) listRecords(ctx context.Context, zoneID, token, recordType string) ([]DNSRecord, error) {
@@ -378,10 +397,8 @@ func (c CloudflareDNS) listZones(ctx context.Context, token string) ([]cloudflar
 }
 
 func (c CloudflareDNS) createRecord(ctx context.Context, zoneID, token string, record DNSRecord) error {
-	body, err := json.Marshal(struct {
-		Type string `json:"type"`
-		DNSRecord
-	}{Type: "A", DNSRecord: record})
+	record.Type = canonicalRecordType(record)
+	body, err := json.Marshal(record)
 	if err != nil {
 		return err
 	}
@@ -405,10 +422,8 @@ func (c CloudflareDNS) createRecord(ctx context.Context, zoneID, token string, r
 }
 
 func (c CloudflareDNS) updateRecord(ctx context.Context, zoneID, token, recordID string, record DNSRecord) error {
-	body, err := json.Marshal(struct {
-		Type string `json:"type"`
-		DNSRecord
-	}{Type: "A", DNSRecord: record})
+	record.Type = canonicalRecordType(record)
+	body, err := json.Marshal(record)
 	if err != nil {
 		return err
 	}

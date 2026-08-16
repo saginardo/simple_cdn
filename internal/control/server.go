@@ -203,6 +203,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/nodes/{id}/machine-status/events", s.requireAdmin(s.machineStatusEvents))
 	mux.HandleFunc("GET /api/nodes/{id}/cache-status", s.requireAdmin(s.nodeCacheStatus))
 	mux.HandleFunc("PUT /api/nodes/{id}/cache", s.requireAdmin(s.updateNodeCacheSettings))
+	mux.HandleFunc("PUT /api/nodes/{id}/public-ipv6", s.requireAdmin(s.updateNodePublicIPv6))
 	mux.HandleFunc("PUT /api/nodes/{id}/nginx-capacity", s.requireAdmin(s.updateNodeNginxCapacity))
 	mux.HandleFunc("POST /api/nodes/{id}/enrollment-token", s.requireAdmin(s.createEnrollmentToken))
 	mux.HandleFunc("POST /api/nodes/{id}/status", s.requireAdmin(s.setNodeStatus))
@@ -640,6 +641,7 @@ func (s *Server) listNodes(response http.ResponseWriter, request *http.Request) 
 type nodeRequest struct {
 	Name       string `json:"name"`
 	PublicIPv4 string `json:"public_ipv4"`
+	PublicIPv6 string `json:"public_ipv6"`
 }
 
 func (s *Server) createNode(response http.ResponseWriter, request *http.Request) {
@@ -647,7 +649,7 @@ func (s *Server) createNode(response http.ResponseWriter, request *http.Request)
 	if !readJSON(response, request, &input) {
 		return
 	}
-	node, err := s.Store.CreateNode(input.Name, input.PublicIPv4)
+	node, err := s.Store.CreateNodeWithAddresses(input.Name, input.PublicIPv4, input.PublicIPv6)
 	if err != nil {
 		writeError(response, http.StatusBadRequest, err)
 		return
@@ -893,6 +895,7 @@ type siteRequest struct {
 	ClientKeepaliveTimeoutSeconds *int                 `json:"client_keepalive_timeout_seconds"`
 	ReadWriteTimeoutSeconds       *int                 `json:"read_write_timeout_seconds"`
 	DNSTTLSeconds                 optionalNullableInt  `json:"dns_ttl_seconds"`
+	IPv6Enabled                   *bool                `json:"ipv6_enabled"`
 	TCPOnly                       *bool                `json:"tcp_only"`
 	TCPForwards                   *[]domain.TCPForward `json:"tcp_forwards"`
 	Enabled                       *bool                `json:"enabled"`
@@ -960,6 +963,13 @@ func (input siteRequest) site(id string, current *domain.Site) domain.Site {
 		value := *current.DNSTTLSeconds
 		dnsTTLSeconds = &value
 	}
+	ipv6Enabled := false
+	if current != nil {
+		ipv6Enabled = current.IPv6Enabled
+	}
+	if input.IPv6Enabled != nil {
+		ipv6Enabled = *input.IPv6Enabled
+	}
 	var backupOrigin *domain.Origin
 	if input.BackupOrigin != nil {
 		backup := input.BackupOrigin.origin(currentBackup)
@@ -989,7 +999,7 @@ func (input siteRequest) site(id string, current *domain.Site) domain.Site {
 		cacheInvalidations = append(cacheInvalidations, current.CacheInvalidations...)
 		cacheWarmups = append(cacheWarmups, current.CacheWarmups...)
 	}
-	return domain.Site{ID: id, Name: input.Name, Domains: input.Domains, Nodes: input.NodeIDs, BackupNodes: backupNodeIDs, PrimaryOrigin: input.PrimaryOrigin.origin(currentPrimary), BackupOrigin: backupOrigin, StreamPaths: streamPaths, Passthrough: passthrough, RequestBodyBuffering: requestBodyBuffering, OriginResponseBuffering: originResponseBuffering, DynamicCompressionEnabled: dynamicCompressionEnabled, CompressionExcludedMIMETypes: compressionExcludedMIMETypes, HTTP3Enabled: http3Enabled, ClientMaxBodySizeMB: clientMaxBodySizeMB, ClientKeepaliveTimeoutSeconds: clientKeepaliveTimeoutSeconds, ReadWriteTimeoutSeconds: readWriteTimeoutSeconds, DNSTTLSeconds: dnsTTLSeconds, TCPOnly: tcpOnly, TCPForwards: tcpForwards, CacheInvalidations: cacheInvalidations, CacheWarmups: cacheWarmups, Enabled: enabled}
+	return domain.Site{ID: id, Name: input.Name, Domains: input.Domains, Nodes: input.NodeIDs, BackupNodes: backupNodeIDs, PrimaryOrigin: input.PrimaryOrigin.origin(currentPrimary), BackupOrigin: backupOrigin, StreamPaths: streamPaths, Passthrough: passthrough, RequestBodyBuffering: requestBodyBuffering, OriginResponseBuffering: originResponseBuffering, DynamicCompressionEnabled: dynamicCompressionEnabled, CompressionExcludedMIMETypes: compressionExcludedMIMETypes, HTTP3Enabled: http3Enabled, ClientMaxBodySizeMB: clientMaxBodySizeMB, ClientKeepaliveTimeoutSeconds: clientKeepaliveTimeoutSeconds, ReadWriteTimeoutSeconds: readWriteTimeoutSeconds, DNSTTLSeconds: dnsTTLSeconds, IPv6Enabled: ipv6Enabled, TCPOnly: tcpOnly, TCPForwards: tcpForwards, CacheInvalidations: cacheInvalidations, CacheWarmups: cacheWarmups, Enabled: enabled}
 }
 
 func (input siteRequest) validateClientMaxBodySize() error {

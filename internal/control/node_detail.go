@@ -181,6 +181,30 @@ func (s *Server) updateNodeCacheSettings(response http.ResponseWriter, request *
 	writeJSON(response, http.StatusOK, settings)
 }
 
+func (s *Server) updateNodePublicIPv6(response http.ResponseWriter, request *http.Request) {
+	var input struct {
+		PublicIPv6 string `json:"public_ipv6"`
+	}
+	if !readJSON(response, request, &input) {
+		return
+	}
+	node, err := s.Store.SetNodePublicIPv6(request.PathValue("id"), input.PublicIPv6)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeStoreError(response, err)
+		} else {
+			writeError(response, http.StatusBadRequest, err)
+		}
+		return
+	}
+	detail := "public_ipv6=disabled"
+	if node.PublicIPv6 != "" {
+		detail = "public_ipv6=" + node.PublicIPv6
+	}
+	s.audit(request, adminID(request.Context()), "update_public_ipv6", "node", node.ID, detail)
+	writeJSON(response, http.StatusOK, node)
+}
+
 func (s *Server) updateNodeNginxCapacity(response http.ResponseWriter, request *http.Request) {
 	var input domain.NginxCapacity
 	if !readJSON(response, request, &input) {

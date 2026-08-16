@@ -116,6 +116,7 @@ interface SiteDraft {
   read_write_timeout_seconds: number;
   inherit_dns_ttl: boolean;
   dns_ttl_seconds: number;
+  ipv6_enabled: boolean;
   tcp_only: boolean;
   tcp_forwards: TCPForward[];
   enabled: boolean;
@@ -457,6 +458,7 @@ export function SiteDetailPage() {
                 draft={draft}
                 setDraft={setDraft}
                 tunnels={wireGuardTunnels.data ?? []}
+                nodes={nodes.data ?? []}
               />
               {site && !site.tcp_only ? (
                 <SiteOriginConnections
@@ -922,12 +924,18 @@ function TrafficSettings({
   draft,
   setDraft,
   tunnels,
+  nodes,
 }: {
   draft: SiteDraft;
   setDraft: (draft: SiteDraft) => void;
   tunnels: WireGuardTunnel[];
+  nodes: Node[];
 }) {
   const assignedNodeIDs = [...draft.node_ids, ...draft.backup_node_ids];
+  const assignedNodes = nodes.filter((node) =>
+    assignedNodeIDs.includes(node.id),
+  );
+  const ipv6NodeCount = assignedNodes.filter((node) => node.public_ipv6).length;
   return (
     <Card>
       <CardHeader>
@@ -1197,6 +1205,28 @@ function TrafficSettings({
                   setDraft({
                     ...draft,
                     passthrough,
+                  })
+                }
+              />
+            </div>
+            <div className="flex items-start justify-between gap-4">
+              <div className="space-y-1">
+                <Label htmlFor="ipv6-enabled">IPv6 DNS (AAAA)</Label>
+                <p className="text-xs text-muted-foreground">
+                  {t("{value0} / {value1} 个已选节点已配置 IPv6", {
+                    value0: ipv6NodeCount,
+                    value1: assignedNodes.length,
+                  })}
+                </p>
+              </div>
+              <Switch
+                id="ipv6-enabled"
+                className="mt-0.5 shrink-0"
+                checked={draft.ipv6_enabled}
+                onCheckedChange={(ipv6_enabled) =>
+                  setDraft({
+                    ...draft,
+                    ipv6_enabled,
                   })
                 }
               />
@@ -1514,6 +1544,11 @@ function NodeChecklist({
                 <span className="block font-mono text-xs text-muted-foreground">
                   {node.public_ipv4}
                 </span>
+                {node.public_ipv6 ? (
+                  <span className="block truncate font-mono text-xs text-muted-foreground">
+                    {node.public_ipv6}
+                  </span>
+                ) : null}
               </span>
               <StatusBadge status={node.status} />
             </label>
@@ -2300,6 +2335,7 @@ function emptyDraft(ttl: number): SiteDraft {
     read_write_timeout_seconds: 120,
     inherit_dns_ttl: true,
     dns_ttl_seconds: ttl,
+    ipv6_enabled: false,
     tcp_only: false,
     tcp_forwards: [],
     enabled: true,
@@ -2353,6 +2389,7 @@ function draftFromSite(site: Site, ttl: number): SiteDraft {
     read_write_timeout_seconds: site.read_write_timeout_seconds ?? 120,
     inherit_dns_ttl: site.dns_ttl_seconds == null,
     dns_ttl_seconds: site.dns_ttl_seconds ?? ttl,
+    ipv6_enabled: site.ipv6_enabled ?? false,
     tcp_only: site.tcp_only,
     tcp_forwards: site.tcp_forwards.map((forward) => ({
       ...forward,
@@ -2404,6 +2441,7 @@ function sitePayload(draft: SiteDraft) {
     client_keepalive_timeout_seconds: draft.client_keepalive_timeout_seconds,
     read_write_timeout_seconds: draft.read_write_timeout_seconds,
     dns_ttl_seconds: draft.inherit_dns_ttl ? null : draft.dns_ttl_seconds,
+    ipv6_enabled: draft.ipv6_enabled,
     tcp_only: draft.tcp_only,
     tcp_forwards: draft.tcp_forwards,
     enabled: draft.enabled,

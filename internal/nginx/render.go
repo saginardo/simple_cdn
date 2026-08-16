@@ -78,6 +78,8 @@ quic_retry on;
 
 {{if .DefaultHTTP}}server {
     listen 80 default_server;
+{{if .IPv6Enabled}}    listen [::]:80 default_server ipv6only=on;
+{{end}}
     server_name _;
 {{if or .Sites .LegacySecurityEnabled .RuntimeSecurityEnabled}}	set $cdn_site_id "";
 {{end}}
@@ -115,7 +117,11 @@ quic_retry on;
 {{if .Sites}}
 server {
     listen 443 ssl default_server;
+{{if .IPv6Enabled}}    listen [::]:443 ssl default_server ipv6only=on;
+{{end}}
 {{if .HTTP3Enabled}}    listen 443 quic reuseport default_server;
+{{if .IPv6HTTP3Enabled}}    listen [::]:443 quic reuseport default_server ipv6only=on;
+{{end}}
 {{end}}
     ssl_reject_handshake on;
     set $cdn_site_id "";
@@ -179,6 +185,8 @@ upstream origin_{{.ID}}_http1 {
 
 server {
     listen 80;
+{{if .IPv6Enabled}}    listen [::]:80;
+{{end}}
     server_name {{.DomainList}};
 	set $cdn_site_id "{{.ID}}";
 	keepalive_timeout {{.ClientKeepaliveTimeout}};
@@ -213,8 +221,12 @@ server {
 
 server {
     listen 443 ssl;
+{{if .IPv6Enabled}}    listen [::]:443 ssl;
+{{end}}
     http2 on;
 {{if .HTTP3Enabled}}    listen 443 quic;
+{{if .IPv6Enabled}}    listen [::]:443 quic;
+{{end}}
     http3 on;
     add_header Alt-Svc 'h3=":443"; ma=86400' always;
 {{end}}
@@ -672,6 +684,7 @@ type renderedSite struct {
 	GRPC                         bool
 	Passthrough                  bool
 	HTTP3Enabled                 bool
+	IPv6Enabled                  bool
 	ClientMaxBodySizeMB          int
 	ClientKeepaliveTimeout       string
 	ReadWriteTimeout             string
@@ -727,6 +740,8 @@ type renderInput struct {
 	CachePaths                    []renderedCachePath
 	DefaultHTTP                   bool
 	HTTP3Enabled                  bool
+	IPv6Enabled                   bool
+	IPv6HTTP3Enabled              bool
 	LegacySecurityEnabled         bool
 	RuntimeSecurityEnabled        bool
 	RuntimeSecurityLogs           []renderedWAFLog
@@ -853,6 +868,8 @@ func RenderWithRuntimeOptions(sites []domain.Site, securityPolicies []domain.Sec
 	cachePaths := make([]renderedCachePath, 0, 1)
 	cacheEnabled := false
 	http3Enabled := false
+	ipv6Enabled := false
+	ipv6HTTP3Enabled := false
 	dedicatedTCP := false
 	for _, site := range sites {
 		if site.TCPOnly {
@@ -861,6 +878,7 @@ func RenderWithRuntimeOptions(sites []domain.Site, securityPolicies []domain.Sec
 		if !site.Enabled || site.TCPOnly {
 			continue
 		}
+		ipv6Enabled = ipv6Enabled || site.IPv6Enabled
 		clientMaxBodySizeMB, err := domain.NormalizeClientMaxBodySizeMB(site.ClientMaxBodySizeMB)
 		if err != nil {
 			return "", fmt.Errorf("site %s: %w", site.Name, err)
@@ -909,7 +927,7 @@ func RenderWithRuntimeOptions(sites []domain.Site, securityPolicies []domain.Sec
 		item := renderedSite{
 			ID: site.ID, DomainList: strings.Join(site.Domains, " "), HealthBody: SiteHealthBody(site.ID), PrimaryHostPort: primary.Host, PrimaryTLSName: site.PrimaryOrigin.TLSServerName,
 			PrimaryScheme: domain.ProxyScheme(primary.Scheme), UseTLS: domain.OriginUsesTLS(primary.Scheme), HostHeader: site.PrimaryOrigin.HostHeader, CacheGeneration: site.CacheGeneration, CacheInvalidations: renderedInvalidations,
-			GRPC: domain.IsGRPCScheme(primary.Scheme), Passthrough: site.Passthrough, HTTP3Enabled: options.HTTP3Capable && site.HTTP3Enabled, ClientMaxBodySizeMB: clientMaxBodySizeMB,
+			GRPC: domain.IsGRPCScheme(primary.Scheme), Passthrough: site.Passthrough, HTTP3Enabled: options.HTTP3Capable && site.HTTP3Enabled, IPv6Enabled: site.IPv6Enabled, ClientMaxBodySizeMB: clientMaxBodySizeMB,
 			ClientKeepaliveTimeout:    fmt.Sprintf("%ds", clientKeepaliveTimeoutSeconds),
 			ReadWriteTimeout:          fmt.Sprintf("%ds", readWriteTimeoutSeconds),
 			CacheEnabled:              primary.Scheme == "http" || primary.Scheme == "https",
@@ -925,6 +943,7 @@ func RenderWithRuntimeOptions(sites []domain.Site, securityPolicies []domain.Sec
 		}
 		delete(staticAssetsBySite, site.ID)
 		http3Enabled = http3Enabled || item.HTTP3Enabled
+		ipv6HTTP3Enabled = ipv6HTTP3Enabled || (item.IPv6Enabled && item.HTTP3Enabled)
 		item.PrimaryUpstreamName = "origin_" + item.ID
 		item.PrimaryWebSocketUpstreamName = item.PrimaryUpstreamName
 		item.CacheEnabled = item.CacheEnabled && !site.Passthrough && item.OriginResponseBuffering
@@ -1038,6 +1057,8 @@ func RenderWithRuntimeOptions(sites []domain.Site, securityPolicies []domain.Sec
 		CachePaths:                    cachePaths,
 		DefaultHTTP:                   !dedicatedTCP,
 		HTTP3Enabled:                  http3Enabled,
+		IPv6Enabled:                   ipv6Enabled,
+		IPv6HTTP3Enabled:              ipv6HTTP3Enabled,
 		LegacySecurityEnabled:         legacySecurityEnabled,
 		RuntimeSecurityEnabled:        runtimeSecurityEnabled,
 		RuntimeSecurityLogs:           runtimeSecurityLogs,

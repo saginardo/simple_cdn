@@ -51,6 +51,32 @@ var schemaMigrations = []schemaMigration{
 	{Version: 32, Name: "cache-operations", Apply: migrateCacheOperations},
 	{Version: 33, Name: "nginx-artifact-catalog", Apply: migrateNginxArtifactCatalog},
 	{Version: 34, Name: "site-backup-nodes", Apply: migrateSiteBackupNodes},
+	{Version: 35, Name: "ipv6-dns-management", Apply: migrateIPv6DNSManagement},
+}
+
+func migrateIPv6DNSManagement(tx *sql.Tx) error {
+	for _, column := range []struct {
+		table      string
+		name       string
+		definition string
+	}{
+		{"nodes", "public_ipv6", "public_ipv6 TEXT NOT NULL DEFAULT ''"},
+		{"sites", "ipv6_enabled", "ipv6_enabled INTEGER NOT NULL DEFAULT 0"},
+		{"site_node_health", "ipv6_consecutive_failures", "ipv6_consecutive_failures INTEGER NOT NULL DEFAULT 0"},
+		{"site_node_health", "ipv6_consecutive_successes", "ipv6_consecutive_successes INTEGER NOT NULL DEFAULT 0"},
+		{"site_node_health", "ipv6_dns_eligible", "ipv6_dns_eligible INTEGER NOT NULL DEFAULT 0"},
+		{"site_node_health", "ipv6_last_checked_at", "ipv6_last_checked_at TEXT"},
+		{"site_node_health", "ipv6_last_error", "ipv6_last_error TEXT NOT NULL DEFAULT ''"},
+	} {
+		if err := addColumnIfMissing(tx, column.table, column.name, column.definition); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_public_ipv6
+		ON nodes(public_ipv6) WHERE public_ipv6 <> ''`); err != nil {
+		return fmt.Errorf("create unique public IPv6 index: %w", err)
+	}
+	return nil
 }
 
 func migrateSiteBackupNodes(tx *sql.Tx) error {
@@ -986,6 +1012,7 @@ func migratePublishedState(tx *sql.Tx) error {
 		{"compression_excluded_mime_types_json", "compression_excluded_mime_types_json TEXT NOT NULL DEFAULT '[\"text/event-stream\"]'"},
 		{"cache_invalidations_json", "cache_invalidations_json TEXT NOT NULL DEFAULT '[]'"},
 		{"cache_warmups_json", "cache_warmups_json TEXT NOT NULL DEFAULT '[]'"},
+		{"ipv6_enabled", "ipv6_enabled INTEGER NOT NULL DEFAULT 0"},
 	} {
 		if err := addColumnIfMissing(tx, "sites", column.name, column.definition); err != nil {
 			return err

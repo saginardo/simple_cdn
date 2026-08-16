@@ -50,7 +50,7 @@ Docker Compose 部署使用三类环境文件：
 
 | 变量                        | 默认值                   | 说明                                                                                             |
 | --------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------ |
-| `CLOUDFLARE_API_TOKEN`      | 空                       | DNS-only A 记录和 DNS-01 的环境回退 Token。至少限制到受管 Zone，并授予 `Zone:Read`、`DNS:Edit`。 |
+| `CLOUDFLARE_API_TOKEN`      | 空                       | DNS-only A/AAAA 记录和 DNS-01 的环境回退 Token。至少限制到受管 Zone，并授予 `Zone:Read`、`DNS:Edit`。 |
 | `ACME_EMAIL`                | 空，Compose Certbot 必填 | 控制证书和站点证书的 ACME 联系邮箱。                                                             |
 | `CERTIFICATE_ISSUE_TIMEOUT` | `10m`                    | 单个站点 Certbot DNS-01 任务的正 Go duration。                                                   |
 

@@ -259,6 +259,61 @@ func TestSiteNodeHealthHysteresis(t *testing.T) {
 	}
 }
 
+func TestNodeIPv6RoundTripValidationAndHealthReset(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	node, err := database.CreateNodeWithAddresses("edge-ipv6", "203.0.113.70", "2001:db8:0:0::70")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.PublicIPv6 != "2001:db8::70" {
+		t.Fatalf("normalized IPv6 = %q", node.PublicIPv6)
+	}
+	loaded, err := database.GetNode(node.ID)
+	if err != nil || loaded.PublicIPv6 != node.PublicIPv6 {
+		t.Fatalf("stored IPv6 = %q, err=%v", loaded.PublicIPv6, err)
+	}
+	if _, err := database.CreateNodeWithAddresses("edge-duplicate-ipv6", "203.0.113.71", node.PublicIPv6); err == nil {
+		t.Fatal("accepted duplicate public IPv6")
+	}
+	for _, address := range []string{"127.0.0.1", "203.0.113.72", "::1", "fe80::1", "fd00::1", "ff02::1"} {
+		if _, err := database.SetNodePublicIPv6(node.ID, address); err == nil {
+			t.Fatalf("accepted invalid public IPv6 %q", address)
+		}
+	}
+	site, err := database.CreateSite(domain.Site{
+		Name: "ipv6-health-reset", Domains: []string{"ipv6.example.test"}, Nodes: []string{node.ID},
+		PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, IPv6Enabled: true, Enabled: true,
+	}, "zone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 5 {
+		if _, err := database.RecordSiteNodeIPv6Health(site.ID, node.ID, true, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	health, err := database.SiteNodeIPv6Health(site.ID, node.ID)
+	if err != nil || !health.DNSEligible {
+		t.Fatalf("eligible IPv6 health = %#v, err=%v", health, err)
+	}
+	updated, err := database.SetNodePublicIPv6(node.ID, "2001:db8::72")
+	if err != nil || updated.PublicIPv6 != "2001:db8::72" {
+		t.Fatalf("updated IPv6 = %#v, err=%v", updated, err)
+	}
+	health, err = database.SiteNodeIPv6Health(site.ID, node.ID)
+	if err != nil || health.DNSEligible || health.ConsecutiveFailures != 0 || health.ConsecutiveSuccesses != 0 || health.LastCheckedAt != nil {
+		t.Fatalf("IPv6 health was not reset = %#v, err=%v", health, err)
+	}
+	cleared, err := database.SetNodePublicIPv6(node.ID, "")
+	if err != nil || cleared.PublicIPv6 != "" {
+		t.Fatalf("cleared IPv6 = %#v, err=%v", cleared, err)
+	}
+}
+
 func TestCreateNodeRejectsNonPublicAddress(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "control.db"))
 	if err != nil {
@@ -749,6 +804,58 @@ func TestPublishedSnapshotAndDomainClaimsSurviveDraftChanges(t *testing.T) {
 		PrimaryOrigin: domain.Origin{URL: "https://released-origin.example.test", Enabled: true}, Enabled: true,
 	}, "released-zone"); err != nil {
 		t.Fatalf("old published domain was not released after promotion: %v", err)
+	}
+}
+
+func TestIPv6HealthResetsOnlyWhenPublishedSettingChanges(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	node, err := database.CreateNodeWithAddresses("edge-ipv6", "203.0.113.80", "2001:db8::80")
+	if err != nil {
+		t.Fatal(err)
+	}
+	site, err := database.CreateSite(domain.Site{
+		Name: "ipv6-publication", Domains: []string{"ipv6-publication.example.test"}, Nodes: []string{node.ID},
+		PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, IPv6Enabled: true, Enabled: true,
+	}, "zone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.MarkSitePublished(site.ID); err != nil {
+		t.Fatal(err)
+	}
+	for range 5 {
+		if _, err := database.RecordSiteNodeIPv6Health(site.ID, node.ID, true, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	health, err := database.SiteNodeIPv6Health(site.ID, node.ID)
+	if err != nil || !health.DNSEligible {
+		t.Fatalf("seeded IPv6 health = %#v, err=%v", health, err)
+	}
+
+	draft, zoneID, err := database.GetSite(site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft.IPv6Enabled = false
+	if _, err := database.UpdateSite(draft, zoneID); err != nil {
+		t.Fatal(err)
+	}
+	health, err = database.SiteNodeIPv6Health(site.ID, node.ID)
+	if err != nil || !health.DNSEligible {
+		t.Fatalf("draft update changed published IPv6 health = %#v, err=%v", health, err)
+	}
+
+	if _, err := database.MarkSitePublished(site.ID); err != nil {
+		t.Fatal(err)
+	}
+	health, err = database.SiteNodeIPv6Health(site.ID, node.ID)
+	if err != nil || health.DNSEligible || health.ConsecutiveSuccesses != 0 || health.LastCheckedAt != nil {
+		t.Fatalf("published IPv6 setting did not reset health = %#v, err=%v", health, err)
 	}
 }
 

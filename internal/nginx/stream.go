@@ -19,6 +19,7 @@ type renderedTCPForward struct {
 	SiteID                string
 	ListenPort            int
 	ListenTLS             bool
+	IPv6Enabled           bool
 	UpstreamAddress       string
 	UpstreamTLS           bool
 	UpstreamTLSServerName string
@@ -53,7 +54,7 @@ func RenderStream(sites []domain.Site) (string, error) {
 				idleTimeout = domain.DefaultTCPIdleTimeoutSeconds
 			}
 			items = append(items, renderedTCPForward{
-				SiteID: site.ID, ListenPort: forward.ListenPort, ListenTLS: forward.ListenTLS,
+				SiteID: site.ID, ListenPort: forward.ListenPort, ListenTLS: forward.ListenTLS, IPv6Enabled: site.IPv6Enabled,
 				UpstreamAddress: net.JoinHostPort(forward.UpstreamHost, fmt.Sprintf("%d", forward.UpstreamPort)),
 				UpstreamTLS:     forward.UpstreamTLS, UpstreamTLSServerName: forward.UpstreamTLSServerName,
 				ConnectTimeoutSeconds: connectTimeout, IdleTimeoutSeconds: idleTimeout,
@@ -93,6 +94,13 @@ func RenderStream(sites []domain.Site) (string, error) {
 			out.WriteString(" ssl")
 		}
 		out.WriteString(";\n\n")
+		if item.IPv6Enabled {
+			fmt.Fprintf(&out, "    listen [::]:%d ipv6only=on", item.ListenPort)
+			if item.ListenTLS {
+				out.WriteString(" ssl")
+			}
+			out.WriteString(";\n\n")
+		}
 		out.WriteString("    resolver 1.1.1.1 8.8.8.8 valid=1h ipv6=off;\n    resolver_timeout 5s;\n\n")
 		out.WriteString("    proxy_pass $cdn_tcp_upstream;\n")
 		fmt.Fprintf(&out, "    proxy_connect_timeout %ds;\n    proxy_timeout %ds;\n", item.ConnectTimeoutSeconds, item.IdleTimeoutSeconds)

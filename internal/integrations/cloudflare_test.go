@@ -172,12 +172,85 @@ func TestCloudflareDNSRejectsCNAMECollision(t *testing.T) {
 	}
 }
 
+func TestCloudflareDNSReconcilesAAndAAAARecords(t *testing.T) {
+	created := make([]DNSRecord, 0, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.Method {
+		case http.MethodGet:
+			_ = json.NewEncoder(response).Encode(map[string]any{
+				"success": true, "result": []DNSRecord{}, "result_info": map[string]any{"total_pages": 1},
+			})
+		case http.MethodPost:
+			var record DNSRecord
+			if err := json.NewDecoder(request.Body).Decode(&record); err != nil {
+				t.Fatal(err)
+			}
+			created = append(created, record)
+			_ = json.NewEncoder(response).Encode(map[string]any{"success": true, "result": map[string]any{}})
+		default:
+			t.Fatalf("unexpected method %s", request.Method)
+		}
+	}))
+	defer server.Close()
+	dns := CloudflareDNS{BaseURL: server.URL, Token: func() (string, error) { return "token", nil }}
+	comment := "cdn-platform:site=site-1;node=node-1"
+	if err := dns.Reconcile(context.Background(), "zone", "site=site-1", []DNSRecord{
+		{Name: "cdn.example.test", Content: "203.0.113.10", Comment: comment, TTL: 60},
+		{Type: "aaaa", Name: "cdn.example.test", Content: "2001:0db8::10", Comment: comment, TTL: 60},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(created) != 2 {
+		t.Fatalf("created records = %#v", created)
+	}
+	byType := make(map[string]DNSRecord, len(created))
+	for _, record := range created {
+		byType[record.Type] = record
+	}
+	if byType["A"].Content != "203.0.113.10" || byType["AAAA"].Content != "2001:db8::10" {
+		t.Fatalf("created records by type = %#v", byType)
+	}
+}
+
+func TestCloudflareDNSRemovesStaleAAAAWhenSiteDisablesIPv6(t *testing.T) {
+	deleted := ""
+	comment := "cdn-platform:site=site-1;node=node-1"
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.Method {
+		case http.MethodGet:
+			_ = json.NewEncoder(response).Encode(map[string]any{
+				"success": true,
+				"result": []DNSRecord{
+					{ID: "ipv4", Type: "A", Name: "cdn.example.test", Content: "203.0.113.10", Comment: comment, TTL: 60},
+					{ID: "ipv6", Type: "AAAA", Name: "cdn.example.test", Content: "2001:db8::10", Comment: comment, TTL: 60},
+				},
+				"result_info": map[string]any{"total_pages": 1},
+			})
+		case http.MethodDelete:
+			deleted = request.URL.Path
+			_ = json.NewEncoder(response).Encode(map[string]any{"success": true, "result": map[string]any{}})
+		default:
+			t.Fatalf("unexpected method %s", request.Method)
+		}
+	}))
+	defer server.Close()
+	dns := CloudflareDNS{BaseURL: server.URL, Token: func() (string, error) { return "token", nil }}
+	if err := dns.Reconcile(context.Background(), "zone", "site=site-1", []DNSRecord{{
+		Type: "A", Name: "cdn.example.test", Content: "203.0.113.10", Comment: comment, TTL: 60,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(deleted, "/ipv6") {
+		t.Fatalf("deleted record = %q", deleted)
+	}
+}
+
 func TestCloudflareDNSRemoveNodeDeletesOnlyExactManagedRecords(t *testing.T) {
 	deleted := make([]string, 0)
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		switch request.Method {
 		case http.MethodGet:
-			if got := request.URL.Query().Get("type"); got != "A" {
+			if got := request.URL.Query().Get("type"); got != "" {
 				t.Fatalf("record type filter = %q", got)
 			}
 			_ = json.NewEncoder(response).Encode(map[string]any{
@@ -185,6 +258,7 @@ func TestCloudflareDNSRemoveNodeDeletesOnlyExactManagedRecords(t *testing.T) {
 				"result": []DNSRecord{
 					{ID: "target-1", Type: "A", Name: "a.example.test", Comment: "cdn-platform:site=one;node=node-1"},
 					{ID: "target-2", Type: "A", Name: "b.example.test", Comment: "cdn-platform:node=node-1;site=two"},
+					{ID: "target-v6", Type: "AAAA", Name: "b.example.test", Comment: "cdn-platform:node=node-1;site=two"},
 					{ID: "similar", Type: "A", Name: "c.example.test", Comment: "cdn-platform:site=one;node=node-10"},
 					{ID: "manual", Type: "A", Name: "d.example.test", Comment: "node=node-1"},
 					{ID: "cname", Type: "CNAME", Name: "e.example.test", Comment: "cdn-platform:site=one;node=node-1"},
@@ -204,7 +278,7 @@ func TestCloudflareDNSRemoveNodeDeletesOnlyExactManagedRecords(t *testing.T) {
 	if err := dns.RemoveNode(context.Background(), "zone", "node-1"); err != nil {
 		t.Fatal(err)
 	}
-	if len(deleted) != 2 || !strings.HasSuffix(deleted[0], "/target-1") || !strings.HasSuffix(deleted[1], "/target-2") {
+	if len(deleted) != 3 || !strings.HasSuffix(deleted[0], "/target-1") || !strings.HasSuffix(deleted[1], "/target-2") || !strings.HasSuffix(deleted[2], "/target-v6") {
 		t.Fatalf("deleted records = %#v", deleted)
 	}
 }
@@ -218,6 +292,7 @@ func TestCloudflareDNSRemoveSiteNodeDeletesOnlyExactSiteAndNode(t *testing.T) {
 				"success": true,
 				"result": []DNSRecord{
 					{ID: "target", Type: "A", Name: "a.example.test", Comment: "cdn-platform:site=site-1;node=node-1"},
+					{ID: "target-v6", Type: "AAAA", Name: "a.example.test", Comment: "cdn-platform:site=site-1;node=node-1"},
 					{ID: "other-site", Type: "A", Name: "b.example.test", Comment: "cdn-platform:site=site-2;node=node-1"},
 					{ID: "other-node", Type: "A", Name: "c.example.test", Comment: "cdn-platform:site=site-1;node=node-2"},
 				},
@@ -236,7 +311,7 @@ func TestCloudflareDNSRemoveSiteNodeDeletesOnlyExactSiteAndNode(t *testing.T) {
 	if err := dns.RemoveSiteNode(context.Background(), "zone", "site-1", "node-1"); err != nil {
 		t.Fatal(err)
 	}
-	if len(deleted) != 1 || !strings.HasSuffix(deleted[0], "/target") {
+	if len(deleted) != 2 || !strings.HasSuffix(deleted[0], "/target") || !strings.HasSuffix(deleted[1], "/target-v6") {
 		t.Fatalf("deleted records = %#v", deleted)
 	}
 }

@@ -35,6 +35,50 @@ func TestNodeDetailRouteRequiresAdmin(t *testing.T) {
 	}
 }
 
+func TestNodePublicIPv6CreateAndUpdateAPI(t *testing.T) {
+	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	server := &Server{Store: database}
+	createRequest := httptest.NewRequest(http.MethodPost, "/api/nodes", strings.NewReader(`{"name":"ipv6-edge","public_ipv4":"203.0.113.73","public_ipv6":"2001:db8::73"}`))
+	createResponse := httptest.NewRecorder()
+	server.createNode(createResponse, createRequest)
+	if createResponse.Code != http.StatusCreated {
+		t.Fatalf("create response = %d %s", createResponse.Code, createResponse.Body.String())
+	}
+	var node domain.Node
+	if err := json.Unmarshal(createResponse.Body.Bytes(), &node); err != nil {
+		t.Fatal(err)
+	}
+	if node.PublicIPv6 != "2001:db8::73" {
+		t.Fatalf("created public IPv6 = %q", node.PublicIPv6)
+	}
+
+	updateRequest := httptest.NewRequest(http.MethodPut, "/api/nodes/"+node.ID+"/public-ipv6", strings.NewReader(`{"public_ipv6":"2001:db8::74"}`))
+	updateRequest.SetPathValue("id", node.ID)
+	updateResponse := httptest.NewRecorder()
+	server.updateNodePublicIPv6(updateResponse, updateRequest)
+	if updateResponse.Code != http.StatusOK {
+		t.Fatalf("update response = %d %s", updateResponse.Code, updateResponse.Body.String())
+	}
+	if err := json.Unmarshal(updateResponse.Body.Bytes(), &node); err != nil {
+		t.Fatal(err)
+	}
+	if node.PublicIPv6 != "2001:db8::74" {
+		t.Fatalf("updated public IPv6 = %q", node.PublicIPv6)
+	}
+
+	invalidRequest := httptest.NewRequest(http.MethodPut, "/api/nodes/"+node.ID+"/public-ipv6", strings.NewReader(`{"public_ipv6":"fd00::74"}`))
+	invalidRequest.SetPathValue("id", node.ID)
+	invalidResponse := httptest.NewRecorder()
+	server.updateNodePublicIPv6(invalidResponse, invalidRequest)
+	if invalidResponse.Code != http.StatusBadRequest {
+		t.Fatalf("invalid response = %d %s", invalidResponse.Code, invalidResponse.Body.String())
+	}
+}
+
 func TestNodeCacheSettingsOverrideGlobalDefault(t *testing.T) {
 	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
 	if err != nil {

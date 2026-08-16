@@ -110,6 +110,177 @@ func TestDisabledSiteWithdrawsManagedDNSBeforeRepublish(t *testing.T) {
 	}
 }
 
+func TestSiteIPv6DNSUsesIndependentHealthEligibility(t *testing.T) {
+	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	node, err := database.CreateNodeWithAddresses("edge-ipv6", "203.0.113.74", "2001:db8::74")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetNodeStatus(node.ID, domain.NodeActive); err != nil {
+		t.Fatal(err)
+	}
+	site, err := database.CreateSite(domain.Site{
+		Name: "ipv6-site", Domains: []string{"ipv6.example.test"}, Nodes: []string{node.ID},
+		PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, IPv6Enabled: true, Enabled: true,
+	}, "zone-ipv6")
+	if err != nil {
+		t.Fatal(err)
+	}
+	site, err = database.MarkSitePublished(site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration, err := nginx.Render([]domain.Site{site})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SaveNodeState(node.ID, domain.DesiredState{Version: 1, NginxConfig: configuration}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Heartbeat(node.ID, 1, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	for range 5 {
+		if _, err := database.RecordNodeHealth(node.ID, true, ""); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := database.RecordSiteNodeHealth(site.ID, node.ID, true, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	nodes, err := database.ListNodes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dns := &MemoryDNS{}
+	manager := HealthManager{Server: &Server{Store: database, DNS: dns}}
+	if err := manager.reconcileSiteDNS(context.Background(), site, nodes); err != nil {
+		t.Fatal(err)
+	}
+	assertAddressRecordTypes(t, dns.Zones[site.ZoneID], map[string]string{"A": node.PublicIPv4})
+
+	for range 5 {
+		if _, err := database.RecordSiteNodeIPv6Health(site.ID, node.ID, true, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := manager.reconcileSiteDNS(context.Background(), site, nodes); err != nil {
+		t.Fatal(err)
+	}
+	assertAddressRecordTypes(t, dns.Zones[site.ZoneID], map[string]string{"A": node.PublicIPv4, "AAAA": node.PublicIPv6})
+
+	for attempt := 1; attempt <= 3; attempt++ {
+		if _, err := database.RecordSiteNodeIPv6Health(site.ID, node.ID, false, "IPv6 timeout"); err != nil {
+			t.Fatal(err)
+		}
+		if err := manager.reconcileSiteDNS(context.Background(), site, nodes); err != nil {
+			t.Fatal(err)
+		}
+		expected := map[string]string{"A": node.PublicIPv4, "AAAA": node.PublicIPv6}
+		if attempt == 3 {
+			expected = map[string]string{"A": node.PublicIPv4}
+		}
+		assertAddressRecordTypes(t, dns.Zones[site.ZoneID], expected)
+	}
+
+	for range 5 {
+		if _, err := database.RecordSiteNodeIPv6Health(site.ID, node.ID, true, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	site.IPv6Enabled = false
+	if err := manager.reconcileSiteDNS(context.Background(), site, nodes); err != nil {
+		t.Fatal(err)
+	}
+	assertAddressRecordTypes(t, dns.Zones[site.ZoneID], map[string]string{"A": node.PublicIPv4})
+}
+
+func TestTCPOnlySiteBuildsIPv6HealthWithoutHTTPProbe(t *testing.T) {
+	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	node, err := database.CreateNodeWithAddresses("edge-tcp-ipv6", "203.0.113.75", "2001:db8::75")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetNodeStatus(node.ID, domain.NodeActive); err != nil {
+		t.Fatal(err)
+	}
+	site, err := database.CreateSite(domain.Site{
+		Name: "mail-ipv6", Domains: []string{"mail-ipv6.example.test"}, Nodes: []string{node.ID},
+		TCPOnly: true, IPv6Enabled: true, TCPForwards: []domain.TCPForward{{Name: "smtps", ListenPort: 9465, UpstreamHost: "mail-origin.example.test", UpstreamPort: 465}}, Enabled: true,
+	}, "zone-mail-ipv6")
+	if err != nil {
+		t.Fatal(err)
+	}
+	site, err = database.MarkSitePublished(site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	streamConfiguration, err := nginx.RenderStream([]domain.Site{site})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SaveNodeState(node.ID, domain.DesiredState{Version: 1, NginxStreamConfig: streamConfiguration, PublicPorts: []int{9465}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Heartbeat(node.ID, 1, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	for range 5 {
+		if _, err := database.RecordNodeHealth(node.ID, true, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	nodes, err := database.ListNodes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var httpProbeCalls, ipv6ProbeCalls int
+	dns := &MemoryDNS{}
+	manager := HealthManager{
+		Server: &Server{Store: database, DNS: dns},
+		SiteProbe: func(context.Context, domain.Site, domain.Node) (bool, string) {
+			httpProbeCalls++
+			return false, "HTTP probe must not run for a TCP-only site"
+		},
+		SiteIPv6Probe: func(context.Context, domain.Site, domain.Node) (bool, string) {
+			ipv6ProbeCalls++
+			return true, ""
+		},
+	}
+	for range 5 {
+		if failures := manager.reconcileSiteHealth(context.Background(), []domain.Site{site}, nodes); len(failures) != 0 {
+			t.Fatalf("IPv6 health reconciliation failed: %v", failures)
+		}
+	}
+	if httpProbeCalls != 0 || ipv6ProbeCalls != 5 {
+		t.Fatalf("probe calls: HTTP=%d IPv6=%d", httpProbeCalls, ipv6ProbeCalls)
+	}
+	if err := manager.reconcileSiteDNS(context.Background(), site, nodes); err != nil {
+		t.Fatal(err)
+	}
+	assertAddressRecordTypes(t, dns.Zones[site.ZoneID], map[string]string{"A": node.PublicIPv4, "AAAA": node.PublicIPv6})
+}
+
+func assertAddressRecordTypes(t *testing.T, records []integrations.DNSRecord, expected map[string]string) {
+	t.Helper()
+	if len(records) != len(expected) {
+		t.Fatalf("DNS records = %#v, want %#v", records, expected)
+	}
+	for _, record := range records {
+		if expected[record.Type] != record.Content {
+			t.Fatalf("DNS record = %#v, want %#v", record, expected)
+		}
+	}
+}
+
 func TestPendingSiteDraftDoesNotChangePublishedHealthOrDNS(t *testing.T) {
 	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
 	if err != nil {

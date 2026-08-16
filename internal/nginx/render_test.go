@@ -161,6 +161,68 @@ func TestRenderHTTP3RequiresSiteOptInAndCapability(t *testing.T) {
 	}
 }
 
+func TestRenderIPv6ListenersRequireSiteOptIn(t *testing.T) {
+	site := domain.Site{
+		ID: "site-ipv6", Name: "IPv6 site", Domains: []string{"ipv6.example.test"},
+		PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, HTTP3Enabled: true, Enabled: true,
+	}
+	disabled, err := RenderWithRuntimeOptions([]domain.Site{site}, nil, nil, RenderRuntimeOptions{
+		DefaultCacheSizeGB: domain.DefaultCacheMaxSizeGB, HTTP3Capable: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(disabled, "listen [::]") {
+		t.Fatalf("site without IPv6 opt-in has IPv6 listeners:\n%s", disabled)
+	}
+
+	site.IPv6Enabled = true
+	enabled, err := RenderWithRuntimeOptions([]domain.Site{site}, nil, nil, RenderRuntimeOptions{
+		DefaultCacheSizeGB: domain.DefaultCacheMaxSizeGB, HTTP3Capable: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"listen [::]:80 default_server ipv6only=on;",
+		"listen [::]:443 ssl default_server ipv6only=on;",
+		"listen [::]:443 quic reuseport default_server ipv6only=on;",
+		"listen [::]:80;",
+		"listen [::]:443 ssl;",
+		"listen [::]:443 quic;",
+	} {
+		if !strings.Contains(enabled, expected) {
+			t.Fatalf("IPv6 configuration is missing %q:\n%s", expected, enabled)
+		}
+	}
+}
+
+func TestRenderDoesNotCrossEnableDefaultIPv6QUIC(t *testing.T) {
+	base := domain.Site{
+		PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, Enabled: true,
+	}
+	http3Site := base
+	http3Site.ID = "http3-only"
+	http3Site.Name = "HTTP3 only"
+	http3Site.Domains = []string{"http3.example.test"}
+	http3Site.HTTP3Enabled = true
+	ipv6Site := base
+	ipv6Site.ID = "ipv6-only"
+	ipv6Site.Name = "IPv6 only"
+	ipv6Site.Domains = []string{"ipv6.example.test"}
+	ipv6Site.IPv6Enabled = true
+
+	configuration, err := RenderWithRuntimeOptions([]domain.Site{http3Site, ipv6Site}, nil, nil, RenderRuntimeOptions{
+		DefaultCacheSizeGB: domain.DefaultCacheMaxSizeGB, HTTP3Capable: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(configuration, "listen [::]:443 quic reuseport default_server ipv6only=on;") {
+		t.Fatalf("default IPv6 QUIC listener was enabled across unrelated site settings:\n%s", configuration)
+	}
+}
+
 func TestRenderManagedOriginPoolsSharesCompatibleConnections(t *testing.T) {
 	sites := []domain.Site{
 		{ID: "site-a", Name: "a", Domains: []string{"a.example.test"}, PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, Enabled: true},
@@ -539,7 +601,7 @@ func TestRenderEmptyNodeConfigurationDoesNotReferenceSiteVariables(t *testing.T)
 }
 
 func TestRenderTCPOnlySiteOmitsHTTPListeners(t *testing.T) {
-	site := domain.Site{ID: "11111111-1111-4111-8111-111111111111", Name: "mail", Domains: []string{"mail.example.test"}, TCPOnly: true, Enabled: true, TCPForwards: []domain.TCPForward{
+	site := domain.Site{ID: "11111111-1111-4111-8111-111111111111", Name: "mail", Domains: []string{"mail.example.test"}, TCPOnly: true, IPv6Enabled: true, Enabled: true, TCPForwards: []domain.TCPForward{
 		{Name: "SMTPS", ListenPort: 9465, ListenTLS: true, UpstreamHost: "us1.workspace.org", UpstreamPort: 465, UpstreamTLS: true, UpstreamTLSServerName: "us1.workspace.org", ConnectTimeoutSeconds: 10, IdleTimeoutSeconds: 300},
 		{Name: "IMAPS", ListenPort: 9993, ListenTLS: true, UpstreamHost: "us1.workspace.org", UpstreamPort: 993, UpstreamTLS: true, UpstreamTLSServerName: "us1.workspace.org", ConnectTimeoutSeconds: 10, IdleTimeoutSeconds: 300},
 	}}
@@ -555,7 +617,7 @@ func TestRenderTCPOnlySiteOmitsHTTPListeners(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, expected := range []string{
-		"listen 9465 ssl;", "listen 9993 ssl;", "9465 \"us1.workspace.org:465\";", "9993 \"us1.workspace.org:993\";",
+		"listen 9465 ssl;", "listen [::]:9465 ipv6only=on ssl;", "listen 9993 ssl;", "listen [::]:9993 ipv6only=on ssl;", "9465 \"us1.workspace.org:465\";", "9993 \"us1.workspace.org:993\";",
 		"proxy_pass $cdn_tcp_upstream;", "resolver 1.1.1.1 8.8.8.8 valid=1h ipv6=off;", "proxy_ssl_name $cdn_tcp_upstream_sni;",
 		"ssl_certificate /opt/cdn-edge/config/certs/11111111-1111-4111-8111-111111111111.crt;", "proxy_timeout 300s;",
 		"access_log /opt/cdn-edge/logs/tcp-access.json cdn_tcp_json;", "error_log /opt/cdn-edge/logs/tcp-error.log warn;",

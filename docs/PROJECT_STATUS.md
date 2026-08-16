@@ -1,6 +1,6 @@
 # simple_cdn 项目状态与参考架构
 
-最后审计：2026-08-09（基于当前 `main`，不代表任何生产主机的实时状态）
+最后审计：2026-08-16（基于当前 `main`，不代表任何生产主机的实时状态）
 
 ## 1. 当前结论
 
@@ -12,7 +12,7 @@ Nginx 有独立的交付生命周期：控制镜像内置 bundle 只负责首次
 
 ## 2. 稳定边界
 
-- 单管理员、IPv4、单 Cloudflare 账户；没有 RBAC、多租户、GeoDNS、控制面高可用、托管 CAPTCHA/机器人信誉或流量型 DDoS 服务。
+- 单管理员、节点必须有公网 IPv4 且可选配置公网 IPv6、单 Cloudflare 账户；没有 RBAC、多租户、GeoDNS、控制面高可用、托管 CAPTCHA/机器人信誉或流量型 DDoS 服务。
 - 控制面不可用不会中断已经应用到边缘的业务流量，但会暂停新发布、DNS 对账、证书任务、节点同步、资源上传、缓存操作和 Nginx 候选检查。
 - 支持 Linux AMD64 的受管 Nginx bundle；边缘支持 Debian 12 和 Debian 13，Docker 只用于控制面和 CI 构建。
 - WAF、PoW、限速和封禁补充而不是替代应用认证、输入校验、协议解析和上游 DDoS 防护。
@@ -33,7 +33,7 @@ Nginx 有独立的交付生命周期：控制镜像内置 bundle 只负责首次
                                           +-- $CONTROL_DATA_DIR/nginx-artifacts
                                           +-- /downloads/nginx/<sha256>/...
 
-终端用户 --> Cloudflare DNS-only A --> Edge Nginx :80/:443、可选 QUIC UDP :443
+终端用户 --> Cloudflare DNS-only A/AAAA --> Edge Nginx :80/:443、可选 QUIC UDP :443
                                          |
                                          +-- 缓存、压缩、WAF/PoW/限速、静态资源
                                          +-- HTTP/WS/SSE/gRPC/stream
@@ -64,7 +64,7 @@ cdn-edge-agent -- mTLS --> 控制面 desired state、心跳、日志、升级任
 | 认证与管理   | Argon2id 密码、TOTP（始终开启）、恢复码、Passkey、CSRF、会话限速、审计、品牌和持久消息中心。                                                                 |
 | 节点生命周期 | 15 分钟一次性注册令牌、内部 CA/mTLS、manifest 增量轮询、机器状态 SSE、撤销、确认保护卸载和单节点/全量升级。                                                  |
 | Nginx 交付   | 自编译 HTTP/2、HTTP/3、Lua、Brotli、Zstandard、stream bundle；GitHub stable 独立更新；安装器和在线升级均支持事务回滚。                                       |
-| 站点发布     | 草稿与已发布快照分离；DNS-01 证书成功后才允许发布；主备节点预部署、逐节点校验、站点 HTTPS/SNI 健康和 Cloudflare DNS 滞回容灾调度。                             |
+| 站点发布     | 草稿与已发布快照分离；DNS-01 证书成功后才允许发布；主备节点预部署、逐节点校验、独立 IPv4/IPv6 站点健康和 Cloudflare A/AAAA 滞回容灾调度。                      |
 | HTTP 流量    | 静态后缀共享缓存、缓存锁/revalidate/stale、整站/URL/前缀失效、边缘本地预热、动态 gzip/Brotli/Zstandard、WebSocket、SSE、OpenAI 风格 POST 流式和 Range 透传。 |
 | 回源         | HTTP/HTTPS/H2C/HTTP2、gRPC/GRPCS、主备切换、共享连接池、两层主动探测与熔断、TLS Host/SNI 分离。                                                              |
 | TCP 与隧道   | stream TCP 转发、监听/上游 TLS/SNI、动态 DNS、WireGuard 源站隧道、限速和双向 TCP/UDP 性能测试。                                                              |

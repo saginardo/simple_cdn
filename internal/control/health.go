@@ -23,6 +23,7 @@ type HealthManager struct {
 	Server          *Server
 	Client          *http.Client
 	SiteProbe       func(context.Context, domain.Site, domain.Node) (bool, string)
+	SiteIPv6Probe   func(context.Context, domain.Site, domain.Node) (bool, string)
 	WorkerLimit     int
 	RoundTimeout    time.Duration
 	Interval        time.Duration
@@ -316,6 +317,7 @@ func (m *HealthManager) reconcileNodeHealthTiered(ctx context.Context, nodes []d
 type siteHealthProbe struct {
 	site      domain.Site
 	node      domain.Node
+	ipv6      bool
 	priorDNS  bool
 	healthy   bool
 	detail    string
@@ -367,19 +369,37 @@ func (m *HealthManager) reconcileSiteHealth(ctx context.Context, sites []domain.
 				errorsFound = append(errorsFound, fmt.Errorf("read desired state for site %s on %s: %w", site.Name, node.Name, err))
 				continue
 			}
-			if !nginx.HasSiteHealth(state.NginxConfig, site.ID) {
+			hasSiteHealth := nginx.HasSiteHealth(state.NginxConfig, site.ID)
+			if !hasSiteHealth && !site.TCPOnly {
 				continue
 			}
-			prior, err := m.Server.Store.SiteNodeHealth(site.ID, node.ID)
-			if err != nil {
-				errorsFound = append(errorsFound, fmt.Errorf("read site health for %s on %s: %w", site.Name, node.Name, err))
-				continue
+			if hasSiteHealth {
+				prior, err := m.Server.Store.SiteNodeHealth(site.ID, node.ID)
+				if err != nil {
+					errorsFound = append(errorsFound, fmt.Errorf("read site health for %s on %s: %w", site.Name, node.Name, err))
+					continue
+				}
+				probes = append(probes, siteHealthProbe{site: site, node: node, priorDNS: prior.DNSEligible})
 			}
-			probes = append(probes, siteHealthProbe{site: site, node: node, priorDNS: prior.DNSEligible})
+			if site.IPv6Enabled && node.PublicIPv6 != "" {
+				priorIPv6, err := m.Server.Store.SiteNodeIPv6Health(site.ID, node.ID)
+				if err != nil {
+					errorsFound = append(errorsFound, fmt.Errorf("read IPv6 site health for %s on %s: %w", site.Name, node.Name, err))
+					continue
+				}
+				probes = append(probes, siteHealthProbe{site: site, node: node, ipv6: true, priorDNS: priorIPv6.DNSEligible})
+			}
 		}
 	}
 	m.runBounded(ctx, len(probes), func(index int) {
-		healthy, detail := m.siteCheck(ctx, probes[index].site, probes[index].node)
+		probe := probes[index]
+		var healthy bool
+		var detail string
+		if probe.ipv6 {
+			healthy, detail = m.siteIPv6Check(ctx, probe.site, probe.node)
+		} else {
+			healthy, detail = m.siteCheck(ctx, probe.site, probe.node)
+		}
 		if ctx.Err() != nil {
 			return
 		}
@@ -396,32 +416,56 @@ func (m *HealthManager) reconcileSiteHealth(ctx context.Context, sites []domain.
 			errorsFound = append(errorsFound, fmt.Errorf("probe site %s on %s: %w", probe.site.Name, probe.node.Name, context.Cause(ctx)))
 			continue
 		}
-		health, err := m.Server.Store.RecordSiteNodeHealth(probe.site.ID, probe.node.ID, probe.healthy, probe.detail)
+		var health store.SiteNodeHealth
+		var err error
+		if probe.ipv6 {
+			health, err = m.Server.Store.RecordSiteNodeIPv6Health(probe.site.ID, probe.node.ID, probe.healthy, probe.detail)
+		} else {
+			health, err = m.Server.Store.RecordSiteNodeHealth(probe.site.ID, probe.node.ID, probe.healthy, probe.detail)
+		}
 		if err != nil {
-			errorsFound = append(errorsFound, fmt.Errorf("record site health for %s on %s: %w", probe.site.Name, probe.node.Name, err))
+			family := "IPv4"
+			if probe.ipv6 {
+				family = "IPv6"
+			}
+			errorsFound = append(errorsFound, fmt.Errorf("record %s site health for %s on %s: %w", family, probe.site.Name, probe.node.Name, err))
 			continue
 		}
 		if probe.priorDNS && !health.DNSEligible && m.Server.Notifier != nil {
-			if err := integrations.SendNotification(ctx, m.Server.Notifier, integrations.Notification{
-				Category: integrations.NotificationCategoryAvailability,
-				Severity: integrations.NotificationSeverityError,
-				Subject:  "[CDN] 站点端点已移出 DNS 池",
-				Message:  "站点端点连续三次 HTTPS/SNI 健康检查失败，控制面已停止向该端点调度新流量。",
-				Details: []integrations.NotificationDetail{
-					{Label: "站点", Value: probe.site.Name},
-					{Label: "节点", Value: probe.node.Name},
-					{Label: "公网地址", Value: probe.node.PublicIPv4},
-					{Label: "检查结果", Value: health.LastError},
-				},
-				OccurredAt: time.Now().UTC(),
-				Key:        "availability:site-health:" + probe.site.ID + ":" + probe.node.ID,
-				Cooldown:   availabilityAlertCooldown,
-			}); err != nil {
+			if err := m.notifySiteHealthFailure(ctx, probe, health); err != nil {
 				errorsFound = append(errorsFound, fmt.Errorf("notify site health failure for %s on %s: %w", probe.site.Name, probe.node.Name, err))
 			}
 		}
 	}
 	return errorsFound
+}
+
+func (m *HealthManager) notifySiteHealthFailure(ctx context.Context, probe siteHealthProbe, health store.SiteNodeHealth) error {
+	subject := "[CDN] 站点端点已移出 DNS 池"
+	message := "站点端点连续三次 HTTPS/SNI 健康检查失败，控制面已停止向该端点调度新流量。"
+	address := probe.node.PublicIPv4
+	key := "availability:site-health:" + probe.site.ID + ":" + probe.node.ID
+	if probe.ipv6 {
+		subject = "[CDN] 站点 IPv6 端点已移出 DNS 池"
+		message = "站点 IPv6 端点连续三次健康检查失败，控制面已撤销该端点的 AAAA 记录。"
+		address = probe.node.PublicIPv6
+		key += ":ipv6"
+	}
+	return integrations.SendNotification(ctx, m.Server.Notifier, integrations.Notification{
+		Category: integrations.NotificationCategoryAvailability,
+		Severity: integrations.NotificationSeverityError,
+		Subject:  subject,
+		Message:  message,
+		Details: []integrations.NotificationDetail{
+			{Label: "站点", Value: probe.site.Name},
+			{Label: "节点", Value: probe.node.Name},
+			{Label: "公网地址", Value: address},
+			{Label: "检查结果", Value: health.LastError},
+		},
+		OccurredAt: time.Now().UTC(),
+		Key:        key,
+		Cooldown:   availabilityAlertCooldown,
+	})
 }
 
 func (m *HealthManager) runBounded(ctx context.Context, count int, work func(int)) {
@@ -606,7 +650,14 @@ func (m *HealthManager) reconcileSiteDNSOutcome(ctx context.Context, site domain
 		return outcome, nil
 	}
 	m.clearNoHealthyAlert(site.ID)
-	desired := make([]integrations.DNSRecord, 0, len(healthy)*len(site.Domains))
+	healthyIPv6 := []domain.Node(nil)
+	if site.IPv6Enabled {
+		healthyIPv6, err = m.siteIPv6Nodes(site, nodesByID)
+		if err != nil {
+			return outcome, err
+		}
+	}
+	desired := make([]integrations.DNSRecord, 0, (len(healthy)+len(healthyIPv6))*len(site.Domains))
 	ttl := domain.DefaultDNSTTLSeconds
 	if m.Server.Settings != nil {
 		ttl = m.Server.Settings.DNSTTL(site)
@@ -616,7 +667,15 @@ func (m *HealthManager) reconcileSiteDNSOutcome(ctx context.Context, site domain
 	for _, node := range healthy {
 		for _, domainName := range site.Domains {
 			desired = append(desired, integrations.DNSRecord{
-				Name: domainName, Content: node.PublicIPv4, TTL: ttl, Proxied: false,
+				Type: "A", Name: domainName, Content: node.PublicIPv4, TTL: ttl, Proxied: false,
+				Comment: integrations.ManagedRecordPrefix + "site=" + site.ID + ";node=" + node.ID,
+			})
+		}
+	}
+	for _, node := range healthyIPv6 {
+		for _, domainName := range site.Domains {
+			desired = append(desired, integrations.DNSRecord{
+				Type: "AAAA", Name: domainName, Content: node.PublicIPv6, TTL: ttl, Proxied: false,
 				Comment: integrations.ManagedRecordPrefix + "site=" + site.ID + ";node=" + node.ID,
 			})
 		}
@@ -628,6 +687,68 @@ func (m *HealthManager) reconcileSiteDNSOutcome(ctx context.Context, site domain
 		return outcome, fmt.Errorf("reconcile DNS for %s: %w", site.Name, err)
 	}
 	return outcome, nil
+}
+
+func (m *HealthManager) siteIPv6Nodes(site domain.Site, nodesByID map[string]domain.Node) ([]domain.Node, error) {
+	healthy, err := m.siteIPv6NodePool(site, site.Nodes, nodesByID)
+	if err != nil || len(healthy) > 0 || len(site.BackupNodes) == 0 {
+		return healthy, err
+	}
+	return m.siteIPv6NodePool(site, site.BackupNodes, nodesByID)
+}
+
+func (m *HealthManager) siteIPv6NodePool(site domain.Site, nodeIDs []string, nodesByID map[string]domain.Node) ([]domain.Node, error) {
+	healthy := make([]domain.Node, 0, len(nodeIDs))
+	for _, nodeID := range nodeIDs {
+		node, found := nodesByID[nodeID]
+		if !found || node.PublicIPv6 == "" || node.Status != domain.NodeActive {
+			continue
+		}
+		upgrading, err := m.nodeUpgradeInProgress(node)
+		if err != nil {
+			return nil, err
+		}
+		if upgrading {
+			continue
+		}
+		desiredVersion, err := m.Server.Store.DesiredVersion(node.ID)
+		if err != nil {
+			return nil, err
+		}
+		if desiredVersion == 0 || node.AppliedVersion < desiredVersion {
+			continue
+		}
+		publishing, err := m.Server.Store.HasActiveNodePublication(node.ID)
+		if err != nil {
+			return nil, err
+		}
+		if publishing {
+			continue
+		}
+		nodeHealth, err := m.Server.Store.NodeHealth(node.ID)
+		if err != nil {
+			return nil, err
+		}
+		if !nodeHealth.DNSEligible {
+			continue
+		}
+		state, _, err := m.Server.Store.NodeState(node.ID)
+		if err != nil {
+			return nil, err
+		}
+		if !site.TCPOnly && !nginx.HasSiteHealth(state.NginxConfig, site.ID) {
+			continue
+		}
+		siteHealth, err := m.Server.Store.SiteNodeIPv6Health(site.ID, node.ID)
+		if err != nil {
+			return nil, err
+		}
+		if !siteHealth.DNSEligible {
+			continue
+		}
+		healthy = append(healthy, node)
+	}
+	return healthy, nil
 }
 
 func (m *HealthManager) siteNodePool(site domain.Site, nodeIDs []string, nodesByID map[string]domain.Node) (siteNodePool, error) {
@@ -834,14 +955,25 @@ func (m *HealthManager) siteCheck(ctx context.Context, site domain.Site, node do
 	return m.checkSite(ctx, site, node)
 }
 
+func (m *HealthManager) siteIPv6Check(ctx context.Context, site domain.Site, node domain.Node) (bool, string) {
+	if m.SiteIPv6Probe != nil {
+		return m.SiteIPv6Probe(ctx, site, node)
+	}
+	return m.checkSiteAddress(ctx, site, node.PublicIPv6)
+}
+
 func (m *HealthManager) checkSite(ctx context.Context, site domain.Site, node domain.Node) (bool, string) {
+	return m.checkSiteAddress(ctx, site, node.PublicIPv4)
+}
+
+func (m *HealthManager) checkSiteAddress(ctx context.Context, site domain.Site, address string) (bool, string) {
 	probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 	dialer := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}
 	transport := &http.Transport{
 		Proxy: nil,
 		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			return dialer.DialContext(ctx, network, net.JoinHostPort(node.PublicIPv4, "443"))
+			return dialer.DialContext(ctx, network, net.JoinHostPort(address, "443"))
 		},
 		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
 		TLSHandshakeTimeout:   5 * time.Second,
@@ -857,38 +989,40 @@ func (m *HealthManager) checkSite(ctx context.Context, site domain.Site, node do
 		},
 	}
 	want := nginx.SiteHealthBody(site.ID)
-	for _, domainName := range site.Domains {
-		endpoint := (&url.URL{Scheme: "https", Host: domainName, Path: "/__cdn_health"}).String()
-		request, err := http.NewRequestWithContext(probeCtx, http.MethodGet, endpoint, nil)
-		if err != nil {
-			return false, domainName + ": " + err.Error()
-		}
-		response, err := client.Do(request)
-		if err != nil {
-			return false, domainName + ": " + err.Error()
-		}
-		body, readErr := io.ReadAll(io.LimitReader(response.Body, 513))
-		closeErr := response.Body.Close()
-		if readErr != nil {
-			return false, domainName + ": read health response: " + readErr.Error()
-		}
-		if closeErr != nil {
-			return false, domainName + ": close health response: " + closeErr.Error()
-		}
-		if response.StatusCode != http.StatusOK {
-			return false, domainName + ": health endpoint returned " + response.Status
-		}
-		if strings.TrimSpace(string(body)) != want {
-			return false, fmt.Sprintf("%s: unexpected health response %q", domainName, strings.TrimSpace(string(body)))
+	if !site.TCPOnly {
+		for _, domainName := range site.Domains {
+			endpoint := (&url.URL{Scheme: "https", Host: domainName, Path: "/__cdn_health"}).String()
+			request, err := http.NewRequestWithContext(probeCtx, http.MethodGet, endpoint, nil)
+			if err != nil {
+				return false, domainName + ": " + err.Error()
+			}
+			response, err := client.Do(request)
+			if err != nil {
+				return false, domainName + ": " + err.Error()
+			}
+			body, readErr := io.ReadAll(io.LimitReader(response.Body, 513))
+			closeErr := response.Body.Close()
+			if readErr != nil {
+				return false, domainName + ": read health response: " + readErr.Error()
+			}
+			if closeErr != nil {
+				return false, domainName + ": close health response: " + closeErr.Error()
+			}
+			if response.StatusCode != http.StatusOK {
+				return false, domainName + ": health endpoint returned " + response.Status
+			}
+			if strings.TrimSpace(string(body)) != want {
+				return false, fmt.Sprintf("%s: unexpected health response %q", domainName, strings.TrimSpace(string(body)))
+			}
 		}
 	}
-	return checkTCPForwardPorts(probeCtx, site, node)
+	return checkTCPForwardPorts(probeCtx, site, address)
 }
 
-func checkTCPForwardPorts(ctx context.Context, site domain.Site, node domain.Node) (bool, string) {
+func checkTCPForwardPorts(ctx context.Context, site domain.Site, address string) (bool, string) {
 	dialer := net.Dialer{Timeout: 3 * time.Second, KeepAlive: -1}
 	for _, forward := range site.TCPForwards {
-		connection, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(node.PublicIPv4, fmt.Sprintf("%d", forward.ListenPort)))
+		connection, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(address, fmt.Sprintf("%d", forward.ListenPort)))
 		if err != nil {
 			return false, fmt.Sprintf("TCP %d: %v", forward.ListenPort, err)
 		}

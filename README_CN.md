@@ -23,7 +23,7 @@
 - 按能力启用 WireGuard 专用回源隧道：主机私钥本地生成，控制面管理修订收敛、私网地址发布、源站一次性安装、nftables 规则，以及公网 TCP 与隧道 TCP/UDP 对照测试。站点可在加密隧道内使用 HTTP/H2C 或明文 gRPC 以取消源站 TLS 证书管理，也可保留原 Host/SNI 继续使用 HTTPS/GRPCS。详见 [docs/WIREGUARD_ORIGIN.md](docs/WIREGUARD_ORIGIN.md)。
 - 按站点、按能力启用基于 UDP 443 的 HTTP/3/QUIC，默认关闭。安装器仅在 Nginx 报告 `--with-http_v3_module` 时声明 `http3_v1`；主动开启的站点在兼容节点上会增加 QUIC 监听、`Alt-Svc`、地址验证重试、UDP 冲突检查、重载后监听确认和能力自动对账，同时保留 TCP 443 上的 HTTP/1.1 与 HTTP/2 回退。IP 封禁同时覆盖 UDP 443 和 TCP 80/443。
 - Nginx stream TCP 转发：客户端 TLS 终止和上游 TLS/SNI 校验可独立选择，支持动态上游 DNS 解析、按端口配置超时、原子多文件回滚，以及不监听 80/443 的纯 TCP 站点。
-- Cloudflare DNS-only A 记录对账：节点可达性和站点级 HTTPS/SNI/证书健康检查都带滞回。站点可配置预部署但平时不参与解析的备用节点；所有主节点不可用时自动启用健康备用节点，任一主节点恢复 DNS 资格后自动切回主节点。连续 3 次探测失败时移除节点，连续 5 次成功时恢复；若主备节点均异常，则有意保持 DNS 不变。
+- Cloudflare DNS-only A/AAAA 记录对账：IPv6 按站点显式启用，仅为已配置公网 IPv6 且独立健康检查合格的节点创建 AAAA。两种地址族都使用连续 3 次失败摘除、5 次成功恢复的滞回；站点还可预部署备用节点，并在主节点恢复后自动切回。IPv4 主备池均异常时有意保持 DNS 不变。
 - 经过身份验证的运行时设置：支持 60-300 秒 DNS TTL、按站点发布的 TTL 覆盖、加密保存 Cloudflare 与 SMTP 设置，以及加密保存 Restic S3/R2 备份凭据和计划。数据库覆盖优先于环境变量回退值，修改后无需重启控制器。
 - 通过 Certbot Cloudflare 插件执行 DNS-01 证书签发；证书私钥在 SQLite 中保持加密，仅通过 mTLS 下发。
 - ClickHouse 原始请求日志保留 7 天，分钟聚合保留 30 天。边缘为 HTTP、WebSocket 和 gRPC 主备回源统一生成并回传 `X-Request-ID`，保留客户端 ID、源站响应 ID、传输完成状态与回源字节，控制台可按任一 ID 检索；详见 [docs/REQUEST_TRACING.md](docs/REQUEST_TRACING.md)。命名 TCP 拨测目标只在 SQLite 中保存最新评分、连续失败次数和节点调度状态；每轮拨测历史通过有界异步队列进入 ClickHouse，保留 7 天，并提供多目标 1 小时至 7 天图表。控制面不可用时，边缘访问日志在本地排队。
@@ -31,7 +31,7 @@
 
 ## 明确边界
 
-- 单管理员、仅 IPv4、Cloudflare DNS-only、单一 Cloudflare 账户；不提供租户/RBAC、GeoDNS、托管机器人信誉/CAPTCHA、流量型 DDoS 防护或控制面高可用。
+- 单管理员、节点必须有公网 IPv4 且可选配置公网 IPv6、Cloudflare DNS-only、单一 Cloudflare 账户；不提供租户/RBAC、GeoDNS、托管机器人信誉/CAPTCHA、流量型 DDoS 防护或控制面高可用。
 - 控制面中断不会影响已经发布的边缘流量，但在恢复之前无法执行新的发布、DNS 变更和证书续期。
 - “发布”有意与“创建站点”分离。站点在获得有效证书前保持暂存状态；只有所有受影响的活跃边缘节点都确认加载目标配置后，发布任务才会成功。
 - 站点编辑和替换证书只更新草稿，不会直接改变已发布的站点快照。发布时会原子提升该站点的草稿和证书，只重建其新旧分配节点，并继续使用其他站点各自的已发布快照渲染配置。
@@ -133,7 +133,7 @@ sudo docker compose ps
 
 ## 边缘节点注册
 
-1. 在“节点”页面使用固定公网 IPv4 添加节点。
+1. 在“节点”页面使用固定公网 IPv4 添加节点；节点具备公网 IPv6 时可一并填写或稍后在详情页配置。
 2. 将 `EDGE_BINARY_URL` 设置为对应 HTTPS 地址；控制器根据 `EDGE_BINARY_PATH` 计算代理摘要，`NGINX_BUNDLE_PATH` 提供经校验的内置兜底，管理员批准的新 Nginx 则通过主控的内容寻址地址分发。
 3. 点击“注册”，在对应 Debian 12 或 13 VPS 上以 `root` 执行生成的命令。
 4. 代理在本地创建私钥，使用有效期 15 分钟的一次性令牌提交 CSR，接收内部 mTLS 证书，并开始每 30 秒发送一次心跳。
@@ -156,7 +156,7 @@ sudo docker compose ps
 
 1. 暂停节点调度或撤销其授权。
 2. 将节点从所有站点移除，分配替代的活跃节点，并发布每个变更站点。已禁用站点不要求替代节点。
-3. 开始准备卸载。控制器只删除托管备注精确标识该节点的 Cloudflare A 记录，然后强制等待 75 秒 DNS 安全窗口。
+3. 开始准备卸载。控制器只删除托管备注精确标识该节点的 Cloudflare A 和 AAAA 记录，然后强制等待 75 秒 DNS 安全窗口。
 4. 生成有效期 30 分钟的流程命令，并在边缘主机上以 `root` 执行。脚本会先显示命令绑定的节点名称、UUID 和公网 IPv4，并要求从控制终端准确输入 `UNINSTALL <节点 UUID>`；无交互终端或输入不匹配时，不会修改主机，也不会推进控制面卸载流程。对于布局 v2，确认后脚本会停止自管代理与 Nginx，删除 `/opt/cdn-edge`、systemd 链接、sysctl/logrotate 集成和旧版项目路径；不会重新安装 Debian Nginx 或重建 `/etc/nginx`。
 5. 回调成功后，节点以“已卸载”状态保留用于审计。删除控制面节点记录是另一个带确认保护的操作。
 
@@ -164,11 +164,11 @@ sudo docker compose ps
 
 ## 第一个站点
 
-1. 添加站点的主机名、分配节点 ID、主源站和可选备源站。控制器会根据主机名自动识别 Cloudflare 区域（Zone）。站点默认继承全局 DNS TTL，也可在草稿中选择 60-300 秒覆盖；该覆盖只会在发布后生效。生成的 HTTPS 站点默认请求体上限为 128 MiB，站点表单可调整为固定的 256、512 或 1024 MiB。HTTP/HTTPS/WebSocket 代理默认上游读写空闲超时为 120 秒，可选 2、6、15、30 或 60 分钟。WebSocket 和 SSE 无需声明路径：WebSocket 使用 `Upgrade`，浏览器 SSE 使用 `Accept: text/event-stream`，每个 POST 都会透传 [OpenAI 风格流式响应](https://developers.openai.com/api/docs/guides/streaming-responses)，非标准客户端还可发送 `X-CDN-Stream: 1`。普通站点使用 HTTP(S) 源站；整个主机名不得使用磁盘缓存时启用透传模式；全 WebSocket 站点使用 `ws://` 或 `wss://`；全 gRPC 主机名使用 `grpc://` 或 `grpcs://`。
-2. 在 Cloudflare 中保持这些主机名记录为 DNS-only。控制面只管理带有 `cdn-platform:site=<site-id>;...` 标签的记录；如果主机名已被无标签 A 记录或其他站点的 A 记录占用，操作会被拒绝。
+1. 添加站点的主机名、分配节点 ID、主源站和可选备源站。只有所选节点具备可用公网 IPv6 时才启用“IPv6 DNS (AAAA)”。控制器会根据主机名自动识别 Cloudflare 区域（Zone）。站点默认继承全局 DNS TTL，也可在草稿中选择 60-300 秒覆盖；该覆盖只会在发布后生效。生成的 HTTPS 站点默认请求体上限为 128 MiB，站点表单可调整为固定的 256、512 或 1024 MiB。HTTP/HTTPS/WebSocket 代理默认上游读写空闲超时为 120 秒，可选 2、6、15、30 或 60 分钟。WebSocket 和 SSE 无需声明路径：WebSocket 使用 `Upgrade`，浏览器 SSE 使用 `Accept: text/event-stream`，每个 POST 都会透传 [OpenAI 风格流式响应](https://developers.openai.com/api/docs/guides/streaming-responses)，非标准客户端还可发送 `X-CDN-Stream: 1`。普通站点使用 HTTP(S) 源站；整个主机名不得使用磁盘缓存时启用透传模式；全 WebSocket 站点使用 `ws://` 或 `wss://`；全 gRPC 主机名使用 `grpc://` 或 `grpcs://`。
+2. 在 Cloudflare 中保持这些主机名记录为 DNS-only。控制面只管理带有 `cdn-platform:site=<site-id>;...` 标签的 A 和 AAAA 记录；如果主机名已被无标签地址记录或其他站点的地址记录占用，操作会被拒绝。
 3. 创建站点后，控制面 VPS 会立即通过权限受限的 Cloudflare Token 排队执行异步 DNS-01 任务，并加密保存结果证书。“站点”页面会轮询任务状态，刷新页面不会取消任务。同一站点同时只能存在一个活跃证书任务。
 4. 执行“发布”。控制器会先检查 TLS 签发状态；证书尚未签发成功时不会创建发布任务，并提示证书正在申请。失败或缺失的签发任务会在发布预检时自动重新入队。签发成功后，控制器为每个受影响节点构建期望状态，并等待最长 90 秒，让已分配的活跃节点完成校验和应用。“站点”页面会显示逐节点冲突或超时详情；解决冲突后点击“重新发布”。
-5. 等待边缘节点进入活跃状态，并连续通过 5 次节点级和站点级 HTTPS 探测。随后控制器使用站点已发布 TTL 覆盖或默认 60 秒全局值创建 DNS-only A 记录。
+5. 等待边缘节点进入活跃状态，并连续通过 5 次节点级和站点级探测。控制器随后创建 DNS-only A 记录；站点启用 IPv6 时，独立通过 5 次 IPv6 探测的节点才会获得 AAAA。两种地址族都使用站点已发布 TTL 覆盖或默认 60 秒全局值。
 6. 从经过身份验证的 API 获取 `GET /api/sites/{site-id}/origin-allowlist`，将返回的 `/32` CIDR 加入源站防火墙或安全组，以防止绕过 CDN 直连源站。
 
 对于 SMTPS、IMAPS 或其他 TCP 服务，可在同一站点添加一条或多条 TCP 规则。每条规则定义公网监听端口、上游主机/端口、监听器 TLS、上游 TLS/SNI 和超时。需要专用节点且不应监听 80/443 时选择“纯 TCP”。所有受影响节点上报自管 bundle 的 `tcp_stream_v1` 能力前，发布会被拒绝。纯 TCP 和 HTTP 站点不能共享节点，公网 80/443 端口始终保留给 HTTP 渲染器。如果 Nginx 已通过手写配置占用目标端口，代理会将其报告为非托管冲突；保留回滚副本后移除手动监听器，校验 Nginx，再从控制器发布。TCP 会话和错误日志保存在 `/opt/cdn-edge/logs`，使用项目 logrotate 策略，不会混入 HTTP 请求分析。
@@ -187,14 +187,14 @@ HTTP 边缘节点提供 `http://EDGE_IPV4/__cdn_health`。已发布 HTTP 配置�
 
 ## 站点删除
 
-删除站点是持久化退役流程，而不是只删除元数据。在管理界面输入准确站点名称以启动。控制器会禁用站点，只删除托管备注标识该站点的 Cloudflare A 记录，发布不包含该站点的期望状态，并等待当前分配的所有活跃边缘节点确认新配置。之后才会删除本地 Certbot lineage，以及 SQLite 中的站点元数据和加密证书。
+删除站点是持久化退役流程，而不是只删除元数据。在管理界面输入准确站点名称以启动。控制器会禁用站点，只删除托管备注标识该站点的 Cloudflare A 和 AAAA 记录，发布不包含该站点的期望状态，并等待当前分配的所有活跃边缘节点确认新配置。之后才会删除本地 Certbot lineage，以及 SQLite 中的站点元数据和加密证书。
 
 如果活跃边缘节点失败或超时，站点会保持禁用的“删除中”状态，托管 DNS 继续撤回。修复、排空或卸载受影响节点后重试删除；系统不提供强制删除路径。审计记录和部署任务会保留，ClickHouse 访问日志继续按现有 TTL 过期。本地 Certbot 清理不会在 ACME CA 撤销已经签发的证书。
 
 ## 运行机制
 
 ```text
-客户端 -> Cloudflare DNS-only A -> 边缘 Nginx -> 主源站 -> 可选备源站
+客户端 -> Cloudflare DNS-only A/AAAA -> 边缘 Nginx -> 主源站 -> 可选备源站
                                       |
                                       +-> 磁盘缓存 / 上游故障时 STALE 回退
                                           或为指定站点启用整站透传

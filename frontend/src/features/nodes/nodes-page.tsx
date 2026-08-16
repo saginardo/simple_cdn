@@ -128,7 +128,7 @@ export function NodesPage() {
                   <TableRow>
                     <TableHead className="pl-5">{t("节点")}</TableHead>
                     <TableHead>{t("状态")}</TableHead>
-                    <TableHead>{t("公网 IPv4")}</TableHead>
+                    <TableHead>{t("公网地址")}</TableHead>
                     <TableHead>{t("心跳")}</TableHead>
                     <TableHead>{t("运行版本")}</TableHead>
                     <TableHead className="w-28">{t("升级")}</TableHead>
@@ -150,7 +150,10 @@ export function NodesPage() {
                         <StatusBadge status={node.status} />
                       </TableCell>
                       <TableCell className="font-mono text-xs">
-                        {node.public_ipv4}
+                        <div>{node.public_ipv4}</div>
+                        <div className="mt-1 text-muted-foreground">
+                          {node.public_ipv6 || t("IPv6 未配置")}
+                        </div>
                       </TableCell>
                       <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
                         {node.last_heartbeat_at
@@ -494,6 +497,7 @@ function CreateNodeDialog({
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
   const [ip, setIP] = useState("");
+  const [ipv6, setIPv6] = useState("");
   const mutation = useMutation({
     mutationFn: () =>
       api<Node>("/api/nodes", {
@@ -501,6 +505,7 @@ function CreateNodeDialog({
         body: JSON.stringify({
           name,
           public_ipv4: ip,
+          public_ipv6: ipv6,
         }),
       }),
     onSuccess: () => {
@@ -510,6 +515,7 @@ function CreateNodeDialog({
       toast.success(t("节点已添加"));
       setName("");
       setIP("");
+      setIPv6("");
       onOpenChange(false);
     },
     onError: (error) => toast.error(errorMessage(error)),
@@ -548,6 +554,15 @@ function CreateNodeDialog({
                 value={ip}
                 onChange={(event) => setIP(event.target.value)}
                 placeholder="203.0.113.10"
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="node-ipv6">{t("公网 IPv6（可选）")}</Label>
+              <Input
+                id="node-ipv6"
+                value={ipv6}
+                onChange={(event) => setIPv6(event.target.value)}
+                placeholder="2001:db8::10"
               />
             </div>
           </div>

@@ -230,7 +230,7 @@ export function NodeDetailPage() {
         title={node?.name ?? t("节点详情")}
         description={
           node
-            ? `${node.public_ipv4} · ${node.id}`
+            ? `${node.public_ipv4}${node.public_ipv6 ? ` / ${node.public_ipv6}` : ""} · ${node.id}`
             : t("节点运行状态与运维操作")
         }
         actions={
@@ -267,6 +267,12 @@ export function NodeDetailPage() {
                 <AssignedSites sites={detail.data.sites} />
               </div>
               <div className="space-y-4">
+                <PublicIPv6Settings
+                  key={node.public_ipv6 || "ipv6-disabled"}
+                  nodeId={nodeId}
+                  publicIPv4={node.public_ipv4}
+                  publicIPv6={node.public_ipv6 || ""}
+                />
                 <CacheQuotaSettings
                   key={`${detail.data.cache.default_size_gb}-${detail.data.cache.override_size_gb ?? "global"}`}
                   nodeId={nodeId}
@@ -446,6 +452,82 @@ function preserveLatestMachineStatus(
   }
   return incoming;
 }
+
+function PublicIPv6Settings({
+  nodeId,
+  publicIPv4,
+  publicIPv6,
+}: {
+  nodeId: string;
+  publicIPv4: string;
+  publicIPv6: string;
+}) {
+  const queryClient = useQueryClient();
+  const [value, setValue] = useState(publicIPv6);
+  const mutation = useMutation({
+    mutationFn: () =>
+      api<Node>(`/api/nodes/${encodeURIComponent(nodeId)}/public-ipv6`, {
+        method: "PUT",
+        body: JSON.stringify({ public_ipv6: value }),
+      }),
+    onSuccess: () => {
+      toast.success(t("公网 IPv6 已更新"));
+      void queryClient.invalidateQueries({ queryKey: ["node", nodeId] });
+      void queryClient.invalidateQueries({ queryKey: ["nodes"] });
+    },
+    onError: (error) => toast.error(errorMessage(error)),
+  });
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{t("公网地址")}</CardTitle>
+        <CardDescription>{t("DNS 地址族配置")}</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <form
+          className="grid gap-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            mutation.mutate();
+          }}
+        >
+          <div className="grid gap-2">
+            <Label htmlFor="node-public-ipv4">IPv4</Label>
+            <Input
+              id="node-public-ipv4"
+              className="font-mono"
+              value={publicIPv4}
+              readOnly
+              disabled
+            />
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="node-public-ipv6">IPv6</Label>
+            <Input
+              id="node-public-ipv6"
+              className="font-mono"
+              value={value}
+              onChange={(event) => setValue(event.target.value)}
+              placeholder="2001:db8::10"
+            />
+          </div>
+          <Button
+            type="submit"
+            disabled={mutation.isPending || value.trim() === publicIPv6}
+          >
+            {mutation.isPending ? (
+              <LoaderCircle className="animate-spin" />
+            ) : (
+              <Save />
+            )}
+            {t("保存公网地址")}
+          </Button>
+        </form>
+      </CardContent>
+    </Card>
+  );
+}
+
 function CacheQuotaSettings({
   nodeId,
   settings,

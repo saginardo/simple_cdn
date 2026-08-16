@@ -38,6 +38,61 @@ func TestMigrationsRecordCurrentVersionAndRemainIdempotent(t *testing.T) {
 	}
 }
 
+func TestIPv6DNSMigrationUpgradesExistingSchemaWithOptInDisabled(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	node, err := database.CreateNode("pre-ipv6-edge", "203.0.113.96")
+	if err != nil {
+		t.Fatal(err)
+	}
+	site, err := database.CreateSite(domain.Site{
+		Name: "pre-ipv6-site", Domains: []string{"pre-ipv6.example.test"}, Nodes: []string{node.ID},
+		PrimaryOrigin: domain.Origin{URL: "https://origin.example.test", Enabled: true}, Enabled: true,
+	}, "zone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`DROP INDEX idx_nodes_public_ipv6`); err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`ALTER TABLE nodes DROP COLUMN public_ipv6`,
+		`ALTER TABLE sites DROP COLUMN ipv6_enabled`,
+		`ALTER TABLE site_node_health DROP COLUMN ipv6_consecutive_failures`,
+		`ALTER TABLE site_node_health DROP COLUMN ipv6_consecutive_successes`,
+		`ALTER TABLE site_node_health DROP COLUMN ipv6_dns_eligible`,
+		`ALTER TABLE site_node_health DROP COLUMN ipv6_last_checked_at`,
+		`ALTER TABLE site_node_health DROP COLUMN ipv6_last_error`,
+	} {
+		if _, err := database.db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := database.db.Exec(`DELETE FROM schema_migrations WHERE version >= 35`); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	loadedNode, err := database.GetNode(node.ID)
+	if err != nil || loadedNode.PublicIPv6 != "" {
+		t.Fatalf("migrated node = %#v, err=%v", loadedNode, err)
+	}
+	loadedSite, _, err := database.GetSite(site.ID)
+	if err != nil || loadedSite.IPv6Enabled {
+		t.Fatalf("migrated site = %#v, err=%v", loadedSite, err)
+	}
+	if _, err := database.RecordSiteNodeIPv6Health(site.ID, node.ID, true, ""); err != nil {
+		t.Fatalf("record migrated IPv6 health: %v", err)
+	}
+	if _, err := database.SetNodePublicIPv6(node.ID, "2001:db8::96"); err != nil {
+		t.Fatalf("update migrated public IPv6: %v", err)
+	}
+}
+
 func TestSiteBackupNodeMigrationAddsEmptyPool(t *testing.T) {
 	database, err := Open(filepath.Join(t.TempDir(), "control.db"))
 	if err != nil {

@@ -81,7 +81,7 @@ table inet simple_cdn
 
 Its accept-policy base chain drops managed public IPv4 sources only for TCP ports 80 and 443 and QUIC UDP port 443. SSH, control traffic, custom TCP forwarding ports, other UDP traffic, outbound traffic, and unrelated nftables tables remain untouched. Uninstall removes only project-owned tables.
 
-Private, loopback, link-local, multicast, malformed, and IPv6 addresses are not accepted as ban targets. This matches the platform's current A-record and `public_ipv4` deployment model.
+Private, loopback, link-local, multicast, malformed, and IPv6 addresses are not accepted as ban targets. The ban subsystem remains IPv4-only even when an opted-in site also publishes AAAA records.
 
 ## Capability rollout
 

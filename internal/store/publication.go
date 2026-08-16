@@ -138,6 +138,17 @@ func (s *Store) CommitSitePublication(siteID string, expectedConfigVersion int64
 	if err := ensureNodesNotUpgradingTx(tx, upgradedNodeIDs(updates, targets)); err != nil {
 		return domain.Site{}, err
 	}
+	previousIPv6Enabled := false
+	var previousSiteJSON string
+	if err := tx.QueryRow(`SELECT site_json FROM site_publications WHERE site_id = ?`, site.ID).Scan(&previousSiteJSON); err == nil {
+		var previousSite domain.Site
+		if err := json.Unmarshal([]byte(previousSiteJSON), &previousSite); err != nil {
+			return domain.Site{}, fmt.Errorf("decode previous published site %s: %w", site.ID, err)
+		}
+		previousIPv6Enabled = previousSite.IPv6Enabled
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return domain.Site{}, err
+	}
 	publishedAt := now()
 	site.Published = true
 	site.UpdatedAt = publishedAt
@@ -152,6 +163,11 @@ func (s *Store) CommitSitePublication(siteID string, expectedConfigVersion int64
 	}
 	if err := replaceSiteDomainClaims(tx, site.ID, site.Domains); err != nil {
 		return domain.Site{}, err
+	}
+	if site.IPv6Enabled != previousIPv6Enabled {
+		if _, err := tx.Exec(`UPDATE site_node_health SET ipv6_consecutive_failures = 0, ipv6_consecutive_successes = 0, ipv6_dns_eligible = 0, ipv6_last_checked_at = NULL, ipv6_last_error = '' WHERE site_id = ?`, site.ID); err != nil {
+			return domain.Site{}, err
+		}
 	}
 	result, err := tx.Exec(`UPDATE sites SET published = 1, updated_at = ? WHERE id = ? AND deleting = 0`,
 		stamp(publishedAt), site.ID)

@@ -30,6 +30,7 @@ export interface Node {
   id: string;
   name: string;
   public_ipv4: string;
+  public_ipv6?: string;
   cache_max_size_gb?: number;
   nginx_capacity: NginxCapacity;
   status: NodeStatus;
@@ -533,6 +534,7 @@ export interface Site {
   client_keepalive_timeout_seconds: number;
   read_write_timeout_seconds: number;
   dns_ttl_seconds: number | null;
+  ipv6_enabled: boolean;
   tcp_only: boolean;
   tcp_forwards: TCPForward[];
   cache_generation: number;

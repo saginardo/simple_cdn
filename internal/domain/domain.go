@@ -32,6 +32,7 @@ type Node struct {
 	ID                string        `json:"id"`
 	Name              string        `json:"name"`
 	PublicIPv4        string        `json:"public_ipv4"`
+	PublicIPv6        string        `json:"public_ipv6,omitempty"`
 	CacheMaxSizeGB    *int          `json:"cache_max_size_gb,omitempty"`
 	NginxCapacity     NginxCapacity `json:"nginx_capacity"`
 	Status            NodeStatus    `json:"status"`
@@ -203,6 +204,7 @@ type Site struct {
 	ClientKeepaliveTimeoutSeconds int          `json:"client_keepalive_timeout_seconds"`
 	ReadWriteTimeoutSeconds       int          `json:"read_write_timeout_seconds"`
 	DNSTTLSeconds                 *int         `json:"dns_ttl_seconds"`
+	IPv6Enabled                   bool         `json:"ipv6_enabled"`
 	TCPOnly                       bool         `json:"tcp_only"`
 	TCPForwards                   []TCPForward `json:"tcp_forwards"`
 	// CacheMaxSizeGB is retained only for reading legacy database rows. Cache
