@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -1193,5 +1194,40 @@ func TestListSitesSnapshotInvalidatesAfterMutation(t *testing.T) {
 	sites, err = database.ListSites()
 	if err != nil || len(sites) != 1 || sites[0].ID != second.ID {
 		t.Fatalf("site snapshot after non-latest deletion = %#v, %v", sites, err)
+	}
+}
+
+func TestListSitesSnapshotPreservesEmptyTCPForwardsArray(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	node, err := database.CreateNode("snapshot-array-edge", "203.0.113.84")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.CreateSite(domain.Site{
+		Name: "Snapshot Arrays", Domains: []string{"snapshot-array.example.test"}, Nodes: []string{node.ID},
+		PrimaryOrigin: domain.Origin{URL: "https://snapshot-array-origin.example.test", Enabled: true}, Enabled: true,
+	}, "zone"); err != nil {
+		t.Fatal(err)
+	}
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		sites, err := database.ListSites()
+		if err != nil || len(sites) != 1 {
+			t.Fatalf("site snapshot attempt %d = %#v, %v", attempt, sites, err)
+		}
+		if sites[0].TCPForwards == nil {
+			t.Fatalf("site snapshot attempt %d returned nil TCP forwards", attempt)
+		}
+		encoded, err := json.Marshal(sites)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(encoded), `"tcp_forwards":[]`) {
+			t.Fatalf("site snapshot attempt %d JSON = %s", attempt, encoded)
+		}
 	}
 }

@@ -3667,6 +3667,25 @@ test("all primary workspaces and the new-site editor mount without runtime error
   expect(errors).toEqual([]);
 });
 
+test("site editor tolerates null TCP forwards from API responses", async ({
+  page,
+}) => {
+  const errors = trackPageErrors(page);
+  await mockAPI(page, {
+    "/api/sites": [{ ...site, tcp_only: true, tcp_forwards: null }],
+  });
+
+  await page.goto("/#/sites/site-1");
+
+  await expect(
+    page.getByRole("heading", { name: site.name, level: 1 }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("未配置 TCP 转发", { exact: true }),
+  ).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
 test("bulk node upgrade refreshes the page without opening a result dialog", async ({
   page,
 }) => {

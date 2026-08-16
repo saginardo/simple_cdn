@@ -2250,7 +2250,8 @@ function Toggle({
 }
 function siteNeedsCertificate(site: Site) {
   return (
-    !site.tcp_only || site.tcp_forwards.some((forward) => forward.listen_tls)
+    !site.tcp_only ||
+    (site.tcp_forwards ?? []).some((forward) => forward.listen_tls)
   );
 }
 function localizeTaskDetail(detail?: string) {
@@ -2391,7 +2392,7 @@ function draftFromSite(site: Site, ttl: number): SiteDraft {
     dns_ttl_seconds: site.dns_ttl_seconds ?? ttl,
     ipv6_enabled: site.ipv6_enabled ?? false,
     tcp_only: site.tcp_only,
-    tcp_forwards: site.tcp_forwards.map((forward) => ({
+    tcp_forwards: (site.tcp_forwards ?? []).map((forward) => ({
       ...forward,
     })),
     enabled: site.enabled,

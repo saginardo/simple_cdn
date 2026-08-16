@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1855,18 +1856,16 @@ func cloneSites(sites []domain.Site) []domain.Site {
 }
 
 func cloneSite(site domain.Site) domain.Site {
-	site.Domains = append([]string(nil), site.Domains...)
-	site.Nodes = append([]string(nil), site.Nodes...)
-	site.BackupNodes = append([]string(nil), site.BackupNodes...)
-	site.StreamPaths = append([]string(nil), site.StreamPaths...)
-	site.CompressionExcludedMIMETypes = append([]string(nil), site.CompressionExcludedMIMETypes...)
-	site.TCPForwards = append([]domain.TCPForward(nil), site.TCPForwards...)
-	site.CacheInvalidations = append([]domain.CacheInvalidationRule(nil), site.CacheInvalidations...)
-	if len(site.CacheWarmups) > 0 {
-		site.CacheWarmups = append([]domain.CacheWarmup(nil), site.CacheWarmups...)
-		for index := range site.CacheWarmups {
-			site.CacheWarmups[index].Paths = append([]string(nil), site.CacheWarmups[index].Paths...)
-		}
+	site.Domains = slices.Clone(site.Domains)
+	site.Nodes = slices.Clone(site.Nodes)
+	site.BackupNodes = slices.Clone(site.BackupNodes)
+	site.StreamPaths = slices.Clone(site.StreamPaths)
+	site.CompressionExcludedMIMETypes = slices.Clone(site.CompressionExcludedMIMETypes)
+	site.TCPForwards = slices.Clone(site.TCPForwards)
+	site.CacheInvalidations = slices.Clone(site.CacheInvalidations)
+	site.CacheWarmups = slices.Clone(site.CacheWarmups)
+	for index := range site.CacheWarmups {
+		site.CacheWarmups[index].Paths = slices.Clone(site.CacheWarmups[index].Paths)
 	}
 	if site.BackupOrigin != nil {
 		backup := *site.BackupOrigin
@@ -1887,7 +1886,7 @@ func cloneSiteSummaries(summaries []domain.SiteSummary) []domain.SiteSummary {
 	cloned := make([]domain.SiteSummary, len(summaries))
 	for index, summary := range summaries {
 		cloned[index] = summary
-		cloned[index].Domains = append([]string(nil), summary.Domains...)
+		cloned[index].Domains = slices.Clone(summary.Domains)
 	}
 	return cloned
 }
