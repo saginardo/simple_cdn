@@ -87,13 +87,17 @@ type Config struct {
 }
 
 type Agent struct {
-	Config            Config
-	logs              *LogForwarder
-	security          *SecurityManager
-	cacheUsage        *cacheUsageCollector
-	machineStatus     machineStatusReporter
-	originConnections originConnectionCounter
-	wireGuard         WireGuardManager
+	Config                  Config
+	logs                    *LogForwarder
+	security                *SecurityManager
+	cacheUsage              *cacheUsageCollector
+	machineStatus           machineStatusReporter
+	machineNetwork          machineNetworkStatusReporter
+	machineStatusIntervals  chan time.Duration
+	machineNetworkIntervals chan time.Duration
+	machineOriginIntervals  chan time.Duration
+	originConnections       originConnectionCounter
+	wireGuard               WireGuardManager
 
 	statusMu          sync.Mutex
 	lastApplyReport   *domain.ApplyReport
@@ -203,7 +207,7 @@ func New(config Config) (*Agent, error) {
 		config.PollInterval = 30 * time.Second
 	}
 	if config.MachineStatusInterval <= 0 {
-		config.MachineStatusInterval = 5 * time.Second
+		config.MachineStatusInterval = time.Duration(domain.LegacyMachineStatusIntervalSeconds) * time.Second
 	}
 	if config.OriginProbeInterval <= 0 {
 		config.OriginProbeInterval = 5 * time.Second
@@ -272,6 +276,7 @@ func New(config Config) (*Agent, error) {
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityCacheUsage)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityMachineStatus)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityMachineStatusStream)
+	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityMachineStatusAdaptive)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityNginxFragments)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityRequestTracing)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityControlManifest)
@@ -318,15 +323,20 @@ func New(config Config) (*Agent, error) {
 	if err := os.MkdirAll(config.OriginPoolConfigDirectory, 0o750); err != nil {
 		return nil, err
 	}
+	machineStatus := newMachineStatusCollector(config.NginxStatusSocketPath)
 	agent := &Agent{
 		Config: config, logs: NewLogForwarder(config.StateDir, config.AccessLogPath),
-		cacheUsage:        newCacheUsageCollector(nginx.DefaultCachePath, nginx.DefaultCacheMaxBytes, defaultCacheUsageInterval),
-		machineStatus:     newMachineStatusCollector(config.NginxStatusSocketPath),
-		originConnections: newNginxOriginConnectionCounter(config.NginxPIDPath),
-		wireGuard:         config.WireGuardManager,
-		componentFailures: make(map[string]string),
-		originPools:       make(map[string]*originPoolRuntime),
-		originProbeWake:   make(chan struct{}, 1),
+		cacheUsage:              newCacheUsageCollector(nginx.DefaultCachePath, nginx.DefaultCacheMaxBytes, defaultCacheUsageInterval),
+		machineStatus:           machineStatus,
+		machineNetwork:          machineStatus,
+		machineStatusIntervals:  make(chan time.Duration, 1),
+		machineNetworkIntervals: make(chan time.Duration, 1),
+		machineOriginIntervals:  make(chan time.Duration, 1),
+		originConnections:       newNginxOriginConnectionCounter(config.NginxPIDPath),
+		wireGuard:               config.WireGuardManager,
+		componentFailures:       make(map[string]string),
+		originPools:             make(map[string]*originPoolRuntime),
+		originProbeWake:         make(chan struct{}, 1),
 	}
 	if err := agent.loadOriginRuntime(); err != nil {
 		return nil, err
@@ -357,6 +367,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	start(func() { a.cacheUsage.Run(ctx) })
 	start(func() { a.runOriginProbeLoop(ctx) })
 	start(func() { a.runMachineStatusLoop(ctx) })
+	start(func() { a.runMachineOriginStatusLoop(ctx) })
+	start(func() { a.runMachineNetworkLoop(ctx) })
+	start(func() { a.runMachineStatusPolicyLoop(ctx) })
 	start(func() { a.logs.Run(ctx, a.Config.ControlURL, a.client) })
 	if a.security != nil {
 		start(func() { a.security.Run(ctx, a.Config.ControlURL, a.client) })
@@ -396,10 +409,28 @@ func (a *Agent) runHeartbeatLoop(ctx context.Context) error {
 }
 
 func (a *Agent) runMachineStatusLoop(ctx context.Context) {
+	interval := a.Config.MachineStatusInterval
+	if interval <= 0 {
+		interval = time.Duration(domain.LegacyMachineStatusIntervalSeconds) * time.Second
+	}
+	started := time.Now()
+	a.runMachineStatusRound(ctx)
+	timer := time.NewTimer(max(0, interval-time.Since(started)))
+	defer timer.Stop()
 	for {
-		a.runMachineStatusRound(ctx)
-		if !waitContext(ctx, a.Config.MachineStatusInterval) {
+		select {
+		case <-ctx.Done():
 			return
+		case next := <-a.machineStatusIntervals:
+			if next <= 0 || next == interval {
+				continue
+			}
+			interval = next
+			resetTimer(timer, interval)
+		case <-timer.C:
+			started := time.Now()
+			a.runMachineStatusRound(ctx)
+			resetTimer(timer, interval-time.Since(started))
 		}
 	}
 }
@@ -512,6 +543,19 @@ func waitContext(ctx context.Context, delay time.Duration) bool {
 	}
 }
 
+func resetTimer(timer *time.Timer, delay time.Duration) {
+	if delay < 0 {
+		delay = 0
+	}
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	timer.Reset(delay)
+}
+
 func (a *Agent) setComponentFailure(component, action string, err error) {
 	a.statusMu.Lock()
 	defer a.statusMu.Unlock()
@@ -526,7 +570,7 @@ func (a *Agent) heartbeatError() string {
 	a.statusMu.Lock()
 	defer a.statusMu.Unlock()
 	for _, component := range []string{
-		"certificate", "configuration", "wireguard", "wireguard_performance", "origin_health_service", "origin_health_cold", "monitoring", "upgrade", "machine_status",
+		"certificate", "configuration", "wireguard", "wireguard_performance", "origin_health_service", "origin_health_cold", "monitoring", "upgrade", "machine_status", "machine_origin", "machine_network", "machine_status_policy",
 	} {
 		if detail := a.componentFailures[component]; detail != "" {
 			return detail

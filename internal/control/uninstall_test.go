@@ -265,6 +265,71 @@ func TestNodeUninstallCommandCallbacksAndRecordDeletion(t *testing.T) {
 	}
 }
 
+func TestDeleteNodeClearsMachineStatusRuntimeState(t *testing.T) {
+	t.Run("active subscribers", func(t *testing.T) {
+		server, database, cookie := newNodeUninstallTestServer(t)
+		node, err := database.CreateNode("active-runtime-edge", "203.0.113.51")
+		if err != nil {
+			t.Fatal(err)
+		}
+		seedNodeMachineStatusRuntime(server, node.ID)
+
+		policyUpdates, initial, unsubscribePolicy := server.subscribeMachineStatusPolicy(node.ID)
+		assertMachineStatusPolicyValue(t, initial, domain.DefaultMachineStatusIntervalSeconds, 0)
+		statusUpdates, unsubscribeStatus := server.subscribeMachineStatus(node.ID)
+		assertMachineStatusPolicy(t, policyUpdates, domain.ActiveMachineStatusIntervalSeconds, domain.DefaultMachineNetworkIntervalSeconds)
+
+		deleted := serveNodeUninstallAdmin(t, server, cookie, http.MethodDelete, "/api/nodes/"+node.ID, map[string]string{"confirmation": node.Name})
+		if deleted.Code != http.StatusOK {
+			t.Fatalf("delete response = %d %s", deleted.Code, deleted.Body.String())
+		}
+		assertChannelClosed(t, statusUpdates, "machine status subscription")
+		assertChannelClosed(t, policyUpdates, "machine status policy subscription")
+
+		// Deferred SSE cleanup must not recreate demand timers after node cleanup.
+		unsubscribeStatus()
+		unsubscribePolicy()
+		assertNodeMachineStatusStateCleared(t, server, node.ID)
+	})
+
+	t.Run("demand grace", func(t *testing.T) {
+		server, database, cookie := newNodeUninstallTestServer(t)
+		server.machineStatusDemandGrace = time.Hour
+		node, err := database.CreateNode("grace-runtime-edge", "203.0.113.52")
+		if err != nil {
+			t.Fatal(err)
+		}
+		seedNodeMachineStatusRuntime(server, node.ID)
+
+		policyUpdates, _, unsubscribePolicy := server.subscribeMachineStatusPolicy(node.ID)
+		_, unsubscribeStatus := server.subscribeMachineStatus(node.ID)
+		assertMachineStatusPolicy(t, policyUpdates, domain.ActiveMachineStatusIntervalSeconds, domain.DefaultMachineNetworkIntervalSeconds)
+		unsubscribeStatus()
+
+		server.machineStatusMu.RLock()
+		timer := server.machineStatusDemandTimers[node.ID]
+		timerID := server.machineStatusDemandTimerIDs[node.ID]
+		server.machineStatusMu.RUnlock()
+		if timer == nil || timerID == 0 {
+			t.Fatal("machine status demand grace timer was not created")
+		}
+
+		deleted := serveNodeUninstallAdmin(t, server, cookie, http.MethodDelete, "/api/nodes/"+node.ID, map[string]string{"confirmation": node.Name})
+		if deleted.Code != http.StatusOK {
+			t.Fatalf("delete response = %d %s", deleted.Code, deleted.Body.String())
+		}
+		if timer.Stop() {
+			t.Fatal("machine status demand grace timer remained active after node deletion")
+		}
+		assertChannelClosed(t, policyUpdates, "machine status policy subscription")
+
+		// Simulate a timer callback that had already been queued before Stop won.
+		server.expireMachineStatusDemand(node.ID, timerID)
+		unsubscribePolicy()
+		assertNodeMachineStatusStateCleared(t, server, node.ID)
+	})
+}
+
 func TestForceCompleteNodeUninstallRequiresExactNameAndNoBlockers(t *testing.T) {
 	server, database, cookie := newNodeUninstallTestServer(t)
 	node, err := database.CreateNode("offline-edge", "203.0.113.60")
@@ -329,6 +394,51 @@ func newNodeUninstallTestServer(t *testing.T) (*Server, *store.Store, *http.Cook
 		ControlURL: "https://control.example.test",
 	}
 	return server, database, &http.Cookie{Name: "cdn_session", Value: "uninstall-session"}
+}
+
+func seedNodeMachineStatusRuntime(server *Server, nodeID string) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	server.recordNodeMachineStatus(nodeID, controlTestMachineStatus(now))
+	server.recordNodeMachineNetworkStatus(nodeID, domain.MachineNetworkStatus{
+		NetworkInterface: "eth0", NetworkRXBytesPerSec: 1024, NetworkTXBytesPerSec: 512,
+		SampleSeconds: 1, CollectedAt: now,
+	})
+	server.recordNodeMachineOriginStatus(nodeID, domain.MachineOriginStatus{
+		OriginProbes: []domain.OriginProbeStatus{controlTestOriginProbe(now)},
+		CollectedAt:  now,
+	})
+	server.seedMachineStatusCapabilityProfile(nodeID, []string{domain.EdgeCapabilityMachineStatusAdaptive})
+}
+
+func assertNodeMachineStatusStateCleared(t *testing.T, server *Server, nodeID string) {
+	t.Helper()
+	server.machineStatusMu.RLock()
+	_, host := server.machineStatuses[nodeID]
+	_, network := server.machineNetworkStatuses[nodeID]
+	_, origin := server.machineOriginStatuses[nodeID]
+	_, capabilities := server.machineStatusCapabilities[nodeID]
+	_, demand := server.machineStatusDemandActive[nodeID]
+	_, timer := server.machineStatusDemandTimers[nodeID]
+	_, timerID := server.machineStatusDemandTimerIDs[nodeID]
+	_, statusSubscribers := server.machineStatusSubscribers[nodeID]
+	_, policySubscribers := server.machinePolicySubscribers[nodeID]
+	server.machineStatusMu.RUnlock()
+	if host || network || origin || capabilities || demand || timer || timerID || statusSubscribers || policySubscribers {
+		t.Fatalf("machine status state remained for deleted node: host=%t network=%t origin=%t capabilities=%t demand=%t timer=%t timer_id=%t status_subscribers=%t policy_subscribers=%t",
+			host, network, origin, capabilities, demand, timer, timerID, statusSubscribers, policySubscribers)
+	}
+}
+
+func assertChannelClosed[T any](t *testing.T, updates <-chan T, name string) {
+	t.Helper()
+	select {
+	case _, open := <-updates:
+		if open {
+			t.Fatalf("%s remained open", name)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for %s to close", name)
+	}
 }
 
 func serveNodeUninstallAdmin(t *testing.T, server *Server, cookie *http.Cookie, method, path string, input any) *httptest.ResponseRecorder {

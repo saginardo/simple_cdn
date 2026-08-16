@@ -41,54 +41,64 @@ var embeddedWeb embed.FS
 var uninstallEdgeScript string
 
 type Server struct {
-	Store                     *store.Store
-	Cipher                    *Cipher
-	CA                        *InternalCA
-	Publisher                 Publisher
-	DNS                       integrations.DNSProvider
-	ZoneResolver              integrations.ZoneResolver
-	Cloudflare                *integrations.CloudflareDNS
-	Issuer                    integrations.CertificateIssuer
-	CertificateManager        *CertificateManager
-	HealthManager             *HealthManager
-	SiteDeleter               *SiteDeletionManager
-	Settings                  *SettingsManager
-	BackupValidator           BackupRepositoryValidator
-	BackupStatusPath          string
-	OnlineRestore             *OnlineRestoreManager
-	Notifier                  integrations.Notifier
-	Logs                      logstore.Store
-	MonitoringHistory         logstore.MonitoringHistoryReader
-	MonitoringWriter          logstore.MonitoringHistoryEnqueuer
-	smtpNotifierFactory       func(SMTPProfile, string) integrations.Notifier
-	ControlURL                string
-	EdgeControlURL            string
-	EdgeBinaryURL             string
-	EdgeBinarySHA256          string
-	EdgeBinaryPath            string
-	NginxBundleURL            string
-	NginxBundleSHA256         string
-	NginxBundlePath           string
-	NginxVersion              string
-	NginxUpdates              *NginxUpdateManager
-	StaticAssetDirectory      string
-	InitializationTokenPath   string
-	SetupAllowCIDRs           []*net.IPNet
-	TrustedProxyCIDRs         []*net.IPNet
-	Logger                    *slog.Logger
-	RestartControl            func()
-	WireGuardEndpointResolver func(context.Context, string) ([]net.IP, error)
-	machineStatusMu           sync.RWMutex
-	machineStatuses           map[string]domain.MachineStatus
-	machineStatusSubscribers  map[string]map[uint64]chan domain.MachineStatus
-	machineStatusSubscriberID uint64
-	edgeSecurityRevisionMu    sync.Mutex
-	edgeSecurityRevision      string
-	edgeSecurityExpiresAt     time.Time
-	edgeSecurityRevisionSet   bool
-	staticAssetMu             sync.Mutex
-	wireGuardDetailMu         sync.Mutex
-	wireGuardDetailCache      map[string]wireGuardTunnelDetailCache
+	Store                       *store.Store
+	Cipher                      *Cipher
+	CA                          *InternalCA
+	Publisher                   Publisher
+	DNS                         integrations.DNSProvider
+	ZoneResolver                integrations.ZoneResolver
+	Cloudflare                  *integrations.CloudflareDNS
+	Issuer                      integrations.CertificateIssuer
+	CertificateManager          *CertificateManager
+	HealthManager               *HealthManager
+	SiteDeleter                 *SiteDeletionManager
+	Settings                    *SettingsManager
+	BackupValidator             BackupRepositoryValidator
+	BackupStatusPath            string
+	OnlineRestore               *OnlineRestoreManager
+	Notifier                    integrations.Notifier
+	Logs                        logstore.Store
+	MonitoringHistory           logstore.MonitoringHistoryReader
+	MonitoringWriter            logstore.MonitoringHistoryEnqueuer
+	smtpNotifierFactory         func(SMTPProfile, string) integrations.Notifier
+	ControlURL                  string
+	EdgeControlURL              string
+	EdgeBinaryURL               string
+	EdgeBinarySHA256            string
+	EdgeBinaryPath              string
+	NginxBundleURL              string
+	NginxBundleSHA256           string
+	NginxBundlePath             string
+	NginxVersion                string
+	NginxUpdates                *NginxUpdateManager
+	StaticAssetDirectory        string
+	InitializationTokenPath     string
+	SetupAllowCIDRs             []*net.IPNet
+	TrustedProxyCIDRs           []*net.IPNet
+	Logger                      *slog.Logger
+	RestartControl              func()
+	WireGuardEndpointResolver   func(context.Context, string) ([]net.IP, error)
+	machineStatusMu             sync.RWMutex
+	machineStatuses             map[string]domain.MachineStatus
+	machineNetworkStatuses      map[string]domain.MachineNetworkStatus
+	machineOriginStatuses       map[string]domain.MachineOriginStatus
+	machineStatusCapabilities   map[string]machineStatusCapabilityProfile
+	machineStatusSubscribers    map[string]map[uint64]chan struct{}
+	machineStatusSubscriberID   uint64
+	machinePolicySubscribers    map[string]map[uint64]chan domain.MachineStatusSamplingPolicy
+	machinePolicySubscriberID   uint64
+	machineStatusDemandActive   map[string]bool
+	machineStatusDemandTimers   map[string]*time.Timer
+	machineStatusDemandTimerIDs map[string]uint64
+	machineStatusDemandTimerID  uint64
+	machineStatusDemandGrace    time.Duration
+	edgeSecurityRevisionMu      sync.Mutex
+	edgeSecurityRevision        string
+	edgeSecurityExpiresAt       time.Time
+	edgeSecurityRevisionSet     bool
+	staticAssetMu               sync.Mutex
+	wireGuardDetailMu           sync.Mutex
+	wireGuardDetailCache        map[string]wireGuardTunnelDetailCache
 }
 
 type wireGuardTunnelDetailCache struct {
@@ -243,6 +253,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/edge/v1/static-assets/{sha256}", s.requireEdge(s.edgeStaticAsset))
 	mux.HandleFunc("POST /api/edge/v1/heartbeat", s.requireEdge(s.heartbeat))
 	mux.HandleFunc("POST /api/edge/v1/machine-status", s.requireEdge(s.edgeMachineStatus))
+	mux.HandleFunc("POST /api/edge/v1/machine-network", s.requireEdge(s.edgeMachineNetworkStatus))
+	mux.HandleFunc("POST /api/edge/v1/machine-origin", s.requireEdge(s.edgeMachineOriginStatus))
+	mux.HandleFunc("GET /api/edge/v1/machine-status/policy/events", s.requireEdge(s.machineStatusPolicyEvents))
 	mux.HandleFunc("GET /api/edge/v1/monitoring-targets", s.requireEdge(s.edgeMonitoringTargets))
 	mux.HandleFunc("POST /api/edge/v1/monitoring-results", s.requireEdge(s.edgeMonitoringReport))
 	mux.HandleFunc("GET /api/edge/v1/upgrade", s.requireEdge(s.edgeUpgradeInstruction))
@@ -1932,6 +1945,7 @@ func (s *Server) heartbeat(response http.ResponseWriter, request *http.Request) 
 		writeStoreError(response, err)
 		return
 	}
+	s.updateMachineStatusCapabilityProfile(nodeID, input.Capabilities)
 	if err := s.Store.HeartbeatWithArtifacts(nodeID, input.AppliedVersion, input.LastError, input.ApplyReport,
 		input.AgentVersion, input.AgentSHA256, input.NginxVersion, input.NginxSHA256, input.ActiveUpgradeID); err != nil {
 		writeStoreError(response, err)

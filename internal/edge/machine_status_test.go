@@ -21,6 +21,12 @@ func (function machineStatusReporterFunc) Collect() (*domain.MachineStatus, erro
 	return function()
 }
 
+type machineNetworkStatusReporterFunc func() (*domain.MachineNetworkStatus, error)
+
+func (function machineNetworkStatusReporterFunc) CollectNetwork() (*domain.MachineNetworkStatus, error) {
+	return function()
+}
+
 func TestMachineStatusCollectorReportsLinuxHostAndIntervalRates(t *testing.T) {
 	now := time.Date(2026, 7, 17, 8, 0, 0, 0, time.UTC)
 	files := map[string]string{
@@ -68,8 +74,24 @@ func TestMachineStatusCollectorReportsLinuxHostAndIntervalRates(t *testing.T) {
 	if first.Nginx == nil || first.Nginx.Requests != 35 || first.Nginx.ActiveConnections != 7 {
 		t.Fatalf("unexpected Nginx status: %#v", first.Nginx)
 	}
+	networkBaseline, err := collector.CollectNetwork()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if networkBaseline.SampleSeconds != 0 {
+		t.Fatalf("network baseline unexpectedly included a rate: %#v", networkBaseline)
+	}
+	now = now.Add(time.Second)
+	files["/proc/net/dev"] = "eth0: 1100 1 0 0 0 0 0 0 2200 1 0 0 0 0 0 0\n"
+	network, err := collector.CollectNetwork()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if network.SampleSeconds != 1 || network.NetworkRXBytesPerSec != 100 || network.NetworkTXBytesPerSec != 200 {
+		t.Fatalf("unexpected one-second network report: %#v", network)
+	}
 
-	now = now.Add(30 * time.Second)
+	now = now.Add(29 * time.Second)
 	files["/proc/uptime"] = "90091.50 123.0\n"
 	files["/proc/stat"] = "cpu 130 0 70 900 0 0 0 0 0 0\n"
 	files["/proc/net/dev"] = "eth0: 4000 1 0 0 0 0 0 0 8000 1 0 0 0 0 0 0\nlo: 20 1 0 0 0 0 0 0 20 1 0 0 0 0 0 0\n"
@@ -204,9 +226,11 @@ func TestMachineStatusRoundReportsStatusAndHeartbeatCarriesLatestSnapshot(t *tes
 			return nil, errors.New("unexpected request path " + request.URL.Path)
 		}
 	})}
+	directory := t.TempDir()
 	agent, err := New(Config{
-		ControlURL: "https://control.example.test", StateDir: t.TempDir(), CertificateDir: t.TempDir(),
-		AgentSHA256: strings.Repeat("a", 64), HTTPClient: client, Runner: &fakeRunner{},
+		ControlURL: "https://control.example.test", StateDir: directory, CertificateDir: directory,
+		NginxConfigPath: filepath.Join(directory, "nginx.conf"),
+		AgentSHA256:     strings.Repeat("a", 64), HTTPClient: client, Runner: &fakeRunner{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -225,12 +249,13 @@ func TestMachineStatusRoundReportsStatusAndHeartbeatCarriesLatestSnapshot(t *tes
 	if heartbeat.Machine == nil || heartbeat.Machine.Version != "13.5" || heartbeat.Machine.NetworkRXBytesPerSec != 1000 {
 		t.Fatalf("heartbeat machine status = %#v", heartbeat.Machine)
 	}
-	found, foundStream := false, false
+	found, foundStream, foundAdaptive := false, false, false
 	for _, capability := range heartbeat.Capabilities {
 		found = found || capability == domain.EdgeCapabilityMachineStatus
 		foundStream = foundStream || capability == domain.EdgeCapabilityMachineStatusStream
+		foundAdaptive = foundAdaptive || capability == domain.EdgeCapabilityMachineStatusAdaptive
 	}
-	if !found || !foundStream {
+	if !found || !foundStream || !foundAdaptive {
 		t.Fatalf("heartbeat capabilities = %#v", heartbeat.Capabilities)
 	}
 	heartbeat.Machine = nil
@@ -246,18 +271,618 @@ func TestMachineStatusRoundReportsStatusAndHeartbeatCarriesLatestSnapshot(t *tes
 	}
 }
 
-func TestMachineStatusDefaultsToFiveSecondSampling(t *testing.T) {
+func TestMachineStatusDefaultsToLegacySamplingUntilPolicyNegotiation(t *testing.T) {
+	directory := t.TempDir()
 	agent, err := New(Config{
-		ControlURL: "https://control.example.test", StateDir: t.TempDir(), CertificateDir: t.TempDir(),
-		AgentSHA256: strings.Repeat("c", 64), HTTPClient: &http.Client{Transport: upgradeRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		ControlURL: "https://control.example.test", StateDir: directory, CertificateDir: directory,
+		NginxConfigPath: filepath.Join(directory, "nginx.conf"),
+		AgentSHA256:     strings.Repeat("c", 64), HTTPClient: &http.Client{Transport: upgradeRoundTripFunc(func(*http.Request) (*http.Response, error) {
 			return &http.Response{StatusCode: http.StatusAccepted, Status: "202 Accepted", Header: make(http.Header), Body: http.NoBody}, nil
 		})}, Runner: &fakeRunner{},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if agent.Config.MachineStatusInterval != 5*time.Second {
+	if agent.Config.MachineStatusInterval != time.Duration(domain.LegacyMachineStatusIntervalSeconds)*time.Second {
 		t.Fatalf("machine status interval = %s", agent.Config.MachineStatusInterval)
+	}
+}
+
+func TestMachineNetworkLoopPrimesBeforeReportingAtRequestedInterval(t *testing.T) {
+	directory := t.TempDir()
+	reports := make(chan domain.MachineNetworkStatus, 4)
+	client := &http.Client{Transport: upgradeRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path != "/api/edge/v1/machine-network" {
+			return nil, errors.New("unexpected request path " + request.URL.Path)
+		}
+		var report domain.MachineNetworkStatus
+		if err := json.NewDecoder(request.Body).Decode(&report); err != nil {
+			return nil, err
+		}
+		reports <- report
+		return &http.Response{StatusCode: http.StatusAccepted, Status: "202 Accepted", Header: make(http.Header), Body: http.NoBody}, nil
+	})}
+	agent, err := New(Config{
+		ControlURL: "https://control.example.test", StateDir: directory, CertificateDir: directory,
+		NginxConfigPath: filepath.Join(directory, "nginx.conf"), AgentSHA256: strings.Repeat("e", 64),
+		HTTPClient: client, Runner: &fakeRunner{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	collected := 0
+	base := time.Now().UTC()
+	agent.machineNetwork = machineNetworkStatusReporterFunc(func() (*domain.MachineNetworkStatus, error) {
+		collected++
+		report := &domain.MachineNetworkStatus{
+			NetworkInterface: "eth0", NetworkRXBytesPerSec: int64(collected * 100), NetworkTXBytesPerSec: int64(collected * 50),
+			CollectedAt: base.Add(time.Duration(collected) * 10 * time.Millisecond),
+		}
+		if collected > 1 {
+			report.SampleSeconds = 0.01
+		}
+		return report, nil
+	})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		agent.runMachineNetworkLoop(ctx)
+		close(done)
+	}()
+	agent.setMachineNetworkInterval(10 * time.Millisecond)
+	select {
+	case report := <-reports:
+		if collected < 2 || report.SampleSeconds != 0.01 {
+			cancel()
+			t.Fatalf("first uploaded network report = %#v, collect calls = %d", report, collected)
+		}
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("machine network loop did not upload its first interval sample")
+	}
+	agent.setMachineNetworkInterval(0)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("machine network loop did not stop after cancellation")
+	}
+}
+
+func TestMachineStatusPolicyStreamAppliesNegotiatedIntervals(t *testing.T) {
+	directory := t.TempDir()
+	client := &http.Client{Timeout: time.Millisecond, Transport: upgradeRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path != "/api/edge/v1/machine-status/policy/events" {
+			return nil, errors.New("unexpected request path " + request.URL.Path)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body: io.NopCloser(strings.NewReader("event: machine-status-policy\ndata: {\"host_interval_seconds\":5,\"network_interval_seconds\":1,\"origin_interval_seconds\":5}\n\n")),
+		}, nil
+	})}
+	agent, err := New(Config{
+		ControlURL: "https://control.example.test", StateDir: directory, CertificateDir: directory,
+		NginxConfigPath: filepath.Join(directory, "nginx.conf"), AgentSHA256: strings.Repeat("f", 64),
+		HTTPClient: client, Runner: &fakeRunner{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = agent.streamMachineStatusPolicy(t.Context())
+	if !errors.Is(err, io.ErrUnexpectedEOF) || !errors.Is(err, errMachineStatusPolicyInactive) {
+		t.Fatalf("policy stream error = %v", err)
+	}
+	assertMachineIntervalUpdate(t, agent.machineStatusIntervals, time.Duration(domain.ActiveMachineStatusIntervalSeconds)*time.Second, "host")
+	assertMachineIntervalUpdate(t, agent.machineNetworkIntervals, time.Second, "network")
+	assertMachineIntervalUpdate(t, agent.machineOriginIntervals, 5*time.Second, "origin")
+}
+
+func TestMachineStatusPolicyStreamTimesOutWhenKeepalivesStop(t *testing.T) {
+	directory := t.TempDir()
+	reader, writer := io.Pipe()
+	client := &http.Client{Transport: upgradeRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body: reader,
+		}, nil
+	})}
+	agent, err := New(Config{
+		ControlURL: "https://control.example.test", StateDir: directory, CertificateDir: directory,
+		NginxConfigPath: filepath.Join(directory, "nginx.conf"), AgentSHA256: strings.Repeat("1", 64),
+		HTTPClient: client, Runner: &fakeRunner{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeDone := make(chan error, 1)
+	go func() {
+		_, writeErr := io.WriteString(writer, "event: machine-status-policy\ndata: {\"host_interval_seconds\":5,\"network_interval_seconds\":1,\"origin_interval_seconds\":5}\n\n")
+		writeDone <- writeErr
+	}()
+	err = agent.streamMachineStatusPolicyWithTimeout(t.Context(), 25*time.Millisecond)
+	_ = writer.Close()
+	if err == nil || !strings.Contains(err.Error(), "inactive") {
+		t.Fatalf("stalled policy stream error = %v", err)
+	}
+	if !errors.Is(err, errMachineStatusPolicyInactive) {
+		t.Fatalf("stalled policy stream was not classified as inactive: %v", err)
+	}
+	if writeErr := <-writeDone; writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	assertMachineIntervalUpdate(t, agent.machineStatusIntervals, time.Duration(domain.ActiveMachineStatusIntervalSeconds)*time.Second, "host")
+	assertMachineIntervalUpdate(t, agent.machineNetworkIntervals, time.Second, "network")
+	assertMachineIntervalUpdate(t, agent.machineOriginIntervals, 5*time.Second, "origin")
+}
+
+func TestMachineStatusPolicyLoopKeepsLastPolicyDuringTransientFailure(t *testing.T) {
+	directory := t.TempDir()
+	reconnected := make(chan struct{})
+	requestCount := 0
+	client := &http.Client{Transport: upgradeRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requestCount++
+		if requestCount == 1 {
+			return machineStatusPolicyResponse("{\"host_interval_seconds\":60,\"network_interval_seconds\":0,\"origin_interval_seconds\":5}"), nil
+		}
+		if requestCount == 2 {
+			close(reconnected)
+			reader, writer := io.Pipe()
+			go func() {
+				<-request.Context().Done()
+				_ = writer.CloseWithError(request.Context().Err())
+			}()
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       reader,
+			}, nil
+		}
+		return nil, errors.New("unexpected extra policy request")
+	})}
+	agent, err := New(Config{
+		ControlURL: "https://control.example.test", StateDir: directory, CertificateDir: directory,
+		NginxConfigPath: filepath.Join(directory, "nginx.conf"), AgentSHA256: strings.Repeat("3", 64),
+		HTTPClient: client, Runner: &fakeRunner{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		agent.runMachineStatusPolicyLoopWithConfig(ctx, time.Millisecond, time.Hour, time.Millisecond, time.Minute, machineStatusPolicyReadTimeout)
+		close(done)
+	}()
+	select {
+	case <-reconnected:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("policy stream was not reconnected")
+	}
+
+	assertMachineIntervalUpdate(t, agent.machineStatusIntervals, time.Minute, "host")
+	assertMachineIntervalUpdate(t, agent.machineNetworkIntervals, 0, "network")
+	assertMachineIntervalUpdate(t, agent.machineOriginIntervals, 5*time.Second, "origin")
+	if detail := agent.heartbeatError(); detail != "" {
+		cancel()
+		t.Fatalf("transient policy failure leaked into heartbeat: %q", detail)
+	}
+	stopMachineStatusPolicyLoop(t, cancel, done)
+}
+
+func TestMachineStatusPolicyLoopUsesLongBackoffForInactiveStream(t *testing.T) {
+	directory := t.TempDir()
+	firstReturned := make(chan struct{})
+	secondStarted := make(chan struct{})
+	requestCount := 0
+	client := &http.Client{Transport: upgradeRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requestCount++
+		if requestCount == 1 {
+			close(firstReturned)
+			return machineStatusPolicyResponse("{\"host_interval_seconds\":60,\"network_interval_seconds\":0,\"origin_interval_seconds\":5}"), nil
+		}
+		if requestCount == 2 {
+			close(secondStarted)
+			return nil, io.ErrUnexpectedEOF
+		}
+		return nil, errors.New("unexpected extra policy request")
+	})}
+	agent, err := New(Config{
+		ControlURL: "https://control.example.test", StateDir: directory, CertificateDir: directory,
+		NginxConfigPath: filepath.Join(directory, "nginx.conf"), AgentSHA256: strings.Repeat("6", 64),
+		HTTPClient: client, Runner: &fakeRunner{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		agent.runMachineStatusPolicyLoopWithConfig(ctx, time.Millisecond, time.Hour, 80*time.Millisecond, time.Hour, 10*time.Millisecond)
+		close(done)
+	}()
+	select {
+	case <-firstReturned:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("initial policy request was not sent")
+	}
+	assertMachineIntervalUpdate(t, agent.machineStatusIntervals, time.Minute, "host")
+	assertMachineIntervalUpdate(t, agent.machineNetworkIntervals, 0, "network")
+	assertMachineIntervalUpdate(t, agent.machineOriginIntervals, 5*time.Second, "origin")
+
+	select {
+	case <-secondStarted:
+		cancel()
+		t.Fatal("inactive policy stream retried before the long backoff elapsed")
+	case <-time.After(30 * time.Millisecond):
+	}
+	select {
+	case <-secondStarted:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("inactive policy stream was not retried")
+	}
+	if detail := agent.heartbeatError(); detail != "" {
+		cancel()
+		t.Fatalf("short inactive stream leaked into heartbeat: %q", detail)
+	}
+	stopMachineStatusPolicyLoop(t, cancel, done)
+}
+
+func TestMachineStatusPolicyClassifiesReadTimeoutAsInactive(t *testing.T) {
+	readTimeout := &net.DNSError{Err: "read timeout", IsTimeout: true}
+	if !isMachineStatusPolicyInactiveError(readTimeout) {
+		t.Fatal("read timeout was not classified as an inactive policy stream")
+	}
+	if isMachineStatusPolicyInactiveError(errors.New("connection refused")) {
+		t.Fatal("generic transport error was classified as an inactive policy stream")
+	}
+}
+
+func TestMachineStatusPolicyLoopReportsPersistentInactiveFailureAfterGrace(t *testing.T) {
+	directory := t.TempDir()
+	requestCount := 0
+	client := &http.Client{Transport: upgradeRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requestCount++
+		if requestCount == 1 {
+			return machineStatusPolicyResponse("{\"host_interval_seconds\":60,\"network_interval_seconds\":0,\"origin_interval_seconds\":5}"), nil
+		}
+		return machineStatusPolicyResponse(), nil
+	})}
+	agent, err := New(Config{
+		ControlURL: "https://control.example.test", StateDir: directory, CertificateDir: directory,
+		NginxConfigPath: filepath.Join(directory, "nginx.conf"), AgentSHA256: strings.Repeat("7", 64),
+		HTTPClient: client, Runner: &fakeRunner{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		agent.runMachineStatusPolicyLoopWithConfig(ctx, time.Millisecond, time.Hour, time.Millisecond, 25*time.Millisecond, 10*time.Millisecond)
+		close(done)
+	}()
+	deadline := time.Now().Add(time.Second)
+	for !strings.Contains(agent.heartbeatError(), errMachineStatusPolicyInactive.Error()) && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if detail := agent.heartbeatError(); !strings.Contains(detail, errMachineStatusPolicyInactive.Error()) {
+		cancel()
+		t.Fatalf("persistent inactive policy failure heartbeat error = %q", detail)
+	}
+	assertMachineIntervalUpdate(t, agent.machineStatusIntervals, time.Duration(domain.LegacyMachineStatusIntervalSeconds)*time.Second, "host")
+	assertMachineIntervalUpdate(t, agent.machineNetworkIntervals, 0, "network")
+	assertMachineIntervalUpdate(t, agent.machineOriginIntervals, 0, "origin")
+	stopMachineStatusPolicyLoop(t, cancel, done)
+}
+
+func TestMachineStatusPolicyLoopFallsBackAfterPersistentFailure(t *testing.T) {
+	directory := t.TempDir()
+	recoverPolicy := make(chan struct{})
+	recoveryWritten := make(chan struct{})
+	requestCount := 0
+	client := &http.Client{Transport: upgradeRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requestCount++
+		if requestCount == 1 {
+			return machineStatusPolicyResponse("{\"host_interval_seconds\":60,\"network_interval_seconds\":0,\"origin_interval_seconds\":5}"), nil
+		}
+		select {
+		case <-recoverPolicy:
+			reader, writer := io.Pipe()
+			go func() {
+				_, _ = io.WriteString(writer, "event: machine-status-policy\ndata: {\"host_interval_seconds\":60,\"network_interval_seconds\":0,\"origin_interval_seconds\":5}\n\n")
+				close(recoveryWritten)
+				<-request.Context().Done()
+				_ = writer.CloseWithError(request.Context().Err())
+			}()
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       reader,
+			}, nil
+		default:
+			return nil, errors.New("policy stream unavailable")
+		}
+	})}
+	agent, err := New(Config{
+		ControlURL: "https://control.example.test", StateDir: directory, CertificateDir: directory,
+		NginxConfigPath: filepath.Join(directory, "nginx.conf"), AgentSHA256: strings.Repeat("4", 64),
+		HTTPClient: client, Runner: &fakeRunner{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		agent.runMachineStatusPolicyLoopWithConfig(ctx, time.Millisecond, time.Hour, time.Millisecond, 25*time.Millisecond, machineStatusPolicyReadTimeout)
+		close(done)
+	}()
+	deadline := time.Now().Add(time.Second)
+	for agent.heartbeatError() == "" && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if detail := agent.heartbeatError(); !strings.Contains(detail, "policy stream unavailable") {
+		cancel()
+		t.Fatalf("persistent policy failure heartbeat error = %q", detail)
+	}
+
+	assertMachineIntervalUpdate(t, agent.machineStatusIntervals, time.Duration(domain.LegacyMachineStatusIntervalSeconds)*time.Second, "host")
+	assertMachineIntervalUpdate(t, agent.machineNetworkIntervals, 0, "network")
+	assertMachineIntervalUpdate(t, agent.machineOriginIntervals, 0, "origin")
+
+	close(recoverPolicy)
+	select {
+	case <-recoveryWritten:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("recovered policy was not written")
+	}
+	deadline = time.Now().Add(time.Second)
+	for agent.heartbeatError() != "" && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if detail := agent.heartbeatError(); detail != "" {
+		cancel()
+		t.Fatalf("recovered policy did not clear heartbeat error: %q", detail)
+	}
+	assertMachineIntervalUpdate(t, agent.machineStatusIntervals, time.Minute, "host")
+	assertMachineIntervalUpdate(t, agent.machineNetworkIntervals, 0, "network")
+	assertMachineIntervalUpdate(t, agent.machineOriginIntervals, 5*time.Second, "origin")
+	stopMachineStatusPolicyLoop(t, cancel, done)
+}
+
+func TestMachineStatusPolicyLoopRejectsInvalidPolicyImmediately(t *testing.T) {
+	directory := t.TempDir()
+	client := &http.Client{Transport: upgradeRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return machineStatusPolicyResponse(
+			"{\"host_interval_seconds\":60,\"network_interval_seconds\":0,\"origin_interval_seconds\":5}",
+			"{\"host_interval_seconds\":-1,\"network_interval_seconds\":1,\"origin_interval_seconds\":5}",
+		), nil
+	})}
+	agent, err := New(Config{
+		ControlURL: "https://control.example.test", StateDir: directory, CertificateDir: directory,
+		NginxConfigPath: filepath.Join(directory, "nginx.conf"), AgentSHA256: strings.Repeat("5", 64),
+		HTTPClient: client, Runner: &fakeRunner{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		agent.runMachineStatusPolicyLoopWithIntervals(ctx, time.Hour, time.Hour, time.Hour)
+		close(done)
+	}()
+	deadline := time.Now().Add(time.Second)
+	for agent.heartbeatError() == "" && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if detail := agent.heartbeatError(); !strings.Contains(detail, errMachineStatusPolicyInvalid.Error()) {
+		cancel()
+		t.Fatalf("invalid policy heartbeat error = %q", detail)
+	}
+
+	assertMachineIntervalUpdate(t, agent.machineStatusIntervals, time.Duration(domain.LegacyMachineStatusIntervalSeconds)*time.Second, "host")
+	assertMachineIntervalUpdate(t, agent.machineNetworkIntervals, 0, "network")
+	assertMachineIntervalUpdate(t, agent.machineOriginIntervals, 0, "origin")
+	stopMachineStatusPolicyLoop(t, cancel, done)
+}
+
+func TestUnsupportedMachineStatusPolicyKeepsLegacyModeWithoutHeartbeatError(t *testing.T) {
+	directory := t.TempDir()
+	requestHandled := make(chan struct{})
+	client := &http.Client{Transport: upgradeRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		close(requestHandled)
+		return &http.Response{
+			StatusCode: http.StatusNotFound, Status: "404 Not Found", Header: make(http.Header),
+			Body: io.NopCloser(strings.NewReader("not found")),
+		}, nil
+	})}
+	agent, err := New(Config{
+		ControlURL: "https://control.example.test", StateDir: directory, CertificateDir: directory,
+		NginxConfigPath: filepath.Join(directory, "nginx.conf"), AgentSHA256: strings.Repeat("2", 64),
+		HTTPClient: client, Runner: &fakeRunner{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent.setComponentFailure("machine_status_policy", "stream machine status policy", errors.New("previous failure"))
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		agent.runMachineStatusPolicyLoop(ctx)
+		close(done)
+	}()
+	select {
+	case <-requestHandled:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("policy compatibility request was not sent")
+	}
+	deadline := time.Now().Add(time.Second)
+	for agent.heartbeatError() != "" && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if detail := agent.heartbeatError(); detail != "" {
+		cancel()
+		t.Fatalf("unsupported policy leaked into heartbeat: %q", detail)
+	}
+	assertMachineIntervalUpdate(t, agent.machineStatusIntervals, time.Duration(domain.LegacyMachineStatusIntervalSeconds)*time.Second, "host")
+	assertMachineIntervalUpdate(t, agent.machineNetworkIntervals, 0, "network")
+	assertMachineIntervalUpdate(t, agent.machineOriginIntervals, 0, "origin")
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("policy loop did not stop after cancellation")
+	}
+}
+
+func machineStatusPolicyResponse(policies ...string) *http.Response {
+	var body strings.Builder
+	for _, policy := range policies {
+		body.WriteString("event: machine-status-policy\ndata: ")
+		body.WriteString(policy)
+		body.WriteString("\n\n")
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Status:     "200 OK",
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(body.String())),
+	}
+}
+
+func stopMachineStatusPolicyLoop(t *testing.T, cancel context.CancelFunc, done <-chan struct{}) {
+	t.Helper()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("policy loop did not stop after cancellation")
+	}
+}
+
+func assertMachineIntervalUpdate(t *testing.T, updates <-chan time.Duration, expected time.Duration, name string) {
+	t.Helper()
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case interval := <-updates:
+			if interval == expected {
+				return
+			}
+		case <-deadline:
+			t.Fatalf("machine status policy did not update the %s interval to %s", name, expected)
+		}
+	}
+}
+
+func TestMachineOriginStatusRoundReportsCurrentProbeAndConnectionCount(t *testing.T) {
+	checkedAt := time.Now().UTC().Add(-time.Second)
+	poolID := strings.Repeat("a", 24)
+	probe := &domain.OriginProbeStatus{
+		PoolID: poolID, Address: "203.0.113.10:8080", Scheme: "http", KeepaliveConnections: 16,
+		References: []domain.OriginPoolReference{{SiteID: "site-1", Role: "primary"}},
+		Healthy:    true, CircuitState: domain.OriginCircuitClosed, CheckedAt: checkedAt,
+		ServiceProbe: &domain.OriginProbeSample{Healthy: true, HeaderMS: 2, TotalMS: 3, HTTPStatus: http.StatusNoContent, CheckedAt: checkedAt},
+	}
+	reports := make(chan domain.MachineOriginStatus, 1)
+	client := &http.Client{Transport: upgradeRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path != "/api/edge/v1/machine-origin" {
+			return nil, errors.New("unexpected request path " + request.URL.Path)
+		}
+		var report domain.MachineOriginStatus
+		if err := json.NewDecoder(request.Body).Decode(&report); err != nil {
+			return nil, err
+		}
+		reports <- report
+		return &http.Response{StatusCode: http.StatusAccepted, Status: "202 Accepted", Header: make(http.Header), Body: http.NoBody}, nil
+	})}
+	agent := &Agent{
+		Config: Config{ControlURL: "https://control.example.test", HTTPClient: client},
+		originPools: map[string]*originPoolRuntime{
+			poolID: {
+				Pool: domain.OriginPool{
+					ID: poolID, Address: probe.Address, Scheme: probe.Scheme, HostHeader: "origin.example.test",
+					KeepaliveConnections: 16, References: append([]domain.OriginPoolReference(nil), probe.References...),
+				},
+				CircuitState: domain.OriginCircuitClosed, Status: probe,
+			},
+		},
+		originConnections: originConnectionCounterFunc(func(_ context.Context, pools []domain.OriginPool) map[string]int64 {
+			if len(pools) != 1 || pools[0].ID != poolID {
+				t.Fatalf("origin pools = %#v", pools)
+			}
+			return map[string]int64{poolID: 7}
+		}),
+		componentFailures: make(map[string]string),
+	}
+	agent.runMachineOriginStatusRound(t.Context())
+	select {
+	case report := <-reports:
+		if len(report.OriginProbes) != 1 || report.OriginProbes[0].EstablishedConnections == nil ||
+			*report.OriginProbes[0].EstablishedConnections != 7 || report.CollectedAt.Before(checkedAt) {
+			t.Fatalf("machine origin report = %#v", report)
+		}
+	default:
+		t.Fatal("machine origin status was not reported")
+	}
+}
+
+func TestMachineOriginStatusLoopWaitsForNegotiatedInterval(t *testing.T) {
+	reports := make(chan struct{}, 2)
+	client := &http.Client{Transport: upgradeRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path != "/api/edge/v1/machine-origin" {
+			return nil, errors.New("unexpected request path " + request.URL.Path)
+		}
+		reports <- struct{}{}
+		return &http.Response{StatusCode: http.StatusAccepted, Status: "202 Accepted", Header: make(http.Header), Body: http.NoBody}, nil
+	})}
+	agent := &Agent{
+		Config:                 Config{ControlURL: "https://control.example.test", HTTPClient: client},
+		machineOriginIntervals: make(chan time.Duration, 1),
+		originPools:            make(map[string]*originPoolRuntime),
+		originConnections: originConnectionCounterFunc(func(context.Context, []domain.OriginPool) map[string]int64 {
+			return map[string]int64{}
+		}),
+		componentFailures: make(map[string]string),
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		agent.runMachineOriginStatusLoop(ctx)
+		close(done)
+	}()
+	select {
+	case <-reports:
+		cancel()
+		t.Fatal("origin status reported before adaptive policy negotiation")
+	case <-time.After(20 * time.Millisecond):
+	}
+	agent.setMachineOriginInterval(10 * time.Millisecond)
+	select {
+	case <-reports:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("origin status did not start after policy negotiation")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("origin status loop did not stop after cancellation")
 	}
 }
 
@@ -270,9 +895,11 @@ func TestMachineStatusLoopUsesConfiguredSamplingInterval(t *testing.T) {
 		reports <- time.Now()
 		return &http.Response{StatusCode: http.StatusAccepted, Status: "202 Accepted", Header: make(http.Header), Body: http.NoBody}, nil
 	})}
+	directory := t.TempDir()
 	agent, err := New(Config{
-		ControlURL: "https://control.example.test", StateDir: t.TempDir(), CertificateDir: t.TempDir(),
-		AgentSHA256: strings.Repeat("d", 64), HTTPClient: client, Runner: &fakeRunner{}, MachineStatusInterval: 10 * time.Millisecond,
+		ControlURL: "https://control.example.test", StateDir: directory, CertificateDir: directory,
+		NginxConfigPath: filepath.Join(directory, "nginx.conf"),
+		AgentSHA256:     strings.Repeat("d", 64), HTTPClient: client, Runner: &fakeRunner{}, MachineStatusInterval: 10 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatal(err)

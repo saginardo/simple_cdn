@@ -136,6 +136,7 @@ func newTransportTestAgent(t *testing.T, controlURL string, directory string, id
 		ControlURL:       controlURL,
 		StateDir:         directory,
 		CertificateDir:   filepath.Join(directory, "certs"),
+		NginxConfigPath:  filepath.Join(directory, "nginx.conf"),
 		ClientCertPath:   certPath,
 		ClientKeyPath:    keyPath,
 		CAPath:           caPath,

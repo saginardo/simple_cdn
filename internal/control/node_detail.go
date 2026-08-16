@@ -19,6 +19,8 @@ const (
 	nodeCacheStorageFreshness    = 15 * time.Minute
 	nodeMachineLegacyFreshness   = 10 * time.Minute
 	nodeMachineRealtimeFreshness = 15 * time.Second
+	nodeMachineAdaptiveFreshness = 2*time.Duration(domain.DefaultMachineStatusIntervalSeconds)*time.Second + 15*time.Second
+	nodeMachineNetworkFreshness  = 5 * time.Second
 )
 
 type nodeCacheStatusBucket struct {
@@ -77,10 +79,14 @@ type nodeDetailResponse struct {
 }
 
 type nodeMachineStatusResponse struct {
-	Available         bool                  `json:"available"`
-	UnavailableReason string                `json:"unavailable_reason,omitempty"`
-	Stale             bool                  `json:"stale"`
-	Report            *domain.MachineStatus `json:"report,omitempty"`
+	Available         bool                         `json:"available"`
+	UnavailableReason string                       `json:"unavailable_reason,omitempty"`
+	Stale             bool                         `json:"stale"`
+	Report            *domain.MachineStatus        `json:"report,omitempty"`
+	Network           *domain.MachineNetworkStatus `json:"network,omitempty"`
+	NetworkStale      bool                         `json:"network_stale,omitempty"`
+	OriginCollectedAt *time.Time                   `json:"origin_collected_at,omitempty"`
+	OriginStale       bool                         `json:"origin_stale,omitempty"`
 }
 
 func (s *Server) nodeDetail(response http.ResponseWriter, request *http.Request) {
@@ -208,28 +214,73 @@ func (s *Server) publishNodeConfiguration(nodeID string) error {
 }
 
 func (s *Server) nodeMachineStatus(node domain.Node, at time.Time) nodeMachineStatusResponse {
+	return s.nodeMachineStatusWithCapabilityProfile(node.ID, machineStatusCapabilityProfileFor(node.Capabilities), at)
+}
+
+func (s *Server) nodeMachineStatusWithCapabilityProfile(nodeID string, capabilities machineStatusCapabilityProfile, at time.Time) nodeMachineStatusResponse {
 	s.machineStatusMu.RLock()
-	report, found := s.machineStatuses[node.ID]
+	report, found := s.machineStatuses[nodeID]
+	network, networkFound := s.machineNetworkStatuses[nodeID]
+	origin, originFound := s.machineOriginStatuses[nodeID]
+	networkDemandActive := s.machineStatusDemandActive[nodeID]
 	s.machineStatusMu.RUnlock()
 	if found {
 		report.CollectedAt = report.CollectedAt.UTC()
 		freshness := nodeMachineLegacyFreshness
-		for _, capability := range node.Capabilities {
-			if capability == domain.EdgeCapabilityMachineStatusStream {
-				freshness = nodeMachineRealtimeFreshness
-				break
-			}
+		if capabilities.adaptive {
+			freshness = nodeMachineAdaptiveFreshness
+		} else if capabilities.stream {
+			freshness = nodeMachineRealtimeFreshness
 		}
-		return nodeMachineStatusResponse{
+		originReportCollectedAt := report.CollectedAt
+		originFreshness := freshness
+		if capabilities.adaptive {
+			originFreshness = nodeMachineRealtimeFreshness
+		}
+		if originFound && origin.CollectedAt.After(originReportCollectedAt) {
+			originReportCollectedAt = origin.CollectedAt.UTC()
+			report.OriginProbes = origin.OriginProbes
+		}
+		// Envelope time orders reports; freshness follows the actual probe so
+		// repeated uploads cannot make stopped probe data appear current.
+		originCollectedAt := latestOriginProbeCheckedAt(report.OriginProbes, originReportCollectedAt)
+		status := nodeMachineStatusResponse{
 			Available: true, Stale: report.CollectedAt.Before(at.Add(-freshness)), Report: &report,
+			OriginCollectedAt: &originCollectedAt,
+			OriginStale:       originCollectedAt.Before(at.Add(-originFreshness)),
 		}
+		networkCollectedAt := report.CollectedAt
+		if capabilities.adaptive && networkFound && network.CollectedAt.After(networkCollectedAt) {
+			network.CollectedAt = network.CollectedAt.UTC()
+			status.Network = &network
+			networkCollectedAt = network.CollectedAt
+		}
+		if capabilities.adaptive {
+			networkFreshness := nodeMachineAdaptiveFreshness
+			if networkDemandActive {
+				networkFreshness = nodeMachineNetworkFreshness
+			}
+			status.NetworkStale = networkCollectedAt.Before(at.Add(-networkFreshness))
+		}
+		return status
 	}
-	for _, capability := range node.Capabilities {
-		if capability == domain.EdgeCapabilityMachineStatus {
-			return nodeMachineStatusResponse{UnavailableReason: "等待边缘节点首次上报机器状态"}
-		}
+	if capabilities.supported {
+		return nodeMachineStatusResponse{UnavailableReason: "等待边缘节点首次上报机器状态"}
 	}
 	return nodeMachineStatusResponse{UnavailableReason: "升级边缘代理后可查看机器状态"}
+}
+
+func latestOriginProbeCheckedAt(probes []domain.OriginProbeStatus, fallback time.Time) time.Time {
+	latest := time.Time{}
+	for _, probe := range probes {
+		if probe.CheckedAt.After(latest) {
+			latest = probe.CheckedAt
+		}
+	}
+	if latest.IsZero() {
+		return fallback.UTC()
+	}
+	return latest.UTC()
 }
 
 func (s *Server) nodeCacheStatus(response http.ResponseWriter, request *http.Request) {

@@ -250,6 +250,14 @@ export interface MachineReport {
   collected_at: string;
 }
 
+export interface MachineNetworkStatus {
+  network_interface: string;
+  network_rx_bytes_per_second: number;
+  network_tx_bytes_per_second: number;
+  sample_seconds: number;
+  collected_at: string;
+}
+
 export interface NginxRuntimeStatus {
   active_connections: number;
   accepted_connections: number;
@@ -318,6 +326,10 @@ export interface NodeMachineStatus {
   unavailable_reason?: string;
   stale: boolean;
   report?: MachineReport;
+  network?: MachineNetworkStatus;
+  network_stale?: boolean;
+  origin_collected_at?: string;
+  origin_stale?: boolean;
 }
 
 export interface NodeDetail {

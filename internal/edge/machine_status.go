@@ -23,19 +23,30 @@ type machineStatusReporter interface {
 	Collect() (*domain.MachineStatus, error)
 }
 
+type machineNetworkStatusReporter interface {
+	CollectNetwork() (*domain.MachineNetworkStatus, error)
+}
+
 type machineStatusCollector struct {
-	mu             sync.Mutex
-	readFile       func(string) ([]byte, error)
-	statFilesystem func(string) (int64, int64, error)
-	now            func() time.Time
-	logicalCPUs    func() int
-	nginxStatus    func() (*domain.NginxRuntimeStatus, error)
-	previous       *machineSample
+	mu              sync.Mutex
+	readFile        func(string) ([]byte, error)
+	statFilesystem  func(string) (int64, int64, error)
+	now             func() time.Time
+	logicalCPUs     func() int
+	nginxStatus     func() (*domain.NginxRuntimeStatus, error)
+	previous        *machineSample
+	previousNetwork *machineNetworkSample
 }
 
 type machineSample struct {
 	at               time.Time
 	cpu              cpuCounters
+	networkInterface string
+	network          networkCounters
+}
+
+type machineNetworkSample struct {
+	at               time.Time
 	networkInterface string
 	network          networkCounters
 }
@@ -121,6 +132,38 @@ func (c *machineStatusCollector) Collect() (*domain.MachineStatus, error) {
 		return nil, errors.New("collected machine status is invalid")
 	}
 	c.previous = &machineSample{at: collectedAt, cpu: cpu, networkInterface: networkInterface, network: network}
+	return status, nil
+}
+
+func (c *machineStatusCollector) CollectNetwork() (*domain.MachineNetworkStatus, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	collectedAt := c.now().UTC()
+	networkInterface, network, err := readNetworkCounters(c.readFile)
+	if err != nil {
+		return nil, err
+	}
+	status := &domain.MachineNetworkStatus{
+		NetworkInterface: networkInterface,
+		CollectedAt:      collectedAt,
+	}
+	if c.previousNetwork != nil {
+		sampleSeconds := collectedAt.Sub(c.previousNetwork.at).Seconds()
+		if sampleSeconds > 0 && sampleSeconds <= 24*60*60 {
+			status.SampleSeconds = sampleSeconds
+			if c.previousNetwork.networkInterface == networkInterface {
+				status.NetworkRXBytesPerSec = counterRate(c.previousNetwork.network.rx, network.rx, sampleSeconds)
+				status.NetworkTXBytesPerSec = counterRate(c.previousNetwork.network.tx, network.tx, sampleSeconds)
+			}
+		}
+	}
+	if !domain.ValidMachineNetworkStatus(*status) {
+		return nil, errors.New("collected machine network status is invalid")
+	}
+	c.previousNetwork = &machineNetworkSample{
+		at: collectedAt, networkInterface: networkInterface, network: network,
+	}
 	return status, nil
 }
 

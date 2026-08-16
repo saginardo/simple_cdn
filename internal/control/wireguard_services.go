@@ -211,13 +211,13 @@ func (s *Server) wireGuardOriginServices(
 					referenceHealth[referenceID] = healthy
 				}
 			}
-			if matched {
-				collectedAt := machine.Report.CollectedAt.UTC()
-				if builder.service.LastReportedAt == nil || collectedAt.After(*builder.service.LastReportedAt) {
+			if matched && machine.OriginCollectedAt != nil {
+				if builder.service.LastReportedAt == nil || machine.OriginCollectedAt.After(*builder.service.LastReportedAt) {
+					collectedAt := *machine.OriginCollectedAt
 					builder.service.LastReportedAt = &collectedAt
 				}
 			}
-			if machine.Stale || !matched {
+			if machine.OriginStale || !matched {
 				continue
 			}
 			builder.service.ObservedNodes++
@@ -276,7 +276,7 @@ func (s *Server) wireGuardPeerRuntime(
 			continue
 		}
 		machine := s.nodeMachineStatus(node, at)
-		if machine.Report == nil || machine.Stale {
+		if machine.Report == nil || machine.OriginStale {
 			runtime = append(runtime, entry)
 			continue
 		}
@@ -299,8 +299,8 @@ func (s *Server) wireGuardPeerRuntime(
 			}
 			total += *probe.EstablishedConnections
 		}
-		if matched && available {
-			collectedAt := machine.Report.CollectedAt.UTC()
+		if matched && available && machine.OriginCollectedAt != nil {
+			collectedAt := *machine.OriginCollectedAt
 			entry.EstablishedConnections = &total
 			entry.CollectedAt = &collectedAt
 		}

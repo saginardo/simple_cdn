@@ -2900,6 +2900,24 @@ test("node machine status updates from the realtime event stream", async ({
   page,
 }, testInfo) => {
   const errors = trackPageErrors(page);
+  await page.addInitScript(() => {
+    const NativeEventSource = window.EventSource;
+    const counters = { opened: 0, closed: 0 };
+    Object.defineProperty(window, "__machineStatusStreamCounters", {
+      value: counters,
+    });
+    window.EventSource = class extends NativeEventSource {
+      constructor(url: string | URL, options?: EventSourceInit) {
+        super(url, options);
+        counters.opened++;
+      }
+
+      override close() {
+        counters.closed++;
+        super.close();
+      }
+    };
+  });
   const node = {
     id: "node-1",
     name: "realtime-edge",
@@ -2910,7 +2928,11 @@ test("node machine status updates from the realtime event stream", async ({
       worker_connections: 4096,
       worker_rlimit_nofile: 65536,
     },
-    capabilities: ["machine_status_v1", "machine_status_stream_v1"],
+    capabilities: [
+      "machine_status_v1",
+      "machine_status_stream_v1",
+      "machine_status_adaptive_v1",
+    ],
     agent_version: "0.1.14",
     target_agent_version: "0.1.14",
     applied_version: 9,
@@ -2963,18 +2985,13 @@ test("node machine status updates from the realtime event stream", async ({
     "/api/nodes/node-1/machine-status/events": {
       available: true,
       stale: false,
-      report: {
-        ...machineReport,
-        cpu_usage_percent: 73,
+      report: machineReport,
+      network: {
+        network_interface: "eth0",
         network_rx_bytes_per_second: 8_192,
-        nginx: {
-          ...machineReport.nginx,
-          active_connections: 128,
-          reading: 4,
-          writing: 28,
-          waiting: 96,
-        },
-        collected_at: new Date(now.getTime() + 5_000).toISOString(),
+        network_tx_bytes_per_second: 4_096,
+        sample_seconds: 1,
+        collected_at: new Date(now.getTime() + 6_000).toISOString(),
       },
     },
     "/api/nodes/node-1/cache-status": {
@@ -3012,13 +3029,49 @@ test("node machine status updates from the realtime event stream", async ({
   await expect(
     page.getByRole("heading", { name: "realtime-edge", level: 1 }),
   ).toBeVisible();
-  await expect(page.getByText("73.0%", { exact: true })).toBeVisible();
+  await expect(page.getByText("12.0%", { exact: true })).toBeVisible();
   await expect(page.getByText(/接收\s*8\.0 KiB\/s/)).toBeVisible();
   await expect(
     page.getByRole("heading", { name: "Nginx 运行状态", level: 3 }),
   ).toBeVisible();
-  await expect(page.getByText("128 / 16,384 连接容量")).toBeVisible();
-  await expect(page.getByText("96", { exact: true })).toBeVisible();
+  await expect(page.getByText("96 / 16,384 连接容量")).toBeVisible();
+  await expect(page.getByText("72", { exact: true })).toBeVisible();
+  const streamCounts = () =>
+    page.evaluate(
+      () =>
+        (
+          window as typeof window & {
+            __machineStatusStreamCounters: {
+              opened: number;
+              closed: number;
+            };
+          }
+        ).__machineStatusStreamCounters,
+    );
+  await expect
+    .poll(async () => (await streamCounts()).opened)
+    .toBeGreaterThan(0);
+  const openedBeforeHide = (await streamCounts()).opened;
+  await page.evaluate(() => {
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "hidden",
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect
+    .poll(async () => (await streamCounts()).closed)
+    .toBeGreaterThan(0);
+  await page.evaluate(() => {
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "visible",
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect
+    .poll(async () => (await streamCounts()).opened)
+    .toBeGreaterThan(openedBeforeHide);
   await page.screenshot({
     path: testInfo.outputPath("node-runtime-status.png"),
     fullPage: true,
@@ -3034,6 +3087,11 @@ test("node machine status updates from the realtime event stream", async ({
     path: testInfo.outputPath("node-runtime-status-mobile.png"),
     fullPage: true,
   });
+  const closedBeforeLeave = (await streamCounts()).closed;
+  await page.goto("/#/nodes");
+  await expect
+    .poll(async () => (await streamCounts()).closed)
+    .toBeGreaterThan(closedBeforeLeave);
   expect(errors).toEqual([]);
 });
 

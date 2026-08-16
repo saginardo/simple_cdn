@@ -233,9 +233,7 @@ func (s *Server) deleteNode(response http.ResponseWriter, request *http.Request)
 		writeStoreError(response, err)
 		return
 	}
-	s.machineStatusMu.Lock()
-	delete(s.machineStatuses, nodeID)
-	s.machineStatusMu.Unlock()
+	s.clearNodeMachineStatusState(nodeID)
 	s.audit(request, adminID(request.Context()), "delete", "node", nodeID, node.Name)
 	writeJSON(response, http.StatusOK, map[string]bool{"ok": true})
 }

@@ -7,6 +7,17 @@ import (
 	"unicode"
 )
 
+const (
+	LegacyMachineStatusIntervalSeconds   = 5
+	DefaultMachineStatusIntervalSeconds  = 60
+	ActiveMachineStatusIntervalSeconds   = 5
+	DefaultMachineNetworkIntervalSeconds = 1
+	DefaultMachineOriginIntervalSeconds  = 5
+	MaximumMachineStatusIntervalSeconds  = 60 * 60
+	MaximumMachineNetworkIntervalSeconds = 60
+	MaximumMachineOriginIntervalSeconds  = 60
+)
+
 // MachineStatus is the latest host-level snapshot collected by an edge agent.
 // CPU and network rates are averages over SampleSeconds; a zero interval means
 // the agent has not collected a second sample yet.
@@ -30,6 +41,33 @@ type MachineStatus struct {
 	OriginProbes         []OriginProbeStatus `json:"origin_probes,omitempty"`
 	Nginx                *NginxRuntimeStatus `json:"nginx,omitempty"`
 	CollectedAt          time.Time           `json:"collected_at"`
+}
+
+// MachineNetworkStatus is a lightweight interval-rate sample collected only
+// while an operator is actively viewing the node.
+type MachineNetworkStatus struct {
+	NetworkInterface     string    `json:"network_interface"`
+	NetworkRXBytesPerSec int64     `json:"network_rx_bytes_per_second"`
+	NetworkTXBytesPerSec int64     `json:"network_tx_bytes_per_second"`
+	SampleSeconds        float64   `json:"sample_seconds"`
+	CollectedAt          time.Time `json:"collected_at"`
+}
+
+// MachineOriginStatus keeps operational origin health and connection counts
+// on their existing cadence without forcing a complete host collection.
+type MachineOriginStatus struct {
+	OriginProbes []OriginProbeStatus `json:"origin_probes"`
+	CollectedAt  time.Time           `json:"collected_at"`
+}
+
+// MachineStatusSamplingPolicy is streamed from the control plane to an edge.
+// A zero network interval disables the on-demand network sampler. Host and
+// origin intervals are always explicit so an edge can negotiate adaptive mode
+// before leaving the legacy complete-snapshot cadence.
+type MachineStatusSamplingPolicy struct {
+	HostIntervalSeconds    int `json:"host_interval_seconds"`
+	NetworkIntervalSeconds int `json:"network_interval_seconds"`
+	OriginIntervalSeconds  int `json:"origin_interval_seconds"`
 }
 
 // NginxRuntimeStatus is an ephemeral ngx_http_stub_status snapshot collected
@@ -68,6 +106,31 @@ func ValidMachineStatus(status MachineStatus) bool {
 		validMachineFloat(status.SampleSeconds, 0, maxSample) &&
 		!status.CollectedAt.IsZero() && validOriginProbeStatuses(status.OriginProbes) &&
 		(status.Nginx == nil || ValidNginxRuntimeStatus(*status.Nginx))
+}
+
+func ValidMachineNetworkStatus(status MachineNetworkStatus) bool {
+	const (
+		maxBytes  int64   = 1 << 60
+		maxSample float64 = 24 * 60 * 60
+	)
+	return validMachineText(status.NetworkInterface, 64, true) &&
+		status.NetworkRXBytesPerSec >= 0 && status.NetworkRXBytesPerSec <= maxBytes &&
+		status.NetworkTXBytesPerSec >= 0 && status.NetworkTXBytesPerSec <= maxBytes &&
+		validMachineFloat(status.SampleSeconds, 0, maxSample) &&
+		!status.CollectedAt.IsZero()
+}
+
+func ValidMachineOriginStatus(status MachineOriginStatus) bool {
+	return !status.CollectedAt.IsZero() && validOriginProbeStatuses(status.OriginProbes)
+}
+
+func ValidMachineStatusSamplingPolicy(policy MachineStatusSamplingPolicy) bool {
+	return policy.HostIntervalSeconds > 0 &&
+		policy.HostIntervalSeconds <= MaximumMachineStatusIntervalSeconds &&
+		policy.NetworkIntervalSeconds >= 0 &&
+		policy.NetworkIntervalSeconds <= MaximumMachineNetworkIntervalSeconds &&
+		policy.OriginIntervalSeconds > 0 &&
+		policy.OriginIntervalSeconds <= MaximumMachineOriginIntervalSeconds
 }
 
 func ValidNginxRuntimeStatus(status NginxRuntimeStatus) bool {

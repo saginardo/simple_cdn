@@ -715,6 +715,16 @@ function MachineStatus({ detail }: { detail: NodeDetail }) {
   const machine = detail.machine;
   if (!machine.available || !machine.report) return null;
   const report = machine.report;
+  const networkInterface =
+    machine.network?.network_interface ?? report.network_interface;
+  const networkRX =
+    machine.network?.network_rx_bytes_per_second ??
+    report.network_rx_bytes_per_second;
+  const networkTX =
+    machine.network?.network_tx_bytes_per_second ??
+    report.network_tx_bytes_per_second;
+  const networkCollectedAt =
+    machine.network?.collected_at ?? report.collected_at;
   const memory = report.memory_total_bytes
     ? (report.memory_used_bytes / report.memory_total_bytes) * 100
     : 0;
@@ -761,19 +771,19 @@ function MachineStatus({ detail }: { detail: NodeDetail }) {
         <div className="sm:col-span-2 xl:col-span-3 flex flex-wrap gap-x-6 gap-y-2 border-t pt-4 text-sm">
           <span className="flex items-center gap-2">
             <Wifi className="size-4 text-muted-foreground" />
-            {report.network_interface || t("默认接口")}
+            {networkInterface || t("默认接口")}
           </span>
           <span>
             {t("接收 ")}
-            {formatBytes(report.network_rx_bytes_per_second)}/s
+            {machine.network_stale ? "--" : `${formatBytes(networkRX)}/s`}
           </span>
           <span>
             {t("发送 ")}
-            {formatBytes(report.network_tx_bytes_per_second)}/s
+            {machine.network_stale ? "--" : `${formatBytes(networkTX)}/s`}
           </span>
           <span className="ml-auto text-xs text-muted-foreground">
             {t("采集于 ")}
-            {formatDateTime(report.collected_at)}
+            {formatDateTime(networkCollectedAt)}
           </span>
         </div>
         {report.nginx ? <NginxRuntime detail={detail} /> : null}
@@ -849,10 +859,15 @@ function OriginConnections({ detail }: { detail: NodeDetail }) {
             })}
           </p>
         </div>
-        <span className="text-xs tabular-nums text-muted-foreground">
-          {t("检测于 ")}
-          {checkedAt ? formatDateTime(checkedAt) : "--"}
-        </span>
+        <div className="flex items-center gap-2">
+          {detail.machine.origin_stale ? (
+            <StatusBadge status="failed" label={t("数据过期")} />
+          ) : null}
+          <span className="text-xs tabular-nums text-muted-foreground">
+            {t("检测于 ")}
+            {checkedAt ? formatDateTime(checkedAt) : "--"}
+          </span>
+        </div>
       </div>
       <OriginConnectionsTable
         probes={probes}

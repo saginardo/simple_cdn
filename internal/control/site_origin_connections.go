@@ -53,12 +53,11 @@ func (s *Server) siteOriginConnections(response http.ResponseWriter, request *ht
 		machine := s.nodeMachineStatus(node, now)
 		item := siteOriginConnectionNode{
 			NodeID: node.ID, NodeName: node.Name, PublicIPv4: node.PublicIPv4, Status: node.Status,
-			Available: machine.Available, UnavailableReason: machine.UnavailableReason, Stale: machine.Stale,
+			Available: machine.Available, UnavailableReason: machine.UnavailableReason, Stale: machine.OriginStale,
 			Probes: make([]domain.OriginProbeStatus, 0),
 		}
 		if machine.Report != nil {
-			collectedAt := machine.Report.CollectedAt.UTC()
-			item.CollectedAt = &collectedAt
+			item.CollectedAt = machine.OriginCollectedAt
 			item.Probes = originProbesForSite(machine.Report.OriginProbes, site.ID)
 		}
 		result.Nodes = append(result.Nodes, item)

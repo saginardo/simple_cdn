@@ -62,8 +62,8 @@ type OriginProbeSample struct {
 	CheckedAt        time.Time `json:"checked_at"`
 }
 
-// OriginProbeStatus is ephemeral edge state. It travels with the real-time
-// machine snapshot and is intentionally not persisted by the control plane.
+// OriginProbeStatus is ephemeral edge state. It is reported independently from
+// the slower host snapshot and is intentionally not persisted by the control plane.
 type OriginProbeStatus struct {
 	PoolID                      string                `json:"pool_id"`
 	Address                     string                `json:"address"`

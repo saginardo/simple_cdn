@@ -8,9 +8,7 @@ export function useMachineStatusStream(nodeId: string, enabled: boolean) {
   useEffect(() => {
     if (!nodeId || !enabled) return;
 
-    const source = new EventSource(
-      `/api/nodes/${encodeURIComponent(nodeId)}/machine-status/events`,
-    );
+    let source: EventSource | undefined;
     const handleStatus = (event: MessageEvent<string>) => {
       try {
         const machine = JSON.parse(event.data) as NodeMachineStatus;
@@ -33,16 +31,40 @@ export function useMachineStatusStream(nodeId: string, enabled: boolean) {
       }
     };
 
-    source.addEventListener("machine-status", handleStatus);
-    return () => {
+    const disconnect = () => {
+      if (!source) return;
       source.removeEventListener("machine-status", handleStatus);
       source.close();
+      source = undefined;
+    };
+    const syncVisibility = () => {
+      if (document.visibilityState !== "visible") {
+        disconnect();
+        return;
+      }
+      if (source) return;
+      source = new EventSource(
+        `/api/nodes/${encodeURIComponent(nodeId)}/machine-status/events`,
+      );
+      source.addEventListener("machine-status", handleStatus);
+    };
+
+    document.addEventListener("visibilitychange", syncVisibility);
+    syncVisibility();
+    return () => {
+      document.removeEventListener("visibilitychange", syncVisibility);
+      disconnect();
     };
   }, [enabled, nodeId, queryClient]);
 }
 
 export function machineStatusTime(status: NodeMachineStatus) {
-  if (!status.report) return undefined;
-  const timestamp = Date.parse(status.report.collected_at);
-  return Number.isFinite(timestamp) ? timestamp : undefined;
+  const timestamps = [
+    status.report?.collected_at,
+    status.network?.collected_at,
+    status.origin_collected_at,
+  ]
+    .map((value) => Date.parse(value ?? ""))
+    .filter(Number.isFinite);
+  return timestamps.length ? Math.max(...timestamps) : undefined;
 }

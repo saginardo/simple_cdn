@@ -133,6 +133,7 @@ const (
 	EdgeCapabilityCacheUsage             = "cache_usage_v1"
 	EdgeCapabilityMachineStatus          = "machine_status_v1"
 	EdgeCapabilityMachineStatusStream    = "machine_status_stream_v1"
+	EdgeCapabilityMachineStatusAdaptive  = "machine_status_adaptive_v1"
 	EdgeCapabilityNginxFragments         = "nginx_fragments_v1"
 	EdgeCapabilityRequestTracing         = "request_tracing_v1"
 	EdgeCapabilityNginxCapacity          = "nginx_capacity_v1"
