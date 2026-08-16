@@ -13,7 +13,7 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useId, useState, type FormEvent } from "react";
-import { useNavigate, useParams } from "react-router";
+import { Link, useNavigate, useParams } from "react-router";
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { CopyButton } from "@/components/copy-button";
@@ -586,7 +586,6 @@ export function SiteDetailPage() {
               {site ? (
                 <SiteOperations
                   site={site}
-                  nodes={nodes.data ?? []}
                   tls={tls.data}
                   publish={publish.data}
                   deletion={deletion.data}
@@ -1784,7 +1783,6 @@ function TCPForwards({
 
 function SiteOperations({
   site,
-  nodes,
   tls,
   publish,
   deletion,
@@ -1796,7 +1794,6 @@ function SiteOperations({
   onDelete,
 }: {
   site: Site;
-  nodes: Node[];
   tls?: TLSStatus;
   publish?: PublishStatus;
   deletion?: PublishStatus;
@@ -1813,23 +1810,13 @@ function SiteOperations({
   const certActive = activeTask(tls?.certificate_task);
   const publishTaskCurrent = taskMatchesCurrentSite(publishTask, site);
   const visiblePublishTask = publishTaskCurrent ? publishTask : undefined;
-  const nodeByID = new Map(nodes.map((node) => [node.id, node]));
   const backupNodeIDs = site.backup_node_ids ?? [];
   const assignedNodeIDs = [...site.node_ids, ...backupNodeIDs];
-  const primaryNodeIDs = new Set(site.node_ids);
-  const assignedNodes = assignedNodeIDs.map((nodeID) => {
-    const node = nodeByID.get(nodeID);
-    return {
-      id: nodeID,
-      name: node?.name || nodeID,
-      publicIPv4: node?.public_ipv4,
-      status: node?.status,
-      role: primaryNodeIDs.has(nodeID) ? t("主节点") : t("备用节点"),
-    };
-  });
-  const assignedPagination = useListPagination(assignedNodes);
-  const publishPagination = useListPagination(operationNodes ?? []);
-  const showPublishTargets = Boolean(
+  const deletionPagination = useListPagination(
+    site.deleting ? (operationNodes ?? []) : [],
+  );
+  const showDeletionTargets = Boolean(
+    site.deleting &&
     publishTaskCurrent &&
     operationNodes?.length &&
     (publishActive ||
@@ -1844,12 +1831,12 @@ function SiteOperations({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>{t("发布与运维")}</CardTitle>
-        <CardDescription>{t("配置保存后需发布到边缘节点")}</CardDescription>
+        <CardTitle>{t("站点操作")}</CardTitle>
+        <CardDescription>{t("发布、证书与站点生命周期")}</CardDescription>
       </CardHeader>
       <CardContent className="grid gap-3">
         <OperationState
-          label={t("发布")}
+          label={site.deleting ? t("安全删除") : t("发布")}
           task={visiblePublishTask}
           fallback={
             site.published
@@ -1874,69 +1861,14 @@ function SiteOperations({
             extra={tls?.published_after_certificate ? t("已部署") : undefined}
           />
         ) : null}
-        <div className="rounded-lg border px-3 py-2">
-          <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <div className="text-sm">{t("节点分配")}</div>
-              <div className="text-xs text-muted-foreground">
-                {site.published ? t("当前承载节点") : t("待发布节点")} ·{" "}
-                {t("{value0} 个主节点，{value1} 个备用节点", {
-                  value0: site.node_ids.length,
-                  value1: backupNodeIDs.length,
-                })}
-              </div>
-            </div>
-            <StatusBadge
-              status={site.published ? "succeeded" : "pending"}
-              label={site.published ? t("已发布") : t("待发布")}
-            />
-          </div>
-          {assignedNodes.length ? (
-            <>
-              <div className="mt-3 max-h-44 overflow-auto rounded-lg border">
-                <Table>
-                  <TableBody>
-                    {assignedPagination.items.map((node) => (
-                      <TableRow key={node.id}>
-                        <TableCell className="text-xs">
-                          <span className="block">{node.name}</span>
-                          {node.publicIPv4 ? (
-                            <span className="font-mono text-muted-foreground">
-                              {node.publicIPv4}
-                            </span>
-                          ) : null}
-                          <span className="block text-muted-foreground">
-                            {node.role}
-                          </span>
-                        </TableCell>
-                        <TableCell className="text-right">
-                          {node.status ? (
-                            <StatusBadge status={node.status} />
-                          ) : (
-                            <span className="text-xs text-muted-foreground">
-                              {t("信息缺失")}
-                            </span>
-                          )}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-              {assignedNodes.length > 20 ? (
-                <ListPagination
-                  pagination={assignedPagination}
-                  itemLabel={t("个节点")}
-                  className="border-x border-b"
-                />
-              ) : null}
-            </>
-          ) : (
-            <p className="mt-3 text-xs text-muted-foreground">
-              {t("当前配置未分配边缘节点")}
-            </p>
-          )}
-        </div>
+        {!site.deleting ? (
+          <Button asChild type="button" variant="outline">
+            <Link to={`/publish?site_id=${encodeURIComponent(site.id)}`}>
+              <ArrowRight />
+              {t("查看发布详情")}
+            </Link>
+          </Button>
+        ) : null}
         <Button
           type="button"
           disabled={site.deleting || pending || publishActive}
@@ -1985,15 +1917,15 @@ function SiteOperations({
           <ShieldCheck />
           {t("源站白名单")}
         </Button>
-        {showPublishTargets ? (
+        {showDeletionTargets ? (
           <div className="overflow-hidden rounded-lg border">
             <div className="border-b px-3 py-2 text-xs text-muted-foreground">
-              {site.deleting ? t("本次删除涉及节点") : t("本次发布涉及节点")}
+              {t("本次删除涉及节点")}
             </div>
             <div className="max-h-44 overflow-auto">
               <Table>
                 <TableBody>
-                  {publishPagination.items.map((node) => (
+                  {deletionPagination.items.map((node) => (
                     <TableRow key={node.node_id}>
                       <TableCell className="text-xs">
                         {node.node_name || node.node_id}
@@ -2007,7 +1939,7 @@ function SiteOperations({
               </Table>
             </div>
             <ListPagination
-              pagination={publishPagination}
+              pagination={deletionPagination}
               itemLabel={t("个节点")}
             />
           </div>

@@ -36,6 +36,7 @@ const pageNames: Record<string, string> = {
   wireguard: "隧道",
   nodes: "节点",
   sites: "站点",
+  publish: "发布",
   certificates: "证书",
   settings: "设置",
 };

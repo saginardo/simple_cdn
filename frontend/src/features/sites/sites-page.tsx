@@ -22,10 +22,9 @@ import {
 } from "@/components/ui/table";
 import { api } from "@/lib/api";
 import { formatDateTime, formatNumber } from "@/lib/format";
-import type { PublishStatus, Site } from "@/lib/types";
+import type { Site } from "@/lib/types";
 import { useListPagination } from "@/hooks/use-list-pagination";
 import { t, useI18n } from "@/lib/i18n";
-import { activeTask, taskMatchesCurrentSite } from "./publish-status";
 export function SitesPage() {
   useI18n();
   const query = useQuery({
@@ -38,7 +37,7 @@ export function SitesPage() {
     <>
       <PageHeader
         title={t("站点")}
-        description={t("域名、源站、边缘节点与发布状态")}
+        description={t("域名、源站、边缘节点与配置状态")}
         actions={
           <Button asChild>
             <Link to="/sites/new">
@@ -61,7 +60,7 @@ export function SitesPage() {
                     <TableHead>{t("回源类型")}</TableHead>
                     <TableHead>{t("节点")}</TableHead>
                     <TableHead>{t("版本")}</TableHead>
-                    <TableHead>{t("发布状态")}</TableHead>
+                    <TableHead>{t("配置状态")}</TableHead>
                     <TableHead>{t("更新时间")}</TableHead>
                     <TableHead className="w-12 pr-5">
                       <span className="sr-only">{t("管理")}</span>
@@ -143,27 +142,20 @@ export function SitesPage() {
   );
 }
 function SiteStatus({ site }: { site: Site }) {
-  const encodedID = encodeURIComponent(site.id);
-  const publish = useQuery({
-    queryKey: ["site-publish", site.id],
-    queryFn: () => api<PublishStatus>(`/api/sites/${encodedID}/publish-status`),
-    enabled: !site.deleting,
-    refetchInterval: (query) =>
-      activeTask(query.state.data?.task) ? 2_000 : 20_000,
-  });
   if (site.deleting)
     return <StatusBadge status="applying" label={t("删除中")} />;
   if (!site.enabled)
     return <StatusBadge status="pending" label={t("已停用")} />;
-  const task = publish.data?.task;
-  const publishTask = taskMatchesCurrentSite(task, site) ? task : undefined;
   return (
-    <StatusBadge
-      status={publishTask?.status ?? (site.published ? "succeeded" : "pending")}
-      label={
-        publishTask ? undefined : site.published ? t("已发布") : t("待发布")
-      }
-    />
+    <Link
+      to={`/publish?site_id=${encodeURIComponent(site.id)}`}
+      aria-label={t("查看 {value0} 发布详情", { value0: site.name })}
+    >
+      <StatusBadge
+        status={site.published ? "succeeded" : "pending"}
+        label={site.published ? t("已发布") : t("待发布")}
+      />
+    </Link>
   );
 }
 function siteOriginType(site: Site) {

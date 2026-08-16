@@ -6,6 +6,7 @@ import {
   LayoutDashboard,
   LogOut,
   Network,
+  Rocket,
   Route,
   ScrollText,
   Server,
@@ -46,6 +47,7 @@ const groups = [
     items: [
       { label: "节点", to: "/nodes", icon: Server },
       { label: "站点", to: "/sites", icon: Waypoints },
+      { label: "发布", to: "/publish", icon: Rocket },
       { label: "资源", to: "/static-assets", icon: Files },
       { label: "缓存", to: "/cache", icon: DatabaseZap },
       { label: "监测", to: "/monitoring", icon: Activity },

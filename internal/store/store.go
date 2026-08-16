@@ -2422,6 +2422,22 @@ func (s *Store) ReconcilePublishTasks() error {
 			return err
 		}
 	}
+	latestClosed, err := s.publishTasks(`SELECT id, kind, site_id, status, detail, deadline_at, created_at, updated_at
+		FROM deployment_tasks AS task
+		WHERE task.kind = 'publish_site' AND task.status IN (?, ?)
+		AND NOT EXISTS (
+			SELECT 1 FROM deployment_tasks AS newer
+			WHERE newer.site_id = task.site_id AND newer.kind = 'publish_site'
+			AND (newer.created_at > task.created_at OR (newer.created_at = task.created_at AND newer.id > task.id))
+		)`, domain.TaskPartial, domain.TaskFailed)
+	if err != nil {
+		return err
+	}
+	for _, task := range latestClosed {
+		if _, err := s.reconcileLatePublishConfirmations(task); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -2547,17 +2563,88 @@ func (s *Store) PublishStatus(siteID string) (domain.PublishStatus, error) {
 	if err != nil {
 		return domain.PublishStatus{}, err
 	}
-	reconciled, err := s.reconcileLatePublishConfirmations(task)
-	if err != nil {
-		return domain.PublishStatus{}, err
-	}
-	if reconciled {
-		task, err = s.GetTask(task.ID)
-		if err != nil {
-			return domain.PublishStatus{}, err
-		}
-	}
 	return s.deploymentStatus(task)
+}
+
+// PublishStatuses returns the latest task for every site together with recent
+// publish history. It reconciles active and late edge confirmations once so a
+// workspace poll observes the same state across both result sets.
+func (s *Store) PublishStatuses(historyLimit int) ([]domain.PublishStatus, []domain.PublishStatus, error) {
+	if historyLimit < 1 {
+		historyLimit = 50
+	}
+	if historyLimit > 200 {
+		historyLimit = 200
+	}
+	if err := s.ReconcilePublishTasks(); err != nil {
+		return nil, nil, err
+	}
+
+	latestTasks, err := s.publishTasks(`SELECT id, kind, site_id, status, detail, deadline_at, created_at, updated_at
+		FROM deployment_tasks AS task
+		WHERE task.kind = 'publish_site'
+		AND NOT EXISTS (
+			SELECT 1 FROM deployment_tasks AS newer
+			WHERE newer.site_id = task.site_id AND newer.kind = 'publish_site'
+			AND (newer.created_at > task.created_at OR (newer.created_at = task.created_at AND newer.id > task.id))
+		)
+		ORDER BY task.updated_at DESC`)
+	if err != nil {
+		return nil, nil, err
+	}
+	recentTasks, err := s.publishTasks(`SELECT id, kind, site_id, status, detail, deadline_at, created_at, updated_at
+		FROM deployment_tasks
+		WHERE kind = 'publish_site'
+		ORDER BY created_at DESC, id DESC
+		LIMIT ?`, historyLimit)
+	if err != nil {
+		return nil, nil, err
+	}
+	latest, err := s.deploymentStatuses(latestTasks)
+	if err != nil {
+		return nil, nil, err
+	}
+	recent, err := s.deploymentStatuses(recentTasks)
+	if err != nil {
+		return nil, nil, err
+	}
+	return latest, recent, nil
+}
+
+func (s *Store) publishTasks(query string, args ...any) ([]domain.DeploymentTask, error) {
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	tasks := make([]domain.DeploymentTask, 0)
+	for rows.Next() {
+		task, err := scanTask(rows)
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
+		tasks = append(tasks, task)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	return tasks, nil
+}
+
+func (s *Store) deploymentStatuses(tasks []domain.DeploymentTask) ([]domain.PublishStatus, error) {
+	statuses := make([]domain.PublishStatus, 0, len(tasks))
+	for _, task := range tasks {
+		status, err := s.deploymentStatus(task)
+		if err != nil {
+			return nil, err
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses, nil
 }
 
 // HasSuccessfulPublishAfter reports whether a successful publication completed

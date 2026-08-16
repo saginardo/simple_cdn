@@ -29,10 +29,91 @@ type Publisher struct {
 
 var desiredStateMu sync.Mutex
 
+var (
+	errPublishRetryNotReady    = errors.New("latest publish has no failed active edge nodes to retry")
+	errPublishRetryUnpublished = errors.New("site has unpublished changes; publish the current configuration instead")
+)
+
 func (p Publisher) PublishSite(siteID string) (domain.DeploymentTask, error) {
 	desiredStateMu.Lock()
 	defer desiredStateMu.Unlock()
 	return p.publishSiteLocked(siteID)
+}
+
+// RetryFailedPublish creates a new confirmation task for only the nodes that
+// failed the latest publish. Their current desired-state version is reused, so
+// a retry never republishes an obsolete node target.
+func (p Publisher) RetryFailedPublish(siteID string) (domain.DeploymentTask, error) {
+	if p.Store == nil {
+		return domain.DeploymentTask{}, errors.New("publisher is not configured")
+	}
+	desiredStateMu.Lock()
+	defer desiredStateMu.Unlock()
+
+	site, _, err := p.Store.GetSite(siteID)
+	if err != nil {
+		return domain.DeploymentTask{}, err
+	}
+	if site.Deleting {
+		return domain.DeploymentTask{}, store.ErrSiteDeleting
+	}
+	if !site.Published {
+		return domain.DeploymentTask{}, errPublishRetryUnpublished
+	}
+	status, err := p.Store.PublishStatus(siteID)
+	if err != nil {
+		return domain.DeploymentTask{}, err
+	}
+	if status.Task == nil || (status.Task.Status != domain.TaskPartial && status.Task.Status != domain.TaskFailed) {
+		return domain.DeploymentTask{}, errPublishRetryNotReady
+	}
+
+	targets := make([]store.PublishTaskNode, 0, len(status.Nodes))
+	nodeIDs := make([]string, 0, len(status.Nodes))
+	for _, result := range status.Nodes {
+		if result.Status != domain.PublishNodeFailed && result.Status != domain.PublishNodeTimedOut {
+			continue
+		}
+		node, err := p.Store.GetNode(result.NodeID)
+		if err != nil {
+			return domain.DeploymentTask{}, err
+		}
+		if node.Status != domain.NodeActive {
+			continue
+		}
+		version, err := p.Store.DesiredVersion(node.ID)
+		if err != nil {
+			return domain.DeploymentTask{}, err
+		}
+		if version < 1 || node.AppliedVersion >= version {
+			continue
+		}
+		targets = append(targets, store.PublishTaskNode{NodeID: node.ID, TargetVersion: version})
+		nodeIDs = append(nodeIDs, node.ID)
+	}
+	if len(targets) == 0 {
+		return domain.DeploymentTask{}, errPublishRetryNotReady
+	}
+	if err := p.Store.EnsureNodesNotUpgrading(nodeIDs); err != nil {
+		return domain.DeploymentTask{}, err
+	}
+
+	deadline := time.Now().UTC().Add(90 * time.Second)
+	task, created, err := p.Store.CreateOrGetActivePublishTask(siteID, deadline)
+	if err != nil {
+		return domain.DeploymentTask{}, err
+	}
+	if !created {
+		return task, nil
+	}
+	if err := p.Store.UpdateTask(task.ID, domain.TaskApplying, "retrying failed edge confirmations"); err != nil {
+		return task, err
+	}
+	if err := p.Store.CreatePublishTaskNodes(task.ID, targets); err != nil {
+		_ = p.Store.UpdateTask(task.ID, domain.TaskFailed, err.Error())
+		return task, err
+	}
+	return p.Store.GetTask(task.ID)
 }
 
 func (p Publisher) publishSiteLocked(siteID string) (domain.DeploymentTask, error) {

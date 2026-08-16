@@ -546,6 +546,10 @@ func TestPartialPublishRecoversLateAppliedVersionWithoutRepublish(t *testing.T) 
 	if err := store.Heartbeat(lateNode.ID, 3, "", report); err != nil {
 		t.Fatal(err)
 	}
+	reconciledTask, err := store.GetTask(task.ID)
+	if err != nil || reconciledTask.Status != domain.TaskSucceeded {
+		t.Fatalf("heartbeat did not reconcile the late confirmation: %#v, %v", reconciledTask, err)
+	}
 	status, err = store.PublishStatus("site")
 	if err != nil {
 		t.Fatal(err)
