@@ -2475,6 +2475,11 @@ func (s *Store) reconcilePublishTask(taskID string, deadline sql.NullString) err
 		failed += pending
 		pending = 0
 	}
+	status, detail := publishTaskOutcome(total, succeeded, failed)
+	return s.UpdateTask(taskID, status, detail)
+}
+
+func publishTaskOutcome(total, succeeded, failed int) (domain.TaskStatus, string) {
 	status := domain.TaskFailed
 	detail := fmt.Sprintf("%d edge node(s) did not apply the configuration", failed)
 	if succeeded == total {
@@ -2484,7 +2489,51 @@ func (s *Store) reconcilePublishTask(taskID string, deadline sql.NullString) err
 		status = domain.TaskPartial
 		detail = fmt.Sprintf("configuration applied by %d of %d active edge node(s)", succeeded, total)
 	}
-	return s.UpdateTask(taskID, status, detail)
+	return status, detail
+}
+
+// reconcileLatePublishConfirmations repairs the latest publish task outcome
+// when an edge applies its target after the publish task has already closed.
+// Older tasks stay immutable once a newer publish supersedes them.
+func (s *Store) reconcileLatePublishConfirmations(task domain.DeploymentTask) (bool, error) {
+	if task.Kind != "publish_site" || (task.Status != domain.TaskPartial && task.Status != domain.TaskFailed) {
+		return false, nil
+	}
+	result, err := s.db.Exec(`UPDATE publish_task_nodes
+		SET status = ?, error_code = '', detail = 'edge confirmed applied version after publish completion',
+			port_conflicts_json = '[]', reported_at = ?
+		WHERE task_id = ? AND status IN (?, ?)
+		  AND task_id = (SELECT id FROM deployment_tasks
+			WHERE site_id = ? AND kind = 'publish_site' ORDER BY created_at DESC LIMIT 1)
+		  AND EXISTS (SELECT 1 FROM nodes
+			WHERE nodes.id = publish_task_nodes.node_id
+			  AND nodes.applied_version >= publish_task_nodes.target_version)`,
+		domain.PublishNodeSucceeded, stamp(now()), task.ID, domain.PublishNodeFailed, domain.PublishNodeTimedOut, task.SiteID)
+	if err != nil {
+		return false, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	var total, pending, succeeded, failed int
+	if err := s.db.QueryRow(`SELECT COUNT(*),
+		COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN status IN (?, ?) THEN 1 ELSE 0 END), 0)
+		FROM publish_task_nodes WHERE task_id = ?`,
+		domain.PublishNodePending, domain.PublishNodeSucceeded, domain.PublishNodeFailed,
+		domain.PublishNodeTimedOut, task.ID).Scan(&total, &pending, &succeeded, &failed); err != nil {
+		return false, err
+	}
+	if total == 0 || pending > 0 {
+		return false, nil
+	}
+	status, detail := publishTaskOutcome(total, succeeded, failed)
+	if changed == 0 && task.Status == status && task.Detail == detail {
+		return false, nil
+	}
+	return true, s.UpdateTask(task.ID, status, detail)
 }
 
 func (s *Store) PublishStatus(siteID string) (domain.PublishStatus, error) {
@@ -2497,6 +2546,16 @@ func (s *Store) PublishStatus(siteID string) (domain.PublishStatus, error) {
 	}
 	if err != nil {
 		return domain.PublishStatus{}, err
+	}
+	reconciled, err := s.reconcileLatePublishConfirmations(task)
+	if err != nil {
+		return domain.PublishStatus{}, err
+	}
+	if reconciled {
+		task, err = s.GetTask(task.ID)
+		if err != nil {
+			return domain.PublishStatus{}, err
+		}
 	}
 	return s.deploymentStatus(task)
 }

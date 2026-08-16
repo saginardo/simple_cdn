@@ -84,7 +84,11 @@ import type {
   WireGuardTunnel,
 } from "@/lib/types";
 import { t, useI18n } from "@/lib/i18n";
-import { activeTask, taskMatchesCurrentSite } from "./publish-status";
+import {
+  activeTask,
+  shouldPollPublishStatusFast,
+  taskMatchesCurrentSite,
+} from "./publish-status";
 interface SiteDraft {
   name: string;
   domains: string;
@@ -197,7 +201,7 @@ export function SiteDetailPage() {
     queryFn: () => api<PublishStatus>(`/api/sites/${encodedID}/publish-status`),
     enabled: !isNew && Boolean(site),
     refetchInterval: (query) =>
-      activeTask(query.state.data?.task) ? 2_000 : 20_000,
+      shouldPollPublishStatusFast(query.state.data) ? 2_000 : 20_000,
   });
   const deletion = useQuery({
     queryKey: ["site-deletion", siteId],

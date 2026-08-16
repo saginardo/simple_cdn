@@ -503,6 +503,109 @@ func TestPublishTaskTimesOutUnconfirmedNodes(t *testing.T) {
 	}
 }
 
+func TestPartialPublishRecoversLateAppliedVersionWithoutRepublish(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	confirmedNode, err := store.CreateNode("edge-1", "203.0.113.10")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lateNode, err := store.CreateNode("edge-2", "203.0.113.11")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, created, err := store.CreateOrGetActivePublishTask("site", time.Now().Add(-time.Second))
+	if err != nil || !created {
+		t.Fatalf("create publish task: %#v %t %v", task, created, err)
+	}
+	if err := store.UpdateTask(task.ID, domain.TaskApplying, "waiting for edge"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreatePublishTaskNodes(task.ID, []PublishTaskNode{
+		{NodeID: confirmedNode.ID, TargetVersion: 3},
+		{NodeID: lateNode.ID, TargetVersion: 3},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	report := &domain.ApplyReport{Version: 3, Status: domain.ApplySucceeded, Detail: "Nginx is listening on TCP 80 and TCP 443"}
+	if err := store.Heartbeat(confirmedNode.ID, 3, "", report); err != nil {
+		t.Fatal(err)
+	}
+	status, err := store.PublishStatus("site")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Task == nil || status.Task.Status != domain.TaskPartial || len(status.Nodes) != 2 ||
+		status.Nodes[0].Status != domain.PublishNodeSucceeded || status.Nodes[1].Status != domain.PublishNodeTimedOut {
+		t.Fatalf("expected initial partial result: %#v", status)
+	}
+
+	if err := store.Heartbeat(lateNode.ID, 3, "", report); err != nil {
+		t.Fatal(err)
+	}
+	status, err = store.PublishStatus("site")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Task == nil || status.Task.Status != domain.TaskSucceeded || len(status.Nodes) != 2 {
+		t.Fatalf("late confirmation did not recover publish task: %#v", status)
+	}
+	if status.Nodes[1].Status != domain.PublishNodeSucceeded || status.Nodes[1].ErrorCode != "" || status.Nodes[1].ReportedAt == nil {
+		t.Fatalf("late node result was not reconciled: %#v", status.Nodes[1])
+	}
+}
+
+func TestLateConfirmationDoesNotRewriteSupersededPublishTask(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	node, err := store.CreateNode("edge-1", "203.0.113.10")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldTask, created, err := store.CreateOrGetActivePublishTask("site", time.Now().Add(-time.Second))
+	if err != nil || !created {
+		t.Fatalf("create old publish task: %#v %t %v", oldTask, created, err)
+	}
+	if err := store.UpdateTask(oldTask.ID, domain.TaskApplying, "waiting for edge"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreatePublishTaskNodes(oldTask.ID, []PublishTaskNode{{NodeID: node.ID, TargetVersion: 3}}); err != nil {
+		t.Fatal(err)
+	}
+	oldStatus, err := store.PublishStatus("site")
+	if err != nil || oldStatus.Task == nil || oldStatus.Task.Status != domain.TaskFailed {
+		t.Fatalf("expected old task to time out: %#v, %v", oldStatus, err)
+	}
+
+	newTask, created, err := store.CreateOrGetActivePublishTask("site", time.Now().Add(time.Minute))
+	if err != nil || !created {
+		t.Fatalf("create replacement publish task: %#v %t %v", newTask, created, err)
+	}
+	if err := store.UpdateTask(newTask.ID, domain.TaskApplying, "waiting for edge"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreatePublishTaskNodes(newTask.ID, []PublishTaskNode{{NodeID: node.ID, TargetVersion: 4}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Heartbeat(node.ID, 3, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	reconciled, err := store.reconcileLatePublishConfirmations(*oldStatus.Task)
+	if err != nil || reconciled {
+		t.Fatalf("superseded task reconciliation = %t, %v", reconciled, err)
+	}
+	unchanged, err := store.GetTask(oldTask.ID)
+	if err != nil || unchanged.Status != domain.TaskFailed {
+		t.Fatalf("superseded task was rewritten: %#v, %v", unchanged, err)
+	}
+}
+
 func TestPublishApplyReportConfirmsAnOlderTargetVersion(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "control.db"))
 	if err != nil {
