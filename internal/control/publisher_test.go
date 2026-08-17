@@ -2,6 +2,7 @@ package control
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -507,8 +508,9 @@ func TestPublishTCPOnlySiteBuildsStreamStateWithoutHTTPPorts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(oldState.PublicPorts) != 0 || strings.Contains(oldState.NginxConfig, "listen 80") || strings.Contains(oldState.NginxConfig, "listen 443") {
-		t.Fatalf("former TCP-only node reopened HTTP ports: %#v\n%s", oldState.PublicPorts, oldState.NginxConfig)
+	if !slices.Equal(oldState.PublicPorts, []int{2525}) || !strings.Contains(oldState.NginxStreamConfig, "listen 2525;") ||
+		strings.Contains(oldState.NginxConfig, "listen 80") || strings.Contains(oldState.NginxConfig, "listen 443") {
+		t.Fatalf("former TCP-only node did not retain its drain listener: %#v\n%s", oldState.PublicPorts, oldState.NginxStreamConfig)
 	}
 }
 
@@ -849,14 +851,21 @@ func TestPublishUpdatesOldAndNewNodesButNotUnrelatedNodes(t *testing.T) {
 		t.Fatal(err)
 	}
 	if status.Task == nil || status.Task.Status != domain.TaskApplying || len(status.Nodes) != 2 {
-		t.Fatalf("publish did not wait for both old and new active nodes: %#v", status)
+		t.Fatalf("publish did not target converging old/new active nodes while retaining the old drain: %#v", status)
 	}
 	oldState, _, err := database.NodeState(oldNode.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if nginx.HasSiteHealth(oldState.NginxConfig, movingSite.ID) {
-		t.Fatalf("old node retained moving site:\n%s", oldState.NginxConfig)
+	if !nginx.HasSiteHealth(oldState.NginxConfig, movingSite.ID) {
+		t.Fatalf("old node lost moving site before DNS TTL drain:\n%s", oldState.NginxConfig)
+	}
+	drains, err := database.ListSiteNodeDrainsForSite(movingSite.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(drains) != 1 || drains[0].NodeID != oldNode.ID || drains[0].DNSReadyAt != nil || drains[0].RemoveAfter != nil {
+		t.Fatalf("unexpected pending node drain: %#v", drains)
 	}
 	newState, _, err := database.NodeState(newNode.ID)
 	if err != nil {
@@ -864,6 +873,30 @@ func TestPublishUpdatesOldAndNewNodesButNotUnrelatedNodes(t *testing.T) {
 	}
 	if !nginx.HasSiteHealth(newState.NginxConfig, movingSite.ID) {
 		t.Fatalf("new node did not receive moving site:\n%s", newState.NginxConfig)
+	}
+	if err := database.Heartbeat(newNode.ID, newState.Version, "", &domain.ApplyReport{Version: newState.Version, Status: domain.ApplySucceeded}); err != nil {
+		t.Fatal(err)
+	}
+	markDrainNodeHealthy(t, database, movingSite.ID, newNode.ID)
+	publication, err := database.SitePublication(movingSite.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodes, err := database.ListNodes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dns := &MemoryDNS{}
+	manager := HealthManager{Server: &Server{Store: database, DNS: dns, Publisher: publisher}}
+	if err := manager.reconcileSiteDNS(context.Background(), publication.Site, nodes); err != nil {
+		t.Fatal(err)
+	}
+	drains, err = database.ListSiteNodeDrainsForSite(movingSite.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dns.Zones[publication.Site.ZoneID]) != 0 || len(drains) != 1 || drains[0].DNSReadyAt != nil {
+		t.Fatalf("DNS cut over before the old drain target confirmed: records=%#v drains=%#v", dns.Zones, drains)
 	}
 	unrelatedAfter, unrelatedCertificatesAfter, err := database.NodeState(unrelatedNode.ID)
 	if err != nil {

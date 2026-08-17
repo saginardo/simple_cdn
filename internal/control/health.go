@@ -52,6 +52,7 @@ const (
 	defaultHealthInterval     = 15 * time.Second
 	defaultHealthDeepInterval = 60 * time.Second
 	availabilityAlertCooldown = 5 * time.Minute
+	siteNodeDrainGrace        = 5 * time.Minute
 )
 
 func (m *HealthManager) Run(ctx context.Context) {
@@ -158,14 +159,19 @@ func (m *HealthManager) reconcile(ctx context.Context, deepProbe bool) error {
 		return finish()
 	}
 	draftsByID := make(map[string]domain.Site, len(drafts))
-	publishedByID := make(map[string]bool, len(publications))
+	publishedByID := make(map[string]store.SitePublication, len(publications))
 	for _, publication := range publications {
-		publishedByID[publication.Site.ID] = true
+		publishedByID[publication.Site.ID] = publication
 	}
 	for _, draft := range drafts {
 		draftsByID[draft.ID] = draft
-		if draft.Deleting || (!draft.Enabled && !publishedByID[draft.ID]) {
-			if err := m.clearSiteDNS(roundCtx, draft); err != nil {
+		_, hasPublished := publishedByID[draft.ID]
+		if draft.Deleting || (!draft.Enabled && !hasPublished) {
+			var publication *store.SitePublication
+			if value, found := publishedByID[draft.ID]; found {
+				publication = &value
+			}
+			if err := m.clearSiteDNS(roundCtx, draft, publication); err != nil {
 				errorsFound = append(errorsFound, err)
 				continue
 			}
@@ -178,14 +184,14 @@ func (m *HealthManager) reconcile(ctx context.Context, deepProbe bool) error {
 			continue
 		}
 		if !site.Enabled {
-			if err := m.clearSiteDNS(roundCtx, site); err != nil {
+			if err := m.clearSiteDNS(roundCtx, site, &publication); err != nil {
 				errorsFound = append(errorsFound, err)
 				continue
 			}
 			m.clearNoHealthyAlert(site.ID)
 			continue
 		}
-		outcome, err := m.reconcileSiteDNSOutcome(roundCtx, site, nodes)
+		outcome, err := m.reconcileSiteDNSOutcomeForPublication(roundCtx, publication, nodes)
 		if err != nil {
 			errorsFound = append(errorsFound, err)
 			continue
@@ -199,6 +205,11 @@ func (m *HealthManager) reconcile(ctx context.Context, deepProbe bool) error {
 	} else {
 		for _, site := range noHealthySites {
 			m.markNoHealthyAlert(site.ID)
+		}
+	}
+	if m.Server.Publisher.Store != nil && m.Server.Publisher.Cipher != nil {
+		if err := m.Server.Publisher.ReconcileDrains(); err != nil {
+			errorsFound = append(errorsFound, fmt.Errorf("reconcile site node drains: %w", err))
 		}
 	}
 	if errors.Is(roundCtx.Err(), context.DeadlineExceeded) {
@@ -567,12 +578,26 @@ func (m *HealthManager) LastRound() HealthRoundStatus {
 	return m.lastRound
 }
 
-func (m *HealthManager) clearSiteDNS(ctx context.Context, site domain.Site) error {
+func (m *HealthManager) clearSiteDNS(ctx context.Context, site domain.Site, publication *store.SitePublication) error {
 	if err := ctx.Err(); err != nil {
 		return context.Cause(ctx)
 	}
+	if publication != nil && !publication.PublishedAt.IsZero() {
+		current, err := m.Server.Store.SitePublicationCurrent(publication.Site.ID, publication.PublishedAt)
+		if err != nil {
+			return err
+		}
+		if !current {
+			return nil
+		}
+	}
 	if err := m.Server.DNS.Reconcile(ctx, site.ZoneID, "site="+site.ID, nil); err != nil {
 		return fmt.Errorf("remove DNS for disabled site %s: %w", site.Name, err)
+	}
+	if publication != nil {
+		if err := m.markSiteNodeDrainsDNSReady(*publication, m.dnsTTL(site)); err != nil {
+			return fmt.Errorf("start DNS drain timer for %s: %w", site.Name, err)
+		}
 	}
 	return nil
 }
@@ -584,7 +609,18 @@ func (m *HealthManager) reconcileSite(ctx context.Context, site domain.Site, nod
 }
 
 func (m *HealthManager) reconcileSiteDNS(ctx context.Context, site domain.Site, nodes []domain.Node) error {
-	outcome, err := m.reconcileSiteDNSOutcome(ctx, site, nodes)
+	// Targeted probes historically accept a caller-provided site value (some
+	// callers use it to test draft health changes). Borrow only the current
+	// publication token so drain timers still use generation checks without
+	// replacing that caller-provided DNS view.
+	publication := store.SitePublication{Site: site}
+	if current, err := m.Server.Store.SitePublication(site.ID); err == nil {
+		publication.PublishedAt = current.PublishedAt
+		publication.DNSTTLSeconds = current.DNSTTLSeconds
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return err
+	}
+	outcome, err := m.reconcileSiteDNSOutcomeForPublication(ctx, publication, nodes)
 	if err != nil {
 		return err
 	}
@@ -608,9 +644,43 @@ type siteNodePool struct {
 }
 
 func (m *HealthManager) reconcileSiteDNSOutcome(ctx context.Context, site domain.Site, nodes []domain.Node) (siteDNSOutcome, error) {
+	return m.reconcileSiteDNSOutcomeForPublication(ctx, store.SitePublication{Site: site}, nodes)
+}
+
+func (m *HealthManager) reconcileSiteDNSOutcomeForPublication(ctx context.Context, publication store.SitePublication, nodes []domain.Node) (siteDNSOutcome, error) {
+	site := publication.Site
 	outcome := siteDNSOutcome{}
 	if err := ctx.Err(); err != nil {
 		return outcome, context.Cause(ctx)
+	}
+	if !publication.PublishedAt.IsZero() {
+		current, err := m.Server.Store.SitePublicationCurrent(site.ID, publication.PublishedAt)
+		if err != nil {
+			return outcome, err
+		}
+		if !current {
+			// The caller may have loaded this snapshot before a newer publication
+			// committed. It must not write DNS or start a drain timer for stale data.
+			m.clearNoHealthyAlert(site.ID)
+			return outcome, nil
+		}
+	}
+	if _, err := m.Server.Store.ActivePublishTask(site.ID); err == nil {
+		// A node removed from the assignment can still be a publish target while
+		// its retained drain snapshot is converging. Do not cut DNS over until
+		// every active old/new target has confirmed the publication.
+		m.clearNoHealthyAlert(site.ID)
+		return outcome, nil
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return outcome, err
+	}
+	convergingDrains, err := m.Server.Store.SiteNodeDrainsConverging(site.ID)
+	if err != nil {
+		return outcome, err
+	}
+	if convergingDrains {
+		m.clearNoHealthyAlert(site.ID)
+		return outcome, nil
 	}
 	nodesByID := make(map[string]domain.Node, len(nodes))
 	for _, node := range nodes {
@@ -640,7 +710,11 @@ func (m *HealthManager) reconcileSiteDNSOutcome(ctx context.Context, site domain
 	}
 	if len(healthy) == 0 {
 		if activeAssigned == 0 {
-			if err := m.clearSiteDNS(ctx, site); err != nil {
+			var published *store.SitePublication
+			if !publication.PublishedAt.IsZero() {
+				published = &publication
+			}
+			if err := m.clearSiteDNS(ctx, site, published); err != nil {
 				return outcome, err
 			}
 			m.clearNoHealthyAlert(site.ID)
@@ -658,12 +732,7 @@ func (m *HealthManager) reconcileSiteDNSOutcome(ctx context.Context, site domain
 		}
 	}
 	desired := make([]integrations.DNSRecord, 0, (len(healthy)+len(healthyIPv6))*len(site.Domains))
-	ttl := domain.DefaultDNSTTLSeconds
-	if m.Server.Settings != nil {
-		ttl = m.Server.Settings.DNSTTL(site)
-	} else if site.DNSTTLSeconds != nil {
-		ttl = *site.DNSTTLSeconds
-	}
+	ttl := m.dnsTTL(site)
 	for _, node := range healthy {
 		for _, domainName := range site.Domains {
 			desired = append(desired, integrations.DNSRecord{
@@ -686,7 +755,64 @@ func (m *HealthManager) reconcileSiteDNSOutcome(ctx context.Context, site domain
 	if err := m.Server.DNS.Reconcile(ctx, site.ZoneID, "site="+site.ID, desired); err != nil {
 		return outcome, fmt.Errorf("reconcile DNS for %s: %w", site.Name, err)
 	}
+	// The provider call is the cutover point. Starting the timer earlier would
+	// let a slow/failed DNS update remove the old certificate too soon.
+	if err := m.markSiteNodeDrainsDNSReady(publication, ttl); err != nil {
+		return outcome, fmt.Errorf("start DNS drain timer for %s: %w", site.Name, err)
+	}
 	return outcome, nil
+}
+
+func (m *HealthManager) dnsTTL(site domain.Site) int {
+	if m.Server != nil && m.Server.Settings != nil {
+		return m.Server.Settings.DNSTTL(site)
+	}
+	if site.DNSTTLSeconds != nil && *site.DNSTTLSeconds > 0 {
+		return *site.DNSTTLSeconds
+	}
+	return domain.DefaultDNSTTLSeconds
+}
+
+func (m *HealthManager) drainTTL(publication store.SitePublication, current int) (int, error) {
+	site := publication.Site
+	if current < 1 {
+		current = domain.DefaultDNSTTLSeconds
+	}
+	if publication.DNSTTLSeconds > current {
+		current = publication.DNSTTLSeconds
+	}
+	drains, err := m.Server.Store.ListSiteNodeDrainsForSite(site.ID)
+	if err != nil {
+		return 0, fmt.Errorf("read pending DNS drains for %s: %w", site.Name, err)
+	}
+	for _, drain := range drains {
+		if drain.DNSTTLSeconds > current {
+			current = drain.DNSTTLSeconds
+		}
+		if drain.Site.DNSTTLSeconds != nil && *drain.Site.DNSTTLSeconds > current {
+			current = *drain.Site.DNSTTLSeconds
+		}
+	}
+	return current, nil
+}
+
+func (m *HealthManager) markSiteNodeDrainsDNSReady(publication store.SitePublication, providerTTL int) error {
+	if publication.PublishedAt.IsZero() {
+		return nil
+	}
+	drainTTL, err := m.drainTTL(publication, providerTTL)
+	if err != nil {
+		return err
+	}
+	if _, matched, err := m.Server.Store.MarkSiteNodeDrainsDNSReadyForPublication(publication.Site.ID, publication.PublishedAt, time.Now().UTC(), providerTTL, drainTTL, siteNodeDrainGrace); err != nil {
+		return err
+	} else if !matched {
+		// A newer publication won the race while the provider call was in
+		// flight. Leave all drains pending; the next health round will reconcile
+		// DNS from the newer snapshot before starting their timers.
+		return nil
+	}
+	return nil
 }
 
 func (m *HealthManager) siteIPv6Nodes(site domain.Site, nodesByID map[string]domain.Node) ([]domain.Node, error) {

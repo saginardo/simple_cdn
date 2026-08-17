@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"simple_cdn/internal/domain"
@@ -18,17 +19,38 @@ type SitePublication struct {
 	CertificateCiphertext []byte
 	KeyCiphertext         []byte
 	CertificateNotAfter   *time.Time
-	PublishedAt           time.Time
+	// DNSTTLSeconds is the effective TTL accepted by the provider on the most
+	// recent successful DNS reconciliation. Zero means it has not been
+	// observed yet (for example, on a pre-migration snapshot).
+	DNSTTLSeconds int
+	PublishedAt   time.Time
 }
 
 func (s *Store) SitePublication(siteID string) (SitePublication, error) {
 	return scanSitePublication(s.db.QueryRow(`SELECT site_json, certificate_ciphertext, private_key_ciphertext,
-		certificate_not_after, published_at FROM site_publications WHERE site_id = ?`, siteID))
+		certificate_not_after, dns_ttl_seconds, published_at FROM site_publications WHERE site_id = ?`, siteID))
+}
+
+// SitePublicationCurrent verifies that a previously loaded publication is
+// still the active generation. The timestamp is used as an immutable token so
+// a DNS reconciliation cannot finalize drains created by a newer publication.
+func (s *Store) SitePublicationCurrent(siteID string, publishedAt time.Time) (bool, error) {
+	if strings.TrimSpace(siteID) == "" {
+		return false, errors.New("site ID is required")
+	}
+	if publishedAt.IsZero() {
+		return false, errors.New("publication timestamp is required")
+	}
+	var current int
+	err := s.db.QueryRow(`SELECT EXISTS(
+		SELECT 1 FROM site_publications WHERE site_id = ? AND published_at = ?)`,
+		siteID, stamp(publishedAt)).Scan(&current)
+	return current != 0, err
 }
 
 func (s *Store) ListSitePublications() ([]SitePublication, error) {
 	rows, err := s.db.Query(`SELECT site_json, certificate_ciphertext, private_key_ciphertext,
-		certificate_not_after, published_at FROM site_publications ORDER BY site_id`)
+		certificate_not_after, dns_ttl_seconds, published_at FROM site_publications ORDER BY site_id`)
 	if err != nil {
 		return nil, err
 	}
@@ -91,8 +113,9 @@ func scanSitePublication(row scanner) (SitePublication, error) {
 	var publication SitePublication
 	var siteJSON, publishedAt string
 	var certificateNotAfter sql.NullString
+	var dnsTTL sql.NullInt64
 	if err := row.Scan(&siteJSON, &publication.CertificateCiphertext, &publication.KeyCiphertext,
-		&certificateNotAfter, &publishedAt); errors.Is(err, sql.ErrNoRows) {
+		&certificateNotAfter, &dnsTTL, &publishedAt); errors.Is(err, sql.ErrNoRows) {
 		return SitePublication{}, ErrNotFound
 	} else if err != nil {
 		return SitePublication{}, err
@@ -112,6 +135,9 @@ func scanSitePublication(row scanner) (SitePublication, error) {
 		}
 		publication.CertificateNotAfter = &notAfter
 	}
+	if dnsTTL.Valid && dnsTTL.Int64 > 0 {
+		publication.DNSTTLSeconds = int(dnsTTL.Int64)
+	}
 	return publication, nil
 }
 
@@ -119,6 +145,14 @@ func scanSitePublication(row scanner) (SitePublication, error) {
 // the current site draft. A later publication can therefore never observe a
 // new node state with an old site snapshot, or the inverse.
 func (s *Store) CommitSitePublication(siteID string, expectedConfigVersion int64, publishTaskID string, updates []NodeStateUpdate, targets []PublishTaskNode) (domain.Site, error) {
+	return s.CommitSitePublicationWithDrains(siteID, expectedConfigVersion, publishTaskID, updates, targets, nil, nil)
+}
+
+// CommitSitePublicationWithDrains atomically promotes a publication, stages
+// its desired states, and records any removed-node snapshots. Keeping these
+// operations in one transaction prevents a restart from exposing a new DNS
+// assignment while losing the old node's serving material.
+func (s *Store) CommitSitePublicationWithDrains(siteID string, expectedConfigVersion int64, publishTaskID string, updates []NodeStateUpdate, targets []PublishTaskNode, drains []SiteNodeDrainInput, cancelDrains []SiteNodeDrainKey) (domain.Site, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return domain.Site{}, err
@@ -161,6 +195,12 @@ func (s *Store) CommitSitePublication(siteID string, expectedConfigVersion int64
 	if err := saveNodeStatesTx(tx, updates, stamp(publishedAt)); err != nil {
 		return domain.Site{}, err
 	}
+	if err := cancelSiteNodeDrainsTx(tx, cancelDrains, publishedAt); err != nil {
+		return domain.Site{}, err
+	}
+	if err := createSiteNodeDrainsTx(tx, drains, publishedAt); err != nil {
+		return domain.Site{}, err
+	}
 	if err := replaceSiteDomainClaims(tx, site.ID, site.Domains); err != nil {
 		return domain.Site{}, err
 	}
@@ -192,23 +232,32 @@ func saveSitePublicationTx(tx *sql.Tx, site domain.Site, publishedAt time.Time) 
 	}
 	var certificate, key []byte
 	var notAfter sql.NullString
+	var previousDNSTTL sql.NullInt64
 	err = tx.QueryRow(`SELECT certificate_ciphertext, private_key_ciphertext, not_after
 		FROM certificates WHERE site_id = ?`, site.ID).Scan(&certificate, &key, &notAfter)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if err := tx.QueryRow(`SELECT dns_ttl_seconds FROM site_publications WHERE site_id = ?`, site.ID).Scan(&previousDNSTTL); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
 	var encodedNotAfter any
 	if notAfter.Valid {
 		encodedNotAfter = notAfter.String
 	}
+	var encodedDNSTTL any
+	if previousDNSTTL.Valid && previousDNSTTL.Int64 > 0 {
+		encodedDNSTTL = previousDNSTTL.Int64
+	}
 	_, err = tx.Exec(`INSERT INTO site_publications(site_id, site_json, certificate_ciphertext,
-		private_key_ciphertext, certificate_not_after, published_at) VALUES (?, ?, ?, ?, ?, ?)
+		private_key_ciphertext, certificate_not_after, dns_ttl_seconds, published_at) VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(site_id) DO UPDATE SET site_json=excluded.site_json,
 		certificate_ciphertext=excluded.certificate_ciphertext,
 		private_key_ciphertext=excluded.private_key_ciphertext,
 		certificate_not_after=excluded.certificate_not_after,
+		dns_ttl_seconds=excluded.dns_ttl_seconds,
 		published_at=excluded.published_at`, site.ID, string(encodedSite), certificate, key,
-		encodedNotAfter, stamp(publishedAt))
+		encodedNotAfter, encodedDNSTTL, stamp(publishedAt))
 	return err
 }
 

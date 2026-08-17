@@ -2381,7 +2381,7 @@ func (s *Store) RecordPublishApply(nodeID string, report domain.ApplyReport) err
 	_, err = s.db.Exec(`UPDATE publish_task_nodes
 		SET status = ?, error_code = ?, detail = ?, port_conflicts_json = ?, reported_at = ?
 		WHERE node_id = ? AND target_version <= ? AND status = ?
-		  AND task_id IN (SELECT id FROM deployment_tasks WHERE kind IN ('publish_site', 'delete_site') AND status IN (?, ?, ?))`,
+		  AND task_id IN (SELECT id FROM deployment_tasks WHERE kind IN ('publish_site', 'delete_site', 'drain_site') AND status IN (?, ?, ?))`,
 		status, report.Code, report.Detail, string(conflicts), stamp(now()), nodeID, report.Version, domain.PublishNodePending,
 		domain.TaskQueued, domain.TaskDispatching, domain.TaskApplying)
 	return err
@@ -2391,20 +2391,21 @@ func (s *Store) RecordPublishApply(nodeID string, report domain.ApplyReport) err
 // accepts an applied_version heartbeat from a pre-reporting agent, which keeps
 // rollout compatibility while newer agents provide structured failure detail.
 func (s *Store) ReconcilePublishTasks() error {
-	rows, err := s.db.Query(`SELECT id, deadline_at FROM deployment_tasks
-		WHERE kind = 'publish_site' AND status IN (?, ?, ?)
+	rows, err := s.db.Query(`SELECT id, kind, deadline_at FROM deployment_tasks
+		WHERE kind IN ('publish_site', 'drain_site') AND status IN (?, ?, ?)
 		ORDER BY created_at`, domain.TaskQueued, domain.TaskDispatching, domain.TaskApplying)
 	if err != nil {
 		return err
 	}
 	type activeTask struct {
 		id       string
+		kind     string
 		deadline sql.NullString
 	}
 	var tasks []activeTask
 	for rows.Next() {
 		var task activeTask
-		if err := rows.Scan(&task.id, &task.deadline); err != nil {
+		if err := rows.Scan(&task.id, &task.kind, &task.deadline); err != nil {
 			rows.Close()
 			return err
 		}
@@ -2418,9 +2419,12 @@ func (s *Store) ReconcilePublishTasks() error {
 		return err
 	}
 	for _, task := range tasks {
-		if err := s.reconcilePublishTask(task.id, task.deadline); err != nil {
+		if err := s.reconcilePublishTask(task.id, task.kind, task.deadline); err != nil {
 			return err
 		}
+	}
+	if err := s.reconcileDrainTaskFinalizations(); err != nil {
+		return err
 	}
 	latestClosed, err := s.publishTasks(`SELECT id, kind, site_id, status, detail, deadline_at, created_at, updated_at
 		FROM deployment_tasks AS task
@@ -2441,7 +2445,7 @@ func (s *Store) ReconcilePublishTasks() error {
 	return nil
 }
 
-func (s *Store) reconcilePublishTask(taskID string, deadline sql.NullString) error {
+func (s *Store) reconcilePublishTask(taskID, kind string, deadline sql.NullString) error {
 	// Older agents do not send an apply report, but their durable applied
 	// version proves that the desired configuration was loaded successfully.
 	if _, err := s.db.Exec(`UPDATE publish_task_nodes
@@ -2468,7 +2472,11 @@ func (s *Store) reconcilePublishTask(taskID string, deadline sql.NullString) err
 				return err
 			}
 			if !parsed.After(now()) {
-				return s.UpdateTask(taskID, domain.TaskFailed, "publish task did not create edge confirmation targets; retry Publish")
+				detail := "task did not create edge confirmation targets; retry"
+				if kind == "drain_site" {
+					return s.completeDrainCleanup(taskID, domain.TaskFailed, detail)
+				}
+				return s.UpdateTask(taskID, domain.TaskFailed, detail)
 			}
 		}
 		return nil
@@ -2492,6 +2500,9 @@ func (s *Store) reconcilePublishTask(taskID string, deadline sql.NullString) err
 		pending = 0
 	}
 	status, detail := publishTaskOutcome(total, succeeded, failed)
+	if kind == "drain_site" {
+		return s.completeDrainCleanup(taskID, status, detail)
+	}
 	return s.UpdateTask(taskID, status, detail)
 }
 

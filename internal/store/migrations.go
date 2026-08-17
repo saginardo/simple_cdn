@@ -52,6 +52,42 @@ var schemaMigrations = []schemaMigration{
 	{Version: 33, Name: "nginx-artifact-catalog", Apply: migrateNginxArtifactCatalog},
 	{Version: 34, Name: "site-backup-nodes", Apply: migrateSiteBackupNodes},
 	{Version: 35, Name: "ipv6-dns-management", Apply: migrateIPv6DNSManagement},
+	{Version: 36, Name: "site-node-drains", Apply: migrateSiteNodeDrains},
+	{Version: 37, Name: "publication-dns-ttl-history", Apply: migratePublicationDNSTTLHistory},
+}
+
+func migrateSiteNodeDrains(tx *sql.Tx) error {
+	_, err := tx.Exec(`CREATE TABLE IF NOT EXISTS site_node_drains (
+		id TEXT PRIMARY KEY,
+		site_id TEXT NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+		node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+		site_json TEXT NOT NULL,
+		certificate_ciphertext BLOB,
+		private_key_ciphertext BLOB,
+		certificate_not_after TEXT,
+		dns_ttl_seconds INTEGER NOT NULL DEFAULT 60,
+		dns_ready_at TEXT,
+		remove_after TEXT,
+		cleanup_task_id TEXT REFERENCES deployment_tasks(id) ON DELETE SET NULL,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL,
+		UNIQUE(site_id, node_id)
+	);
+	CREATE INDEX IF NOT EXISTS idx_site_node_drains_due
+		ON site_node_drains(remove_after, cleanup_task_id);
+	CREATE INDEX IF NOT EXISTS idx_site_node_drains_site
+		ON site_node_drains(site_id, node_id);
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_active_drain_site
+		ON deployment_tasks(site_id)
+		WHERE kind = 'drain_site' AND status IN ('queued', 'dispatching', 'applying');`)
+	if err != nil {
+		return fmt.Errorf("create site node drain schema: %w", err)
+	}
+	return nil
+}
+
+func migratePublicationDNSTTLHistory(tx *sql.Tx) error {
+	return addColumnIfMissing(tx, "site_publications", "dns_ttl_seconds", "dns_ttl_seconds INTEGER")
 }
 
 func migrateIPv6DNSManagement(tx *sql.Tx) error {
@@ -945,6 +981,7 @@ func migrateCoreSchema(tx *sql.Tx) error {
 		{"nodes", "agent_sha256", "agent_sha256 TEXT NOT NULL DEFAULT ''"},
 		{"nodes", "active_upgrade_task_id", "active_upgrade_task_id TEXT NOT NULL DEFAULT ''"},
 		{"deployment_tasks", "deadline_at", "deadline_at TEXT"},
+		{"site_publications", "dns_ttl_seconds", "dns_ttl_seconds INTEGER"},
 		{"control_settings", "backup_override", "backup_override INTEGER NOT NULL DEFAULT 0"},
 		{"control_settings", "backup_repository", "backup_repository TEXT NOT NULL DEFAULT ''"},
 		{"control_settings", "backup_access_key_id", "backup_access_key_id TEXT NOT NULL DEFAULT ''"},
@@ -1028,6 +1065,11 @@ func migratePublishedState(tx *sql.Tx) error {
 		return err
 	}
 	if err := addColumnIfMissing(tx, "sites", "origin_response_buffering", "origin_response_buffering INTEGER NOT NULL DEFAULT 1"); err != nil {
+		return err
+	}
+	// saveSitePublicationTx is shared with current publication commits and reads
+	// the latest effective DNS TTL while it performs this legacy backfill.
+	if err := addColumnIfMissing(tx, "site_publications", "dns_ttl_seconds", "dns_ttl_seconds INTEGER"); err != nil {
 		return err
 	}
 	if err := seedBuiltinSecurityPoliciesTx(tx); err != nil {
