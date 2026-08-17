@@ -147,15 +147,10 @@ function SiteStatus({ site }: { site: Site }) {
   if (!site.enabled)
     return <StatusBadge status="pending" label={t("已停用")} />;
   return (
-    <Link
-      to={`/publish?site_id=${encodeURIComponent(site.id)}`}
-      aria-label={t("查看 {value0} 发布详情", { value0: site.name })}
-    >
-      <StatusBadge
-        status={site.published ? "succeeded" : "pending"}
-        label={site.published ? t("已发布") : t("待发布")}
-      />
-    </Link>
+    <StatusBadge
+      status={site.published ? "succeeded" : "pending"}
+      label={site.published ? t("已发布") : t("待发布")}
+    />
   );
 }
 function siteOriginType(site: Site) {

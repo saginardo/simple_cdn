@@ -13,7 +13,7 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useId, useState, type FormEvent } from "react";
-import { Link, useNavigate, useParams } from "react-router";
+import { useNavigate, useParams } from "react-router";
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { CopyButton } from "@/components/copy-button";
@@ -1860,14 +1860,6 @@ function SiteOperations({
             fallback={t("尚未签发")}
             extra={tls?.published_after_certificate ? t("已部署") : undefined}
           />
-        ) : null}
-        {!site.deleting ? (
-          <Button asChild type="button" variant="outline">
-            <Link to={`/publish?site_id=${encodeURIComponent(site.id)}`}>
-              <ArrowRight />
-              {t("查看发布详情")}
-            </Link>
-          </Button>
         ) : null}
         <Button
           type="button"

@@ -85,11 +85,6 @@ const SitesPage = lazy(() =>
     default: module.SitesPage,
   })),
 );
-const PublishPage = lazy(() =>
-  import("@/features/publish/publish-page").then((module) => ({
-    default: module.PublishPage,
-  })),
-);
 const CertificatesPage = lazy(() =>
   import("@/features/certificates/certificates-page").then((module) => ({
     default: module.CertificatesPage,
@@ -167,7 +162,10 @@ export default function App() {
                         element={<NodeDetailPage />}
                       />
                       <Route path="/sites" element={<SitesPage />} />
-                      <Route path="/publish" element={<PublishPage />} />
+                      <Route
+                        path="/publish"
+                        element={<Navigate to="/sites" replace />}
+                      />
                       <Route path="/sites/new" element={<SiteDetailPage />} />
                       <Route
                         path="/sites/:siteId"

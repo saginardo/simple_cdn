@@ -703,67 +703,6 @@ export interface PublishStatus {
   nodes: PublishNodeResult[];
 }
 
-export interface PublishOverviewNode {
-  node_id: string;
-  node_name: string;
-  role: "primary" | "backup" | "removed";
-  node_status: NodeStatus;
-  public_ipv4?: string;
-  public_ipv6?: string;
-  agent_version?: string;
-  agent_sha256?: string;
-  nginx_version?: string;
-  nginx_sha256?: string;
-  capabilities: string[];
-  target_version: number;
-  desired_version: number;
-  applied_version: number;
-  configuration_status: PublishNodeStatus | "not_targeted";
-  drift_reason?:
-    | "node_inactive"
-    | "desired_state_missing"
-    | "version_behind"
-    | "publication_active";
-  node_last_error?: string;
-  error_code?: string;
-  detail?: string;
-  reported_at?: string;
-  ipv4_dns_eligible: boolean;
-  ipv4_last_checked_at?: string;
-  ipv4_last_error?: string;
-  ipv6_dns_eligible: boolean;
-  ipv6_last_checked_at?: string;
-  ipv6_last_error?: string;
-}
-
-export interface PublishSiteOverview {
-  site_id: string;
-  site_name: string;
-  domains: string[];
-  config_version: number;
-  published: boolean;
-  enabled: boolean;
-  deleting: boolean;
-  ipv6_enabled: boolean;
-  http3_enabled: boolean;
-  tcp_enabled: boolean;
-  task: DeploymentTask | null;
-  nodes: PublishOverviewNode[];
-}
-
-export interface PublishHistoryOverview {
-  site_id: string;
-  site_name: string;
-  domains: string[];
-  task: DeploymentTask;
-  nodes: PublishNodeResult[];
-}
-
-export interface PublishOverview {
-  sites: PublishSiteOverview[];
-  history: PublishHistoryOverview[];
-}
-
 export interface OverviewPoint {
   time: string;
   requests: number;

@@ -98,96 +98,6 @@ const site = {
   updated_at: now.toISOString(),
 };
 
-const publishTask = {
-  id: "publish-site-1",
-  kind: "publish_site",
-  site_id: site.id,
-  status: "succeeded",
-  detail: "configuration applied by 2 active edge node(s)",
-  deadline_at: now.toISOString(),
-  created_at: now.toISOString(),
-  updated_at: now.toISOString(),
-};
-
-const publishNodes = [
-  {
-    node_id: "node-dual-stack",
-    node_name: "edge-hong-kong",
-    role: "primary",
-    node_status: "active",
-    public_ipv4: "203.0.113.20",
-    public_ipv6: "2001:db8::20",
-    agent_version: "0.1.53",
-    agent_sha256: "a".repeat(64),
-    nginx_version: "1.27.5",
-    nginx_sha256: "b".repeat(64),
-    capabilities: ["http3_v1", "tcp_stream_v1"],
-    target_version: 12,
-    desired_version: 12,
-    applied_version: 12,
-    configuration_status: "succeeded",
-    reported_at: now.toISOString(),
-    ipv4_dns_eligible: true,
-    ipv4_last_checked_at: now.toISOString(),
-    ipv6_dns_eligible: true,
-    ipv6_last_checked_at: now.toISOString(),
-  },
-  {
-    node_id: "node-ipv4",
-    node_name: "edge-los-angeles",
-    role: "primary",
-    node_status: "active",
-    public_ipv4: "203.0.113.21",
-    agent_version: "0.1.53",
-    agent_sha256: "c".repeat(64),
-    nginx_version: "1.27.5",
-    nginx_sha256: "d".repeat(64),
-    capabilities: ["http3_v1", "tcp_stream_v1"],
-    target_version: 9,
-    desired_version: 9,
-    applied_version: 9,
-    configuration_status: "succeeded",
-    reported_at: now.toISOString(),
-    ipv4_dns_eligible: true,
-    ipv4_last_checked_at: now.toISOString(),
-    ipv6_dns_eligible: false,
-  },
-];
-
-const publishOverview = {
-  sites: [
-    {
-      site_id: site.id,
-      site_name: site.name,
-      domains: site.domains,
-      config_version: site.config_version,
-      published: true,
-      enabled: true,
-      deleting: false,
-      ipv6_enabled: true,
-      http3_enabled: false,
-      tcp_enabled: false,
-      task: publishTask,
-      nodes: publishNodes,
-    },
-  ],
-  history: [
-    {
-      site_id: site.id,
-      site_name: site.name,
-      domains: site.domains,
-      task: publishTask,
-      nodes: publishNodes.map((node) => ({
-        node_id: node.node_id,
-        node_name: node.node_name,
-        target_version: node.target_version,
-        status: node.configuration_status,
-        reported_at: node.reported_at,
-      })),
-    },
-  ],
-};
-
 const cacheOperation = {
   id: "cache-operation-1",
   site_id: site.id,
@@ -1248,7 +1158,6 @@ async function mockAPI(page: Page, overrides: Record<string, unknown> = {}) {
       "/api/overview": overview,
       "/api/certificates": certificateOverview,
       "/api/sites": [site],
-      "/api/publish": publishOverview,
       "/api/sites/site-1/publish-status": {
         task: {
           id: "publish-1",
@@ -1623,9 +1532,7 @@ test("sites list keeps configuration state lightweight", async ({ page }) => {
     0,
   );
   await expect(row.getByText("已发布", { exact: true })).toHaveCount(1);
-  await expect(
-    row.getByRole("link", { name: `查看 ${site.name} 发布详情` }),
-  ).toHaveAttribute("href", `#/publish?site_id=${site.id}`);
+  await expect(page.locator('a[href^="#/publish"]')).toHaveCount(0);
   const tunneledRow = page
     .getByRole("row")
     .filter({ hasText: tunneledListSite.name });
@@ -1662,98 +1569,6 @@ test("sites list shows unpublished configuration without task polling", async ({
   const row = page.getByRole("row").filter({ hasText: changedSite.name });
   await expect(row.getByText("待发布", { exact: true })).toBeVisible();
   await expect(row.getByText("成功", { exact: true })).toHaveCount(0);
-});
-
-test("publish workspace separates IPv4-only nodes from publish failures", async ({
-  page,
-}, testInfo) => {
-  const errors = trackPageErrors(page);
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await mockAPI(page);
-  await page.goto("/#/publish?site_id=site-1");
-
-  await expect(
-    page.getByRole("heading", { name: "发布", level: 1 }),
-  ).toBeVisible();
-  await expect(page.getByRole("tab", { name: "发布任务" })).toBeVisible();
-  await expect(page.getByText("A 2 · AAAA 1", { exact: true })).toBeVisible();
-  await expect(
-    page.getByText("1 个节点仅参与 IPv4", { exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByText("仅 IPv4", { exact: true }).first(),
-  ).toBeVisible();
-  await expect(
-    page.getByText("Agent v0.1.53@aaaaaaaa", { exact: true }).first(),
-  ).toBeVisible();
-  await expect(
-    page.getByText("Nginx v1.27.5@bbbbbbbb", { exact: true }).first(),
-  ).toBeVisible();
-  await expect(page.getByText("部分成功", { exact: true })).toHaveCount(0);
-  await expect(page.getByRole("link", { name: "站点配置" })).toHaveAttribute(
-    "href",
-    "#/sites/site-1",
-  );
-  await page.screenshot({
-    path: testInfo.outputPath("publish-workspace-tasks-desktop.png"),
-    fullPage: true,
-  });
-  await page.getByRole("tab", { name: "变更记录" }).click();
-  await expect(page.getByText("publish-site-1", { exact: true })).toBeVisible();
-  await expect(page.getByText("目标节点", { exact: true })).toBeVisible();
-  await page.screenshot({
-    path: testInfo.outputPath("publish-workspace-desktop.png"),
-    fullPage: true,
-  });
-
-  await page.getByRole("tab", { name: "发布任务" }).click();
-  await page.setViewportSize({ width: 390, height: 844 });
-  expect(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth <= window.innerWidth + 1,
-    ),
-  ).toBe(true);
-  await page.screenshot({
-    path: testInfo.outputPath("publish-workspace-mobile.png"),
-    fullPage: true,
-  });
-  expect(errors).toEqual([]);
-});
-
-test("publish workspace retries the failed-node subset", async ({ page }) => {
-  let retryRequests = 0;
-  page.on("request", (request) => {
-    if (
-      request.method() === "POST" &&
-      new URL(request.url()).pathname === "/api/sites/site-1/publish/retry"
-    ) {
-      retryRequests += 1;
-    }
-  });
-  const failedNode = {
-    ...publishNodes[1],
-    configuration_status: "timed_out",
-    error_code: "confirmation_timeout",
-    detail: "edge did not confirm the target configuration",
-    reported_at: undefined,
-  };
-  await mockAPI(page, {
-    "/api/publish": {
-      ...publishOverview,
-      sites: [
-        {
-          ...publishOverview.sites[0],
-          task: { ...publishTask, status: "partial" },
-          nodes: [publishNodes[0], failedNode],
-        },
-      ],
-    },
-  });
-  await page.goto("/#/publish?site_id=site-1");
-
-  await page.getByRole("button", { name: "重试失败节点" }).click();
-  await expect(page.getByText("失败节点重试已启动")).toBeVisible();
-  expect(retryRequests).toBe(1);
 });
 
 test("certificate workspace shows renewal state and manual actions", async ({
@@ -2144,7 +1959,7 @@ test("site publish waits while automatic TLS issuance is active", async ({
   expect(publishRequests).toBe(0);
 });
 
-test("site operations defer publish node details to the publish workspace", async ({
+test("site operations keep publish controls in the site editor", async ({
   page,
 }, testInfo) => {
   const previous = new Date(now.getTime() - 60 * 60 * 1000).toISOString();
@@ -2242,8 +2057,9 @@ test("site operations defer publish node details to the publish workspace", asyn
     operations.getByText("当前配置已发布到 2 个边缘节点"),
   ).toBeVisible();
   await expect(
-    operations.getByRole("link", { name: "查看发布详情" }),
-  ).toHaveAttribute("href", "#/publish?site_id=site-1");
+    operations.getByRole("button", { name: "重新发布" }),
+  ).toBeVisible();
+  await expect(operations.getByText("查看发布详情")).toHaveCount(0);
   await expect(operations.getByText(/当前承载节点/)).toHaveCount(0);
   await expect(operations.getByText("gateway", { exact: true })).toHaveCount(0);
   await expect(operations.getByText("vmiss-lax", { exact: true })).toHaveCount(
@@ -3838,7 +3654,6 @@ test("all primary workspaces and the new-site editor mount without runtime error
     ["wireguard", "隧道"],
     ["nodes", "节点"],
     ["sites", "站点"],
-    ["publish", "发布"],
     ["static-assets", "资源"],
     ["certificates", "证书"],
     ["sites/new", "添加站点"],
@@ -3857,6 +3672,12 @@ test("all primary workspaces and the new-site editor mount without runtime error
     "true",
   );
   await expect(page.getByText("S3 在线恢复")).toBeVisible();
+  await page.goto("/#/publish?site_id=site-1");
+  await expect(page).toHaveURL(/#\/sites$/);
+  await expect(
+    page.getByRole("heading", { name: "站点", level: 1 }),
+  ).toBeVisible();
+  await expect(page.locator('a[href="#/publish"]')).toHaveCount(0);
   expect(errors).toEqual([]);
 });
 
