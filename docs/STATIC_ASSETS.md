@@ -37,9 +37,11 @@ After a successful apply, the Agent removes content-addressed objects no longer 
 
 ## Backup and restore
 
-The controller stores object metadata and URL bindings in SQLite, but stores the bytes separately below `$CONTROL_DATA_DIR/static-assets/objects`. The current Compose Restic workflow does not archive that object directory. Back it up independently with the same recovery controls as the Restic repository; restoring SQLite without the matching object bytes preserves metadata but leaves the controller unable to redistribute those resources to a rebuilt or newly assigned edge.
+The controller stores object metadata and URL bindings in SQLite, but stores the bytes separately below `$CONTROL_DATA_DIR/static-assets/objects`. The Compose backup workflow copies exactly the objects referenced by its SQLite online backup into Restic staging. It verifies every object's recorded byte length and SHA-256 before uploading the snapshot, so a missing, replaced, or corrupt object fails the backup attempt.
 
-Edge copies below `/opt/cdn-edge/static/objects` can keep serving while the control plane is unavailable, but they are not an authoritative replacement for the controller copy. Do not rely on edge garbage-collection state as the only backup.
+Both online and offline restore verify that the restored object directory exactly matches the restored SQLite metadata before cutover. Online restore hashes the complete set, switches the `static-assets` directory in the same rollback transaction as SQLite, and verifies the promoted set again. Offline restore installs the verified objects inside the replacement control-data directory. Snapshots created before object coverage are rejected when their SQLite metadata references static assets whose bytes are absent.
+
+Edge copies below `/opt/cdn-edge/static/objects` can keep serving while the control plane is unavailable, but they are not an authoritative replacement for the controller copy or the encrypted Restic snapshot.
 
 ## Verification
 

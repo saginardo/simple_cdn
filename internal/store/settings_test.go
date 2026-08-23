@@ -112,6 +112,42 @@ func TestControlSettingsDefaultsAndOverrides(t *testing.T) {
 	}
 }
 
+func TestOpenImmutableReadsWALSnapshotWithoutCreatingSidecars(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "control.db")
+	database, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantVersion, err := database.SchemaVersion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if err := os.Remove(path + suffix); err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+	}
+
+	snapshot, err := OpenImmutable(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotVersion, err := snapshot.SchemaVersion()
+	closeErr := snapshot.Close()
+	if err != nil || closeErr != nil || gotVersion != wantVersion {
+		t.Fatalf("immutable schema version = %d, query error = %v, close error = %v", gotVersion, err, closeErr)
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if _, err := os.Lstat(path + suffix); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("immutable open created %s: %v", filepath.Base(path+suffix), err)
+		}
+	}
+}
+
 func TestReadSecretUsesLiveReadOnlyDatabase(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "control.db")
 	database, err := Open(path)

@@ -436,6 +436,7 @@ func TestComposeRestoreStagesAndValidatesBeforeBoundedCutover(t *testing.T) {
 	for _, expected := range []string{
 		"--verify-only",
 		"PRAGMA quick_check;",
+		"mode=ro&immutable=1",
 		"RESTORE DATABASE $restored_source_database AS $temporary_database",
 		"CHECK TABLE $temporary_database.$table",
 		"check_query_single_value_result=1",
@@ -451,6 +452,43 @@ func TestComposeRestoreStagesAndValidatesBeforeBoundedCutover(t *testing.T) {
 	}
 	if strings.Contains(script, "until docker compose exec -T clickhouse clickhouse-client --query 'SELECT 1' >/dev/null 2>&1; do sleep 2; done") {
 		t.Fatal("restore script still waits indefinitely for ClickHouse")
+	}
+}
+
+func TestComposeBackupAndRestoreCoverManagedStaticAssetObjects(t *testing.T) {
+	repositoryRoot := filepath.Join("..", "..")
+	backupContents, err := os.ReadFile(filepath.Join(repositoryRoot, "scripts", "compose-backup.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	backup := string(backupContents)
+	for _, expected := range []string{
+		"PRAGMA journal_mode=DELETE;",
+		"stage-static-asset-backup",
+		`"$data_dir/static-assets/objects"`,
+		`"$control_staging/static-assets/objects"`,
+	} {
+		if !strings.Contains(backup, expected) {
+			t.Fatalf("backup script does not stage managed static asset objects with %q", expected)
+		}
+	}
+
+	restoreContents, err := os.ReadFile(filepath.Join(repositoryRoot, "scripts", "restore-control-compose.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	restore := string(restoreContents)
+	for _, expected := range []string{
+		"verify-static-asset-backup",
+		"if ((static_asset_count > 0)); then",
+		"require_empty_static_asset_directory",
+		`restored_static_assets="$restored_staging/control/static-assets/objects"`,
+		`cp -a "$restored_static_assets/." "$prepared_root/control/static-assets/objects/"`,
+		`/prepared/control/static-assets/objects`,
+	} {
+		if !strings.Contains(restore, expected) {
+			t.Fatalf("restore script does not validate and install managed static asset objects with %q", expected)
+		}
 	}
 }
 

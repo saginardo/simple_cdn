@@ -125,7 +125,7 @@ Compose 将 ClickHouse 8123 仅映射到 `127.0.0.1`，不应直接暴露到公�
 | `AWS_DEFAULT_REGION`          | `us-east-1`                          | S3 区域。                                                     |
 | `CONTROL_TLS_DIR`             | `/var/lib/cdn-control-tls`           | 备份控制证书目录。                                            |
 
-Restic 快照当前包含 SQLite 在线副本、内部 CA、站点 Certbot 状态、已下载 Nginx 工件、控制 TLS、ClickHouse 原生备份、Compose 定义和环境文件。它当前不包含 `$CONTROL_DATA_DIR/static-assets/objects`；托管静态资源对象字节必须单独备份，详见 [STATIC_ASSETS.md](STATIC_ASSETS.md#backup-and-restore)。
+Restic 快照包含 SQLite 在线副本、内部 CA、站点 Certbot 状态、已下载 Nginx 工件、控制 TLS、托管静态资源对象、ClickHouse 原生备份、Compose 定义和环境文件。静态资源对象会按 SQLite 副本中的清单暂存，并在备份和恢复阶段校验大小与 SHA-256，详见 [STATIC_ASSETS.md](STATIC_ASSETS.md#backup-and-restore)。
 
 ## 在线与离线恢复高级配置
 

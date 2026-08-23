@@ -207,7 +207,7 @@ HTTP 边缘节点提供 `http://EDGE_IPV4/__cdn_health`。已发布 HTTP 配置�
 
 ## 备份与恢复
 
-Compose 备份流程使用 SQLite 在线备份 API 和 ClickHouse 原生备份，再将恢复集写入加密 Restic 存储。流程会重试短暂故障，发布供消息中心使用的机器可读状态，并在最终失败后发送 SMTP 告警。保留策略为 7 个每日快照、4 个每周快照和 6 个每月快照。仓库凭据和每日计划可在经过身份验证的“设置”页面管理，数据库配置优先于环境变量；离线恢复凭据仍然必须单独保存。当前 Restic 集合包含 Nginx 工件和控制秘密，但不包含托管静态资源对象字节；请单独备份 `$CONTROL_DATA_DIR/static-assets/objects`。在线流量保持运行期间，“设置”页面可以下载选定快照，并在隔离的 SQLite/ClickHouse 暂存区完成校验；随后通过二次确认执行切换，仅需短暂重启控制器，并保留回滚数据。离线校验和灾难恢复流程见 [docs/COMPOSE_DEPLOYMENT.md](docs/COMPOSE_DEPLOYMENT.md)。
+Compose 备份流程使用 SQLite 在线备份 API 和 ClickHouse 原生备份，再将恢复集写入加密 Restic 存储。流程会重试短暂故障，发布供消息中心使用的机器可读状态，并在最终失败后发送 SMTP 告警。保留策略为 7 个每日快照、4 个每周快照和 6 个每月快照。仓库凭据和每日计划可在经过身份验证的“设置”页面管理，数据库配置优先于环境变量；离线恢复凭据仍然必须单独保存。Restic 集合包含 Nginx 工件、控制秘密，以及 SQLite 备份引用的完整托管静态资源对象；每个对象在上传快照前和两种恢复切换前都会按记录的大小与 SHA-256 校验。在线流量保持运行期间，“设置”页面可以下载选定快照，并在隔离的 SQLite/ClickHouse 暂存区完成校验；随后通过二次确认执行切换，仅需短暂重启控制器，并保留回滚数据。离线校验和灾难恢复流程见 [docs/COMPOSE_DEPLOYMENT.md](docs/COMPOSE_DEPLOYMENT.md)。
 
 ## 容量与后续边界
 

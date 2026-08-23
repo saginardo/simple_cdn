@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -112,7 +114,23 @@ func TestOnlineRestoreStagesCommitsAndAppliesVerifiedSnapshot(t *testing.T) {
 	if err := restoredDatabase.SetSecret(store.SecretCloudflareAPIToken, ciphertext); err != nil {
 		t.Fatal(err)
 	}
+	restoredStaticContents := []byte("console.log('restored static asset');\n")
+	restoredStaticDigestBytes := sha256.Sum256(restoredStaticContents)
+	restoredStaticDigest := hex.EncodeToString(restoredStaticDigestBytes[:])
+	if _, err := restoredDatabase.CreateStaticAsset(domain.StaticAsset{
+		Name: "restored app", OriginalName: "app.js", SHA256: restoredStaticDigest,
+		SizeBytes: int64(len(restoredStaticContents)), ContentType: "application/javascript",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := restoredDatabase.Close(); err != nil {
+		t.Fatal(err)
+	}
+	restoredStaticDirectory := filepath.Join(controlFixture, "static-assets", "objects")
+	if err := os.MkdirAll(restoredStaticDirectory, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(restoredStaticDirectory, restoredStaticDigest), restoredStaticContents, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	restoredSecrets := filepath.Join(temporary, "restored-secrets")
@@ -194,6 +212,13 @@ func TestOnlineRestoreStagesCommitsAndAppliesVerifiedSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(liveNginxDirectory, "old.tar.gz"), []byte("old-nginx-artifact"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	liveStaticDirectory := filepath.Join(dataDir, "static-assets", "objects")
+	if err := os.MkdirAll(liveStaticDirectory, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(liveStaticDirectory, "old-object"), []byte("old-static-asset"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(tlsDir, "old.pem"), []byte("old"), 0o600); err != nil {
@@ -295,8 +320,21 @@ esac
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if job.DatabaseSHA256 == "" || job.CAFingerprint == "" || job.SchemaVersion != store.LatestSchemaVersion() || job.Database != project.ClickHouseDatabase || job.SourceDatabase != project.LegacyClickHouseDatabase {
+	if job.Version != OnlineRestoreJobVersion || job.DatabaseSHA256 == "" || job.StaticAssetsSHA256 == "" || job.CAFingerprint == "" || job.SchemaVersion != store.LatestSchemaVersion() || job.Database != project.ClickHouseDatabase || job.SourceDatabase != project.LegacyClickHouseDatabase {
 		t.Fatalf("verified job = %#v", job)
+	}
+	stagedStaticPath := filepath.Join(restoreRoot, "jobs", job.ID, "snapshot", "backup", "staging", "control", "static-assets", "objects", restoredStaticDigest)
+	if err := os.WriteFile(stagedStaticPath, []byte(strings.Repeat("x", len(restoredStaticContents))), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Commit(job.ID, "RESTORE"); err == nil || !strings.Contains(err.Error(), "SHA-256") {
+		t.Fatalf("tampered static asset commit error = %v", err)
+	}
+	if _, err := os.Stat(onlineRestoreMaintenancePath(restoreRoot)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("tampered restore created maintenance lock: %v", err)
+	}
+	if err := os.WriteFile(stagedStaticPath, restoredStaticContents, 0o644); err != nil {
+		t.Fatal(err)
 	}
 	job, err = manager.Commit(job.ID, "RESTORE")
 	if err != nil {
@@ -335,6 +373,14 @@ esac
 	if err != nil || string(previousNginx) != "old-nginx-artifact" {
 		t.Fatalf("previous managed Nginx artifacts were not retained: contents=%q, err=%v", previousNginx, err)
 	}
+	restoredStatic, err := os.ReadFile(filepath.Join(dataDir, "static-assets", "objects", restoredStaticDigest))
+	if err != nil || !bytes.Equal(restoredStatic, restoredStaticContents) {
+		t.Fatalf("managed static asset was not restored: contents=%q, err=%v", restoredStatic, err)
+	}
+	previousStatic, err := os.ReadFile(filepath.Join(dataDir, "static-assets.before-restore-"+job.ID, "objects", "old-object"))
+	if err != nil || string(previousStatic) != "old-static-asset" {
+		t.Fatalf("previous managed static assets were not retained: contents=%q, err=%v", previousStatic, err)
+	}
 	restoredDatabase, err = store.Open(filepath.Join(dataDir, "control.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -342,6 +388,10 @@ esac
 	restoredCurrent, err := restoredDatabase.CurrentNginxArtifact()
 	if err != nil || restoredCurrent.SHA256 != restoredMetadata.SHA256 || restoredCurrent.State != domain.NginxArtifactCurrent {
 		t.Fatalf("restored Nginx catalog = %#v, err=%v", restoredCurrent, err)
+	}
+	restoredAssets, err := restoredDatabase.ListStaticAssets()
+	if err != nil || len(restoredAssets) != 1 || restoredAssets[0].SHA256 != restoredStaticDigest {
+		t.Fatalf("restored static asset catalog = %#v, err=%v", restoredAssets, err)
 	}
 	if err := restoredDatabase.Close(); err != nil {
 		t.Fatal(err)
@@ -361,6 +411,144 @@ esac
 	}
 	if completed.State != OnlineRestoreCompleted {
 		t.Fatalf("completed job = %#v", completed)
+	}
+}
+
+func TestApplyPendingOnlineRestoreRejectsLegacyCommittingJobBeforeCutover(t *testing.T) {
+	root := t.TempDir()
+	jobRoot := filepath.Join(root, "jobs", "legacy-job")
+	if err := os.MkdirAll(jobRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 21, 12, 0, 0, 0, time.UTC)
+	job := OnlineRestoreJob{
+		Version:           onlineRestoreJobVersionWithoutStaticAssets,
+		ID:                "legacy-job",
+		SnapshotID:        strings.Repeat("a", 64),
+		SnapshotShortID:   "aaaaaaaa",
+		State:             OnlineRestoreCommitting,
+		Database:          project.ClickHouseDatabase,
+		SourceDatabase:    project.LegacyClickHouseDatabase,
+		TemporaryDatabase: "simple_cdn_restore_legacy",
+		RollbackDatabase:  "simple_cdn_before_restore_legacy",
+		DatabaseSHA256:    strings.Repeat("b", 64),
+		SecretsSHA256:     strings.Repeat("c", 64),
+		TLSSHA256:         strings.Repeat("d", 64),
+		CAFingerprint:     "sha256:" + strings.Repeat("e", 64),
+		CreatedAt:         now.Add(-time.Minute),
+		UpdatedAt:         now,
+	}
+	if err := writeOnlineRestoreJob(root, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeOnlineRestoreMaintenanceLock(root, job.ID); err != nil {
+		t.Fatal(err)
+	}
+	key, err := NewEncryptionKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := NewCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clickHouse := &fakeRestoreClickHouse{databases: map[string]bool{
+		project.ClickHouseDatabase: true,
+		job.TemporaryDatabase:      true,
+	}}
+	applied, err := ApplyPendingOnlineRestore(context.Background(), OnlineRestoreApplyConfig{
+		Root: root, Cipher: cipher, ClickHouse: clickHouse, Now: func() time.Time { return now.Add(time.Minute) },
+	})
+	if err == nil || !strings.Contains(err.Error(), "predates managed static asset restore coverage") || applied {
+		t.Fatalf("legacy apply = %v, error = %v", applied, err)
+	}
+	failed, err := readOnlineRestoreJob(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failed.State != OnlineRestoreFailed || failed.Phase != "rolled_back" {
+		t.Fatalf("legacy failed job = %#v", failed)
+	}
+	if exists, _ := clickHouse.DatabaseExists(context.Background(), project.ClickHouseDatabase); !exists {
+		t.Fatal("current ClickHouse database changed while rejecting a legacy job")
+	}
+	if exists, _ := clickHouse.DatabaseExists(context.Background(), job.TemporaryDatabase); exists {
+		t.Fatal("legacy temporary ClickHouse database was not removed")
+	}
+	if _, err := os.Stat(onlineRestoreMaintenancePath(root)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy maintenance lock remains: %v", err)
+	}
+	if _, err := os.Stat(jobRoot); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy job staging remains: %v", err)
+	}
+}
+
+func TestOnlineRestoreManagerInvalidatesLegacyReadyJobAfterUpgrade(t *testing.T) {
+	temporary := t.TempDir()
+	root := filepath.Join(temporary, "online-restore")
+	now := time.Date(2026, 8, 21, 12, 0, 0, 0, time.UTC)
+	job := OnlineRestoreJob{
+		Version:           onlineRestoreJobVersionWithoutStaticAssets,
+		ID:                "legacy-ready",
+		SnapshotID:        strings.Repeat("f", 64),
+		SnapshotShortID:   "ffffffff",
+		State:             OnlineRestoreReady,
+		Database:          project.ClickHouseDatabase,
+		SourceDatabase:    project.LegacyClickHouseDatabase,
+		TemporaryDatabase: "simple_cdn_restore_ready",
+		RollbackDatabase:  "simple_cdn_before_restore_ready",
+		DatabaseSHA256:    strings.Repeat("1", 64),
+		SecretsSHA256:     strings.Repeat("2", 64),
+		TLSSHA256:         strings.Repeat("3", 64),
+		CAFingerprint:     "sha256:" + strings.Repeat("4", 64),
+		CreatedAt:         now.Add(-time.Minute),
+		UpdatedAt:         now,
+	}
+	if err := writeOnlineRestoreJob(root, job); err != nil {
+		t.Fatal(err)
+	}
+	jobRoot := filepath.Join(root, "jobs", job.ID)
+	if err := os.MkdirAll(jobRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	database, err := store.Open(filepath.Join(temporary, "settings.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	key, err := NewEncryptionKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := NewCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings, err := NewSettingsManager(database, cipher, EnvironmentSettings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clickHouse := &fakeRestoreClickHouse{databases: map[string]bool{
+		project.ClickHouseDatabase: true,
+		job.TemporaryDatabase:      true,
+	}}
+	manager, err := NewOnlineRestoreManager(OnlineRestoreManagerConfig{
+		Root: root, Settings: settings, Cipher: cipher, ClickHouse: clickHouse,
+		ClickHouseGroupID: -1, Now: func() time.Time { return now.Add(time.Minute) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop()
+	failed := manager.Current()
+	if failed == nil || failed.State != OnlineRestoreFailed || failed.Phase != "incompatible_job" || !strings.Contains(failed.Error, "predates managed static asset restore coverage") {
+		t.Fatalf("legacy ready job after upgrade = %#v", failed)
+	}
+	if exists, _ := clickHouse.DatabaseExists(context.Background(), job.TemporaryDatabase); exists {
+		t.Fatal("legacy ready temporary ClickHouse database was not removed")
+	}
+	if _, err := os.Stat(jobRoot); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy ready staging remains: %v", err)
 	}
 }
 

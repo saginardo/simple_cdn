@@ -112,9 +112,9 @@ cdn-edge-agent -- mTLS --> 控制面 desired state、心跳、日志、升级任
 | 控制面消息              | 已读消息保留三个月。                                                                                                                                          |
 | 边缘访问日志            | 控制面不可达时进入本地队列，确认后上传。                                                                                                                      |
 | Nginx 动态工件          | 退休文件不自动清理，需监控磁盘。                                                                                                                              |
-| 托管静态资源对象        | 当前不在 Compose Restic 归档中；必须对 `$CONTROL_DATA_DIR/static-assets/objects` 做独立备份。SQLite 中的绑定元数据会恢复，但没有对象字节时 URL 无法重新下发。 |
+| 托管静态资源对象        | Compose 备份按 SQLite 在线副本中的清单暂存对象，校验大小与 SHA-256 后写入 Restic；在线和离线恢复都会在切换前验证并恢复对象集。                         |
 
-离线恢复会替换整个 `data/control`，在线恢复会原子切换已验证的 SQLite、CA、证书、Nginx 工件和 ClickHouse。两种路径都不能凭空恢复未进入 Restic 的静态资源对象。
+离线恢复会替换整个 `data/control`，在线恢复会原子切换已验证的 SQLite、CA、证书、托管静态资源对象、Nginx 工件和 ClickHouse。旧快照若包含静态资源元数据但缺少对应对象，会在切换前被拒绝。
 
 ## 9. 关键不变量
 
@@ -122,7 +122,7 @@ cdn-edge-agent -- mTLS --> 控制面 desired state、心跳、日志、升级任
 2. 不手工修改 `applied_version`、`.bundle-sha256`、Nginx 工件文件或受管 WireGuard/nftables 文件。
 3. 控制面故障时保留边缘最后已知可用配置；所有节点都不健康时不向 Cloudflare 发布空记录集。
 4. 发布和节点升级是显式操作；候选下载、工件批准和节点升级彼此不隐式触发。
-5. 生产环境必须把控制加密密钥、Cloudflare/SMTP/Restic 凭据和静态资源对象纳入独立恢复记录。
+5. 生产环境必须把控制加密密钥和 Cloudflare/SMTP/Restic 凭据纳入独立恢复记录，并定期执行包含静态资源对象的恢复演练。
 
 ## 10. 验证与发布门
 

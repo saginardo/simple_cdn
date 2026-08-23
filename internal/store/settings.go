@@ -281,12 +281,26 @@ func (s *Store) DeleteSecret(name string) error {
 }
 
 func OpenReadOnly(path string) (*Store, error) {
+	return openReadOnly(path, false)
+}
+
+// OpenImmutable opens a completed SQLite snapshot without consulting or
+// creating WAL sidecars. Callers must guarantee that the file cannot change.
+func OpenImmutable(path string) (*Store, error) {
+	return openReadOnly(path, true)
+}
+
+func openReadOnly(path string, immutable bool) (*Store, error) {
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 		return nil, ErrNotFound
 	} else if err != nil {
 		return nil, err
 	}
-	dsn := (&url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro"}).String()
+	query := url.Values{"mode": []string{"ro"}}
+	if immutable {
+		query.Set("immutable", "1")
+	}
+	dsn := (&url.URL{Scheme: "file", Path: path, RawQuery: query.Encode()}).String()
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err

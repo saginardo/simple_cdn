@@ -53,6 +53,20 @@ func main() {
 		writeBackupRuntime(os.Args[2])
 		return
 	}
+	if len(os.Args) == 5 && os.Args[1] == "stage-static-asset-backup" {
+		if err := control.StageStaticAssetBackup(os.Args[2], os.Args[3], os.Args[4]); err != nil {
+			fatal("stage managed static asset backup: " + err.Error())
+		}
+		return
+	}
+	if len(os.Args) == 4 && os.Args[1] == "verify-static-asset-backup" {
+		digest, err := control.VerifyStaticAssetBackup(os.Args[2], os.Args[3])
+		if err != nil {
+			fatal("verify managed static asset backup: " + err.Error())
+		}
+		fmt.Println(digest)
+		return
+	}
 	if len(os.Args) >= 2 && os.Args[1] == "backup-status" {
 		if len(os.Args) != 7 && len(os.Args) != 8 {
 			fatal("usage: cdn-control backup-status <path> <state> <attempt> <max-attempts> <started-at> [detail]")

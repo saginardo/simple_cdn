@@ -58,7 +58,16 @@ if [[ "$phase" == "all" ]]; then
   rm -rf "$control_staging" "$clickhouse_staging"
   mkdir -p "$control_staging"
   sqlite3 "$data_dir/control.db" ".backup '$control_staging/control.db'"
+  if [[ "$(sqlite3 "$control_staging/control.db" 'PRAGMA journal_mode=DELETE;')" != "delete" ]]; then
+    echo "could not convert the SQLite backup to a self-contained journal mode" >&2
+    exit 1
+  fi
   chmod 0600 "$control_staging/control.db"
+
+  cdn-control stage-static-asset-backup \
+    "$control_staging/control.db" \
+    "$data_dir/static-assets/objects" \
+    "$control_staging/static-assets/objects"
 
   archive_inputs=()
   for directory in pki letsencrypt nginx-artifacts; do

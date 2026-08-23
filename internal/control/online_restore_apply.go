@@ -56,6 +56,9 @@ func ApplyPendingOnlineRestore(ctx context.Context, config OnlineRestoreApplyCon
 	if err != nil {
 		return false, err
 	}
+	if config.Now == nil {
+		config.Now = time.Now
+	}
 	maintenancePath := onlineRestoreMaintenancePath(config.Root)
 	if job.State != OnlineRestoreCommitting {
 		if _, lockErr := os.Stat(maintenancePath); lockErr == nil && job.State == OnlineRestoreFailed {
@@ -67,8 +70,9 @@ func ApplyPendingOnlineRestore(ctx context.Context, config OnlineRestoreApplyCon
 	if config.Cipher == nil || config.ClickHouse == nil {
 		return false, errors.New("online restore apply cipher and ClickHouse client are required")
 	}
-	if config.Now == nil {
-		config.Now = time.Now
+	if job.Version != OnlineRestoreJobVersion {
+		failure := fmt.Errorf("restore job format version %d predates managed static asset restore coverage; start the restore again", job.Version)
+		return false, failPendingOnlineRestore(config, job, failure, nil)
 	}
 	if config.ReadyTimeout <= 0 {
 		config.ReadyTimeout = 2 * time.Minute
@@ -102,7 +106,7 @@ func ApplyPendingOnlineRestore(ctx context.Context, config OnlineRestoreApplyCon
 	if err != nil {
 		return false, failPendingOnlineRestore(config, job, err, nil)
 	}
-	if revalidated.DatabaseSHA256 != job.DatabaseSHA256 || revalidated.SecretsSHA256 != job.SecretsSHA256 || revalidated.TLSSHA256 != job.TLSSHA256 || revalidated.CAFingerprint != job.CAFingerprint {
+	if revalidated.DatabaseSHA256 != job.DatabaseSHA256 || revalidated.SecretsSHA256 != job.SecretsSHA256 || revalidated.TLSSHA256 != job.TLSSHA256 || revalidated.StaticAssetsSHA256 != job.StaticAssetsSHA256 || revalidated.CAFingerprint != job.CAFingerprint {
 		return false, failPendingOnlineRestore(config, job, errors.New("restore artifacts no longer match the verified job"), nil)
 	}
 	if err := config.ClickHouse.ValidateDatabase(applyContext, job.TemporaryDatabase); err != nil {
@@ -128,6 +132,10 @@ func ApplyPendingOnlineRestore(ctx context.Context, config OnlineRestoreApplyCon
 	}
 	if err := extractRestoreArchive(artifacts.TLSArchive, tlsStage); err != nil {
 		return false, failPendingOnlineRestore(config, job, err, nil)
+	}
+	staticAssetsStage := filepath.Join(dataStage, "static-assets")
+	if err := StageStaticAssetBackup(artifacts.DatabasePath, artifacts.StaticAssetDirectory, filepath.Join(staticAssetsStage, "objects")); err != nil {
+		return false, failPendingOnlineRestore(config, job, fmt.Errorf("stage managed static asset restore: %w", err), nil)
 	}
 
 	clickHousePromoted, oldDatabaseRenamed, err := promoteRestoreClickHouse(applyContext, config.ClickHouse, job)
@@ -176,6 +184,11 @@ func ApplyPendingOnlineRestore(ctx context.Context, config OnlineRestoreApplyCon
 		staged: filepath.Join(secretsStage, "nginx-artifacts"),
 		backup: filepath.Join(config.DataDir, "nginx-artifacts.before-restore-"+job.ID),
 	}
+	staticAssetsSwap := restorePathSwap{
+		live:   filepath.Join(config.DataDir, "static-assets"),
+		staged: staticAssetsStage,
+		backup: filepath.Join(config.DataDir, "static-assets.before-restore-"+job.ID),
+	}
 	tlsCutover := restoreTLSCutover{
 		root:   config.TLSDir,
 		stage:  tlsStage,
@@ -194,7 +207,7 @@ func ApplyPendingOnlineRestore(ctx context.Context, config OnlineRestoreApplyCon
 		}
 		return errors.Join(failures...)
 	}
-	for _, swap := range []*restorePathSwap{&databaseWALSwap, &databaseSHMSwap, &databaseSwap, &pkiSwap, &letsencryptSwap, &nginxArtifactsSwap} {
+	for _, swap := range []*restorePathSwap{&databaseWALSwap, &databaseSHMSwap, &databaseSwap, &pkiSwap, &letsencryptSwap, &nginxArtifactsSwap, &staticAssetsSwap} {
 		if err := swap.apply(); err != nil {
 			currentRollbackErr := swap.rollback()
 			manualRollbackErr := error(nil)
@@ -661,6 +674,13 @@ func validatePromotedRestore(config OnlineRestoreApplyConfig, job OnlineRestoreJ
 	}
 	if fingerprint != job.CAFingerprint {
 		return errors.New("promoted internal CA does not match the verified snapshot")
+	}
+	staticAssetsSHA256, err := VerifyStaticAssetBackup(filepath.Join(config.DataDir, "control.db"), filepath.Join(config.DataDir, "static-assets", "objects"))
+	if err != nil {
+		return fmt.Errorf("promoted managed static asset objects: %w", err)
+	}
+	if staticAssetsSHA256 != job.StaticAssetsSHA256 {
+		return errors.New("promoted managed static asset objects do not match the verified snapshot")
 	}
 	if domain := strings.TrimSpace(config.ControlTLSDomain); domain != "" {
 		_, err := tls.LoadX509KeyPair(filepath.Join(config.TLSDir, "live", domain, "fullchain.pem"), filepath.Join(config.TLSDir, "live", domain, "privkey.pem"))

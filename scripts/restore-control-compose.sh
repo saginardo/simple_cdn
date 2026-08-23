@@ -267,6 +267,8 @@ restored_staging="$restore_dir/backup/staging"
 restored_database="$restored_staging/control/control.db"
 restored_secrets="$restored_staging/control/control-secrets.tar.gz"
 restored_tls="$restored_staging/control/control-tls.tar.gz"
+restored_static_assets="$restored_staging/control/static-assets/objects"
+restored_database_uri='file:/restore/backup/staging/control/control.db?mode=ro&immutable=1'
 restored_control_env="$restore_dir/deployment/config/control.env"
 for required in "$restored_database" "$restored_secrets" "$restored_tls" "$restored_control_env"; do
   if [[ ! -r "$required" ]]; then
@@ -318,17 +320,60 @@ validate_archive "$restored_tls"
 
 sqlite_result=$(docker compose --profile backup run --rm \
   -v "$restore_dir:/restore:ro" --entrypoint sqlite3 backup \
-  /restore/backup/staging/control/control.db "PRAGMA quick_check;")
+  "$restored_database_uri" "PRAGMA quick_check;")
 if [[ "${sqlite_result//$'\r'/}" != "ok" ]]; then
   echo "restored SQLite quick_check failed: $sqlite_result" >&2
   exit 1
 fi
 schema_version=$(docker compose --profile backup run --rm \
   -v "$restore_dir:/restore:ro" --entrypoint sqlite3 backup \
-  /restore/backup/staging/control/control.db "SELECT COALESCE(MAX(version), 0) FROM schema_migrations;")
+  "$restored_database_uri" "SELECT COALESCE(MAX(version), 0) FROM schema_migrations;")
 if [[ ! "$schema_version" =~ ^[1-9][0-9]*$ ]]; then
   echo "restored SQLite database has no migration history" >&2
   exit 1
+fi
+
+static_asset_directory_has_entries() (
+  shopt -s nullglob dotglob
+  local entries=("$1"/*)
+  ((${#entries[@]} != 0))
+)
+
+require_empty_static_asset_directory() {
+  local directory="${1:?static asset directory is required}"
+  if [[ -L "$directory" || ( -e "$directory" && ! -d "$directory" ) ]]; then
+    echo "static asset backup path is not a directory: $directory" >&2
+    return 1
+  fi
+  if [[ -d "$directory" ]] && static_asset_directory_has_entries "$directory"; then
+    echo "static asset backup contains objects not referenced by SQLite: $directory" >&2
+    return 1
+  fi
+}
+
+static_asset_count=0
+# Migration 28 introduced the static_assets catalog.
+if ((schema_version >= 28)); then
+  static_asset_count=$(docker compose --profile backup run --rm \
+    -v "$restore_dir:/restore:ro" --entrypoint sqlite3 backup \
+    "$restored_database_uri" "SELECT COUNT(*) FROM static_assets;")
+  if [[ ! "$static_asset_count" =~ ^[0-9]+$ ]]; then
+    echo "restored SQLite static asset count is invalid: $static_asset_count" >&2
+    exit 1
+  fi
+fi
+if ((static_asset_count > 0)); then
+  if [[ -L "$restored_static_assets" || ! -d "$restored_static_assets" ]]; then
+    echo "snapshot is missing the managed static asset object directory" >&2
+    exit 1
+  fi
+  docker compose --profile backup run --rm \
+    -v "$restore_dir:/restore:ro" --entrypoint cdn-control backup \
+    verify-static-asset-backup \
+    /restore/backup/staging/control/control.db \
+    /restore/backup/staging/control/static-assets/objects >/dev/null
+else
+  require_empty_static_asset_directory "$restored_static_assets"
 fi
 
 install -d -o 101 -g 101 -m 0750 backup/staging/clickhouse
@@ -376,12 +421,24 @@ if ((verify_only)); then
   exit 0
 fi
 
-mkdir -p "$prepared_root/control" "$prepared_root/control-tls"
+mkdir -p "$prepared_root/control/static-assets/objects" "$prepared_root/control-tls"
 install -o 10001 -g 10001 -m 0600 "$restored_database" "$prepared_root/control/control.db"
 tar --extract --gzip --no-same-owner --no-same-permissions --file "$restored_secrets" --directory "$prepared_root/control"
 tar --extract --gzip --no-same-owner --no-same-permissions --file "$restored_tls" --directory "$prepared_root/control-tls"
+if [[ -d "$restored_static_assets" ]]; then
+  cp -a "$restored_static_assets/." "$prepared_root/control/static-assets/objects/"
+fi
 chown -R 10001:10001 "$prepared_root/control" "$prepared_root/control-tls"
 chmod 0750 "$prepared_root/control" "$prepared_root/control-tls"
+if ((static_asset_count > 0)); then
+  docker compose --profile backup run --rm \
+    -v "$prepared_root:/prepared:ro" --entrypoint cdn-control backup \
+    verify-static-asset-backup \
+    /prepared/control/control.db \
+    /prepared/control/static-assets/objects >/dev/null
+else
+  require_empty_static_asset_directory "$prepared_root/control/static-assets/objects"
+fi
 install -m 0600 "$restored_control_env" "$prepared_root/control.env"
 sed -i \
   -e '/^[[:space:]]*EDGE_BINARY_SHA256[[:space:]]*=/d' \

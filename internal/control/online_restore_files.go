@@ -19,26 +19,29 @@ import (
 )
 
 type onlineRestoreArtifacts struct {
-	SnapshotRoot       string
-	DatabasePath       string
-	SecretsArchive     string
-	TLSArchive         string
-	ClickHouseBackup   string
-	ClickHouseDatabase string
-	DatabaseSHA256     string
-	SecretsSHA256      string
-	TLSSHA256          string
-	CAFingerprint      string
-	SchemaVersion      int
+	SnapshotRoot         string
+	DatabasePath         string
+	SecretsArchive       string
+	TLSArchive           string
+	StaticAssetDirectory string
+	ClickHouseBackup     string
+	ClickHouseDatabase   string
+	DatabaseSHA256       string
+	SecretsSHA256        string
+	TLSSHA256            string
+	StaticAssetsSHA256   string
+	CAFingerprint        string
+	SchemaVersion        int
 }
 
 func validateOnlineRestoreSnapshot(jobRoot string, cipher *Cipher, tlsDomain string) (onlineRestoreArtifacts, error) {
 	snapshotRoot := filepath.Join(jobRoot, "snapshot")
 	artifacts := onlineRestoreArtifacts{
-		SnapshotRoot:   snapshotRoot,
-		DatabasePath:   filepath.Join(snapshotRoot, "backup", "staging", "control", "control.db"),
-		SecretsArchive: filepath.Join(snapshotRoot, "backup", "staging", "control", "control-secrets.tar.gz"),
-		TLSArchive:     filepath.Join(snapshotRoot, "backup", "staging", "control", "control-tls.tar.gz"),
+		SnapshotRoot:         snapshotRoot,
+		DatabasePath:         filepath.Join(snapshotRoot, "backup", "staging", "control", "control.db"),
+		SecretsArchive:       filepath.Join(snapshotRoot, "backup", "staging", "control", "control-secrets.tar.gz"),
+		TLSArchive:           filepath.Join(snapshotRoot, "backup", "staging", "control", "control-tls.tar.gz"),
+		StaticAssetDirectory: filepath.Join(snapshotRoot, "backup", "staging", "control", "static-assets", "objects"),
 	}
 	backupPath, backupDatabase, err := resolveClickHouseBackup(snapshotRoot)
 	if err != nil {
@@ -59,7 +62,7 @@ func validateOnlineRestoreSnapshot(jobRoot string, cipher *Cipher, tlsDomain str
 		return onlineRestoreArtifacts{}, errors.New("snapshot ClickHouse backup is not a directory")
 	}
 
-	database, err := store.OpenReadOnly(artifacts.DatabasePath)
+	database, err := store.OpenImmutable(artifacts.DatabasePath)
 	if err != nil {
 		return onlineRestoreArtifacts{}, fmt.Errorf("open restored SQLite database: %w", err)
 	}
@@ -99,6 +102,9 @@ func validateOnlineRestoreSnapshot(jobRoot string, cipher *Cipher, tlsDomain str
 	if artifacts.TLSSHA256, err = fileSHA256(artifacts.TLSArchive); err != nil {
 		return onlineRestoreArtifacts{}, err
 	}
+	if artifacts.StaticAssetsSHA256, err = VerifyStaticAssetBackup(artifacts.DatabasePath, artifacts.StaticAssetDirectory); err != nil {
+		return onlineRestoreArtifacts{}, fmt.Errorf("validate managed static asset backup: %w", err)
+	}
 
 	validationRoot := filepath.Join(jobRoot, "validation")
 	if err := os.RemoveAll(validationRoot); err != nil {
@@ -135,10 +141,11 @@ func validateOnlineRestoreSnapshot(jobRoot string, cipher *Cipher, tlsDomain str
 
 func verifyOnlineRestoreArtifactHashes(jobRoot string, job OnlineRestoreJob) (onlineRestoreArtifacts, error) {
 	artifacts := onlineRestoreArtifacts{
-		SnapshotRoot:   filepath.Join(jobRoot, "snapshot"),
-		DatabasePath:   filepath.Join(jobRoot, "snapshot", "backup", "staging", "control", "control.db"),
-		SecretsArchive: filepath.Join(jobRoot, "snapshot", "backup", "staging", "control", "control-secrets.tar.gz"),
-		TLSArchive:     filepath.Join(jobRoot, "snapshot", "backup", "staging", "control", "control-tls.tar.gz"),
+		SnapshotRoot:         filepath.Join(jobRoot, "snapshot"),
+		DatabasePath:         filepath.Join(jobRoot, "snapshot", "backup", "staging", "control", "control.db"),
+		SecretsArchive:       filepath.Join(jobRoot, "snapshot", "backup", "staging", "control", "control-secrets.tar.gz"),
+		TLSArchive:           filepath.Join(jobRoot, "snapshot", "backup", "staging", "control", "control-tls.tar.gz"),
+		StaticAssetDirectory: filepath.Join(jobRoot, "snapshot", "backup", "staging", "control", "static-assets", "objects"),
 	}
 	var err error
 	artifacts.ClickHouseBackup, artifacts.ClickHouseDatabase, err = resolveClickHouseBackup(artifacts.SnapshotRoot)
@@ -161,6 +168,13 @@ func verifyOnlineRestoreArtifactHashes(jobRoot string, job OnlineRestoreJob) (on
 		if got != check.want {
 			return onlineRestoreArtifacts{}, fmt.Errorf("staged restore artifact %s changed after validation", filepath.Base(check.path))
 		}
+	}
+	artifacts.StaticAssetsSHA256, err = VerifyStaticAssetBackup(artifacts.DatabasePath, artifacts.StaticAssetDirectory)
+	if err != nil {
+		return onlineRestoreArtifacts{}, fmt.Errorf("verify managed static asset backup: %w", err)
+	}
+	if artifacts.StaticAssetsSHA256 != job.StaticAssetsSHA256 {
+		return onlineRestoreArtifacts{}, errors.New("staged managed static asset objects changed after validation")
 	}
 	return artifacts, nil
 }
