@@ -214,8 +214,11 @@ func main() {
 		Repository:   env("NGINX_UPDATE_GITHUB_REPOSITORY", "saginardo/simple_cdn"),
 		GitHubAPIURL: env("NGINX_UPDATE_GITHUB_API_URL", "https://api.github.com"),
 		GitHubToken:  os.Getenv("NGINX_UPDATE_GITHUB_TOKEN"), FallbackVersion: nginxBundle.Version,
-		Interval: durationEnvironment("NGINX_UPDATE_CHECK_INTERVAL", 24*time.Hour),
-		Enabled:  booleanEnvironment("NGINX_UPDATE_ENABLED", true), Logger: logger,
+		Interval:    durationEnvironment("NGINX_UPDATE_CHECK_INTERVAL", 24*time.Hour),
+		Enabled:     booleanEnvironment("NGINX_UPDATE_ENABLED", true),
+		GCRetention: durationEnvironment("NGINX_UPDATE_ARTIFACT_RETENTION", 7*24*time.Hour),
+		GCInterval:  durationEnvironment("NGINX_UPDATE_GC_INTERVAL", 24*time.Hour),
+		Logger:      logger,
 	})
 	if err != nil {
 		fatal("initialize managed Nginx updates: " + err.Error())

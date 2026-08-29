@@ -84,7 +84,7 @@ SQLite `nginx_artifacts` 目录只保存不可变元数据和状态，文件路�
 
 - `candidate`：已下载验证，等待管理员批准；
 - `current`：新建节点和后续升级使用的目标；
-- `retired`：曾经批准但已被新目标替换，仍保留以服务在途或历史任务。
+- `retired`：曾经批准但已被新目标替换，在升级任务引用期间继续提供；未被引用且超过 `NGINX_UPDATE_ARTIFACT_RETENTION` 后由主控 GC 回收。
 
 镜像内置 bundle 不写入该目录表；没有已批准动态工件时，它就是当前兜底目标。
 
@@ -138,7 +138,13 @@ SQLite `nginx_artifacts` 目录只保存不可变元数据和状态，文件路�
 
 Compose Restic 流程会归档 `nginx-artifacts`，离线恢复会随控制数据目录恢复；在线恢复也会在提交阶段原子切换该目录并保留旧目录用于回滚。因此恢复后的 SQLite 工件目录与实际文件保持一致。
 
-动态工件当前不会自动删除。保留 retired 文件是保证旧任务 URL 稳定的设计选择，也意味着需要监控 `$CONTROL_DATA_DIR` 磁盘使用量。删除历史工件前必须确认没有任务、生成命令或外部缓存仍引用其 SHA；当前管理界面没有提供删除操作。
+主控会按 `NGINX_UPDATE_GC_INTERVAL`（默认 `24h`）自动回收工件目录，回收规则如下：
+
+- 总是保留：目录表中的 `current` 与 `candidate` 工件，以及任何被在途升级任务（queued/applying，含目标与源 Nginx bundle SHA）引用的工件——内容寻址 URL 因此在任务生命周期内保持稳定。
+- 未被引用的 retired 工件与磁盘上无目录记录的内容寻址孤儿文件，在文件 mtime 超过 `NGINX_UPDATE_ARTIFACT_RETENTION`（默认 `168h`，最小 `1h`）后删除。
+- 超过一小时的 `.nginx-download-*.tmp` 下载残留会被清理；未知文件一律不动。
+
+`NGINX_UPDATE_ENABLED=false` 只禁用检查，不会停止 GC；禁用检查器不会删除已批准的 current/candidate 文件。删除粒度以文件为准，不会修改目录表状态。仍需要一个独立监控提醒 `$CONTROL_DATA_DIR` 磁盘，但 retired 工件不再无限累积。
 
 ## 排障
 

@@ -3,6 +3,7 @@
 .env.*
 *.env
 !*.env.example
+.pi
 
 # Control-plane state and local databases
 data/

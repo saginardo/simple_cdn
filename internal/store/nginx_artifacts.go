@@ -82,6 +82,52 @@ func (s *Store) CurrentNginxArtifact() (domain.NginxArtifact, error) {
 	return scanNginxArtifact(s.db.QueryRow(nginxArtifactSelect + ` WHERE state = 'current' LIMIT 1`))
 }
 
+func (s *Store) ListNginxArtifacts() ([]domain.NginxArtifact, error) {
+	rows, err := s.db.Query(nginxArtifactSelect + ` ORDER BY downloaded_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []domain.NginxArtifact{}
+	for rows.Next() {
+		artifact, err := scanNginxArtifact(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, artifact)
+	}
+	return result, rows.Err()
+}
+
+// ReferencedUpgradeNginxSHA256s returns the managed Nginx bundle SHA-256 values
+// referenced by in-flight node upgrade tasks (queued or applying). The target
+// bundle is downloaded from the control plane during the upgrade, so a retired
+// artifact referenced by an active task must not be garbage collected.
+func (s *Store) ReferencedUpgradeNginxSHA256s() (map[string]struct{}, error) {
+	rows, err := s.db.Query(`SELECT DISTINCT lower(trim(target_nginx_sha256)) FROM node_upgrade_tasks
+		WHERE status IN (?, ?) AND length(trim(target_nginx_sha256)) = 64
+		UNION
+		SELECT DISTINCT lower(trim(source_nginx_sha256)) FROM node_upgrade_tasks
+		WHERE status IN (?, ?) AND length(trim(source_nginx_sha256)) = 64`,
+		domain.NodeUpgradeQueued, domain.NodeUpgradeApplying,
+		domain.NodeUpgradeQueued, domain.NodeUpgradeApplying)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[string]struct{})
+	for rows.Next() {
+		var sha256 string
+		if err := rows.Scan(&sha256); err != nil {
+			return nil, err
+		}
+		if validNginxArtifactDigest(sha256) {
+			result[sha256] = struct{}{}
+		}
+	}
+	return result, rows.Err()
+}
+
 func (s *Store) CandidateNginxArtifact() (domain.NginxArtifact, error) {
 	return scanNginxArtifact(s.db.QueryRow(nginxArtifactSelect + ` WHERE state = 'candidate' ORDER BY downloaded_at DESC LIMIT 1`))
 }

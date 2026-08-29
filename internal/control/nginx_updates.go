@@ -23,10 +23,14 @@ import (
 )
 
 const (
-	nginxReleaseManifestName = "cdn-nginx-linux-amd64.json"
-	nginxReleaseBundleName   = "cdn-nginx-linux-amd64.tar.gz"
-	nginxReleaseListLimit    = 30
-	nginxManifestLimit       = 64 << 10
+	nginxReleaseManifestName       = "cdn-nginx-linux-amd64.json"
+	nginxReleaseBundleName         = "cdn-nginx-linux-amd64.tar.gz"
+	nginxReleaseListLimit          = 30
+	nginxManifestLimit             = 64 << 10
+	nginxArtifactTmpRetention      = time.Hour
+	minNginxArtifactRetention      = time.Hour
+	defaultNginxArtifactRetention  = 7 * 24 * time.Hour
+	defaultNginxArtifactGCInterval = 24 * time.Hour
 )
 
 var (
@@ -43,8 +47,11 @@ type NginxUpdateManagerConfig struct {
 	FallbackVersion string
 	Interval        time.Duration
 	Enabled         bool
+	GCRetention     time.Duration
+	GCInterval      time.Duration
 	Client          *http.Client
 	Logger          *slog.Logger
+	Now             func() time.Time
 }
 
 type NginxUpdateRuntimeStatus struct {
@@ -65,8 +72,11 @@ type NginxUpdateManager struct {
 	fallbackVersion string
 	interval        time.Duration
 	enabled         bool
+	gcRetention     time.Duration
+	gcInterval      time.Duration
 	client          *http.Client
 	logger          *slog.Logger
+	now             func() time.Time
 
 	checkMu sync.Mutex
 	stateMu sync.RWMutex
@@ -134,11 +144,27 @@ func NewNginxUpdateManager(config NginxUpdateManagerConfig) (*NginxUpdateManager
 	if client == nil {
 		client = &http.Client{Timeout: 15 * time.Minute}
 	}
+	gcRetention := config.GCRetention
+	if gcRetention <= 0 {
+		gcRetention = defaultNginxArtifactRetention
+	}
+	if gcRetention < minNginxArtifactRetention {
+		gcRetention = minNginxArtifactRetention
+	}
+	gcInterval := config.GCInterval
+	if gcInterval <= 0 {
+		gcInterval = defaultNginxArtifactGCInterval
+	}
+	now := config.Now
+	if now == nil {
+		now = time.Now
+	}
 	manager := &NginxUpdateManager{
 		store: config.Store, directory: config.Directory, repository: config.Repository,
 		githubAPIURL: config.GitHubAPIURL, githubToken: config.GitHubToken,
 		fallbackVersion: config.FallbackVersion, interval: config.Interval,
-		enabled: config.Enabled, client: client, logger: config.Logger,
+		enabled: config.Enabled, gcRetention: gcRetention, gcInterval: gcInterval,
+		client: client, logger: config.Logger, now: now,
 	}
 	manager.state = NginxUpdateRuntimeStatus{
 		Enabled: config.Enabled, Repository: config.Repository,
@@ -148,22 +174,33 @@ func NewNginxUpdateManager(config NginxUpdateManagerConfig) (*NginxUpdateManager
 }
 
 func (m *NginxUpdateManager) Run(ctx context.Context) {
-	if !m.enabled {
-		<-ctx.Done()
-		return
-	}
-	for {
+	runCheck := func() {
+		if !m.enabled {
+			return
+		}
 		if err := m.Check(ctx); err != nil && ctx.Err() == nil && m.logger != nil {
 			m.logger.Warn("managed Nginx update check failed", "error", err)
 		}
-		timer := time.NewTimer(m.interval)
+	}
+	runGC := func() {
+		if err := m.GC(ctx); err != nil && ctx.Err() == nil && m.logger != nil {
+			m.logger.Warn("managed Nginx artifact GC failed", "error", err)
+		}
+	}
+	runCheck()
+	runGC()
+	checkTicker := time.NewTicker(m.interval)
+	gcTicker := time.NewTicker(m.gcInterval)
+	defer checkTicker.Stop()
+	defer gcTicker.Stop()
+	for {
 		select {
 		case <-ctx.Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
 			return
-		case <-timer.C:
+		case <-checkTicker.C:
+			runCheck()
+		case <-gcTicker.C:
+			runGC()
 		}
 	}
 }
@@ -277,6 +314,88 @@ func (m *NginxUpdateManager) ArtifactPath(sha256 string) string {
 		return ""
 	}
 	return filepath.Join(m.directory, sha256+".tar.gz")
+}
+
+// GC reclaims disk space from the managed Nginx artifact directory. It keeps
+// the cataloged candidate and current bundles plus any artifact referenced by
+// an in-flight node upgrade task; unreferenced cataloged and orphaned bundle
+// files are removed only after they have been untouched for the configured
+// retention. Abandoned download temporary files older than one hour are removed
+// unconditionally. Unknown files are never deleted.
+func (m *NginxUpdateManager) GC(ctx context.Context) error {
+	m.checkMu.Lock()
+	defer m.checkMu.Unlock()
+	catalog, err := m.store.ListNginxArtifacts()
+	if err != nil {
+		return err
+	}
+	keep := make(map[string]struct{})
+	for _, artifact := range catalog {
+		sha256 := strings.ToLower(strings.TrimSpace(artifact.SHA256))
+		if sha256 != "" && (artifact.State == domain.NginxArtifactCandidate || artifact.State == domain.NginxArtifactCurrent) {
+			keep[sha256] = struct{}{}
+		}
+	}
+	referenced, err := m.store.ReferencedUpgradeNginxSHA256s()
+	if err != nil {
+		return err
+	}
+	for sha256 := range referenced {
+		keep[sha256] = struct{}{}
+	}
+	entries, err := os.ReadDir(m.directory)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	now := m.now()
+	removed := 0
+	for _, entry := range entries {
+		if entry.IsDir() || ctx.Err() != nil {
+			continue
+		}
+		name := entry.Name()
+		pathname := filepath.Join(m.directory, name)
+		info, err := entry.Info()
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return err
+		}
+		if strings.HasPrefix(name, ".nginx-download-") && strings.HasSuffix(name, ".tmp") {
+			if now.Sub(info.ModTime()) >= nginxArtifactTmpRetention {
+				if err := os.Remove(pathname); err != nil && !errors.Is(err, os.ErrNotExist) {
+					return err
+				}
+				removed++
+			}
+			continue
+		}
+		if !strings.HasSuffix(name, ".tar.gz") {
+			continue
+		}
+		sha256 := strings.ToLower(strings.TrimSuffix(name, ".tar.gz"))
+		if !validSHA256Digest(sha256) {
+			continue
+		}
+		if _, protected := keep[sha256]; protected {
+			continue
+		}
+		if now.Sub(info.ModTime()) < m.gcRetention {
+			continue
+		}
+		if err := os.Remove(pathname); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		removed++
+	}
+	if removed > 0 && m.logger != nil {
+		m.logger.Info("managed Nginx artifact GC removed files", "count", removed)
+	}
+	return nil
 }
 
 func (m *NginxUpdateManager) ArtifactReady(artifact domain.NginxArtifact) bool {

@@ -76,6 +76,8 @@ Docker Compose 部署使用三类环境文件：
 | `NGINX_UPDATE_GITHUB_REPOSITORY` | `saginardo/simple_cdn`   | 提供 `nginx-vX.Y.Z` Release 的 `owner/repository`。                       |
 | `NGINX_UPDATE_GITHUB_TOKEN`      | 空                       | 私有 Release 或提高 API 配额时使用；不会下发给边缘。                      |
 | `NGINX_UPDATE_GITHUB_API_URL`    | `https://api.github.com` | GitHub API HTTPS origin，主要用于 GitHub Enterprise 或测试。              |
+| `NGINX_UPDATE_GC_INTERVAL`       | `24h`                    | 工件目录自动回收周期（正 Go duration）。禁用检查器时 GC 仍会运行。        |
+| `NGINX_UPDATE_ARTIFACT_RETENTION` | `168h`                   | 未引用 retired/孤儿工件文件保留期（正 Go duration，最小 `1h`）。          |
 
 下载目录固定为 `$CONTROL_DATA_DIR/nginx-artifacts`。完整信任链、状态和升级流程见 [NGINX_UPDATES.md](NGINX_UPDATES.md)。
 
