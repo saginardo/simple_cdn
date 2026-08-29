@@ -815,7 +815,7 @@ const accessLogs = [
     timestamp: now.toISOString(),
     node_id: "node-1",
     site_id: "site-1",
-    client_ip: "203.0.113.25",
+    client_ip: "2408:8266:403:69d:5471:286f:4839:ea4e",
     host: "cdn.example.com",
     scheme: "https",
     protocol: "HTTP/2.0",
@@ -2819,7 +2819,7 @@ test("rate limit errors can escalate from 429 to an IP ban", async ({
   });
 });
 
-test("log rows truncate long paths, color errors, and open request details", async ({
+test("log rows truncate long paths and IPv6 addresses, color errors, and open request details", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
@@ -2857,6 +2857,33 @@ test("log rows truncate long paths, color errors, and open request details", asy
   expect(statusBox?.x).toBeDefined();
   expect((requestBox?.x ?? 0) + (requestBox?.width ?? 0)).toBeLessThanOrEqual(
     (statusBox?.x ?? 0) + 1,
+  );
+  const clientAddress = notFoundRow.locator("td").nth(3).locator("span");
+  await expect(clientAddress).toHaveAttribute("title", accessLogs[0].client_ip);
+  expect(
+    await clientAddress.evaluate(
+      (element) => element.scrollWidth > element.clientWidth,
+    ),
+  ).toBe(true);
+  expect(
+    await clientAddress.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return {
+        overflow: style.overflow,
+        textOverflow: style.textOverflow,
+      };
+    }),
+  ).toEqual({ overflow: "hidden", textOverflow: "ellipsis" });
+  const clientCell = notFoundRow.locator("td").nth(3);
+  const siteCell = notFoundRow.locator("td").nth(4);
+  const [clientBox, siteBox] = await Promise.all([
+    clientCell.boundingBox(),
+    siteCell.boundingBox(),
+  ]);
+  expect(clientBox?.x).toBeDefined();
+  expect(siteBox?.x).toBeDefined();
+  expect((clientBox?.x ?? 0) + (clientBox?.width ?? 0)).toBeLessThanOrEqual(
+    (siteBox?.x ?? 0) + 1,
   );
   await expect(notFoundRow.getByText("404", { exact: true })).toHaveClass(
     /bg-warning\/10/,

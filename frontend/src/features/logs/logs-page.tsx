@@ -342,8 +342,13 @@ export function LogsPage() {
                         <TableCell>
                           <HTTPStatusBadge status={entry.status} />
                         </TableCell>
-                        <TableCell className="font-mono text-xs">
-                          {entry.client_ip}
+                        <TableCell className="min-w-0 overflow-hidden font-mono text-xs">
+                          <span
+                            className="block truncate"
+                            title={entry.client_ip}
+                          >
+                            {entry.client_ip}
+                          </span>
                         </TableCell>
                         <TableCell className="text-xs">
                           <div>{siteName(sites.data, entry.site_id)}</div>
