@@ -2,9 +2,11 @@ package control
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -163,5 +165,77 @@ func TestNginxArtifactGCKeepsReferencedAndReclaimsStaleFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(artifactDirectory, taskTarget+".tar.gz")); !os.IsNotExist(err) {
 		t.Fatalf("completed task target still present: %v", err)
+	}
+}
+
+func TestNginxArtifactGCWaitsForBackupOperationLock(t *testing.T) {
+	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	artifactDirectory := t.TempDir()
+	operationLockRoot := t.TempDir()
+	manager, err := NewNginxUpdateManager(NginxUpdateManagerConfig{
+		Store: database, Directory: artifactDirectory, OperationLockRoot: operationLockRoot,
+		Repository: "example/project", Interval: time.Hour, GCRetention: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.gcRetention = 0
+	staleArtifact := filepath.Join(artifactDirectory, strings.Repeat("7", 64)+".tar.gz")
+	if err := os.WriteFile(staleArtifact, []byte("stale"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	lockFile, err := os.OpenFile(onlineRestoreOperationLockPath(operationLockRoot), os.O_CREATE|os.O_RDWR, 0o660)
+	if err != nil {
+		t.Fatal(err)
+	}
+	locked := false
+	t.Cleanup(func() {
+		if locked {
+			_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+		}
+		_ = lockFile.Close()
+	})
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_SH); err != nil {
+		t.Fatal(err)
+	}
+	locked = true
+
+	ctx, cancel := context.WithCancel(context.Background())
+	gcResult := make(chan error, 1)
+	go func() { gcResult <- manager.GC(ctx) }()
+	select {
+	case err := <-gcResult:
+		cancel()
+		t.Fatalf("GC completed while the backup lock was held: %v", err)
+	case <-time.After(350 * time.Millisecond):
+	}
+	if _, err := os.Stat(staleArtifact); err != nil {
+		cancel()
+		t.Fatalf("GC removed an artifact while the backup lock was held: %v", err)
+	}
+	cancel()
+	select {
+	case err := <-gcResult:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancel blocked GC: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("GC did not stop after its lock wait was cancelled")
+	}
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	locked = false
+
+	if err := manager.GC(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(staleArtifact); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale artifact remains after the backup lock was released: %v", err)
 	}
 }

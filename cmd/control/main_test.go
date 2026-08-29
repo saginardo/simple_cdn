@@ -492,6 +492,26 @@ func TestComposeBackupAndRestoreCoverManagedStaticAssetObjects(t *testing.T) {
 	}
 }
 
+func TestComposeBackupLocksNginxArtifactsFromSnapshotThroughArchive(t *testing.T) {
+	contents, err := os.ReadFile(filepath.Join("..", "..", "scripts", "compose-backup.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(contents)
+	if !strings.Contains(script, `operation_lock="$restore_root/operations.lock"`) {
+		t.Fatal("backup script does not use the control-plane operation lock")
+	}
+	sharedLock := strings.Index(script, "flock --shared 9")
+	databaseSnapshot := strings.Index(script, `sqlite3 "$data_dir/control.db" ".backup '$control_staging/control.db'"`)
+	artifactArchive := strings.Index(script, `--exclude='.nginx-download-*.tmp' --directory "$data_dir" "${archive_inputs[@]}"`)
+	if sharedLock < 0 || databaseSnapshot < 0 || artifactArchive < 0 {
+		t.Fatalf("backup lock/snapshot/archive contract is incomplete: lock=%d snapshot=%d archive=%d", sharedLock, databaseSnapshot, artifactArchive)
+	}
+	if sharedLock >= databaseSnapshot || databaseSnapshot >= artifactArchive {
+		t.Fatalf("backup operation lock does not cover the SQLite snapshot and Nginx artifact archive: lock=%d snapshot=%d archive=%d", sharedLock, databaseSnapshot, artifactArchive)
+	}
+}
+
 func TestComposeBackupRuntimeLoaderCanRefreshRepeatedly(t *testing.T) {
 	directory := t.TempDir()
 	binDirectory := filepath.Join(directory, "bin")

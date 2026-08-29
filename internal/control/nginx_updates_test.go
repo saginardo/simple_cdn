@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -277,6 +278,78 @@ func TestNginxUpdateManagerRunChecksImmediatelyAndOnInterval(t *testing.T) {
 			cancel()
 			t.Fatal("managed Nginx checker did not run on schedule")
 		}
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("managed Nginx checker did not stop after cancellation")
+	}
+}
+
+func TestNginxUpdateManagerRunWaitsFullIntervalAfterSlowCheck(t *testing.T) {
+	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	const interval = 80 * time.Millisecond
+	type checkEvent struct {
+		number int32
+		at     time.Time
+	}
+	checks := make(chan checkEvent, 4)
+	releaseSecond := make(chan struct{})
+	secondFinished := make(chan time.Time, 1)
+	var requestCount atomic.Int32
+	client := &http.Client{Transport: nginxUpdateRoundTripper(func(request *http.Request) (*http.Response, error) {
+		number := requestCount.Add(1)
+		checks <- checkEvent{number: number, at: time.Now()}
+		if number == 2 {
+			<-releaseSecond
+			secondFinished <- time.Now()
+		}
+		return nginxUpdateResponse(http.StatusOK, []byte("[]")), nil
+	})}
+	manager, err := NewNginxUpdateManager(NginxUpdateManagerConfig{
+		Store: database, Directory: t.TempDir(), Repository: "example/project",
+		GitHubAPIURL: "https://api.example.test", FallbackVersion: "1.30.4",
+		Interval: interval, Enabled: true, Client: client,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		manager.Run(ctx)
+		close(done)
+	}()
+	for expected := int32(1); expected <= 2; expected++ {
+		select {
+		case event := <-checks:
+			if event.number != expected {
+				t.Fatalf("check number = %d, want %d", event.number, expected)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("managed Nginx check %d did not start", expected)
+		}
+	}
+	time.Sleep(2 * interval)
+	close(releaseSecond)
+	finishedAt := <-secondFinished
+	var third checkEvent
+	select {
+	case third = <-checks:
+	case <-time.After(time.Second):
+		t.Fatal("managed Nginx check did not run again")
+	}
+	if third.number != 3 {
+		t.Fatalf("check number = %d, want 3", third.number)
+	}
+	if delay := third.at.Sub(finishedAt); delay < interval {
+		t.Fatalf("slow check was retried after %s, want at least %s", delay, interval)
 	}
 	cancel()
 	select {

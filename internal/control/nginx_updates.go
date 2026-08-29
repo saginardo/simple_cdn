@@ -39,19 +39,20 @@ var (
 )
 
 type NginxUpdateManagerConfig struct {
-	Store           *store.Store
-	Directory       string
-	Repository      string
-	GitHubAPIURL    string
-	GitHubToken     string
-	FallbackVersion string
-	Interval        time.Duration
-	Enabled         bool
-	GCRetention     time.Duration
-	GCInterval      time.Duration
-	Client          *http.Client
-	Logger          *slog.Logger
-	Now             func() time.Time
+	Store             *store.Store
+	Directory         string
+	OperationLockRoot string
+	Repository        string
+	GitHubAPIURL      string
+	GitHubToken       string
+	FallbackVersion   string
+	Interval          time.Duration
+	Enabled           bool
+	GCRetention       time.Duration
+	GCInterval        time.Duration
+	Client            *http.Client
+	Logger            *slog.Logger
+	Now               func() time.Time
 }
 
 type NginxUpdateRuntimeStatus struct {
@@ -64,19 +65,20 @@ type NginxUpdateRuntimeStatus struct {
 }
 
 type NginxUpdateManager struct {
-	store           *store.Store
-	directory       string
-	repository      string
-	githubAPIURL    string
-	githubToken     string
-	fallbackVersion string
-	interval        time.Duration
-	enabled         bool
-	gcRetention     time.Duration
-	gcInterval      time.Duration
-	client          *http.Client
-	logger          *slog.Logger
-	now             func() time.Time
+	store             *store.Store
+	directory         string
+	operationLockRoot string
+	repository        string
+	githubAPIURL      string
+	githubToken       string
+	fallbackVersion   string
+	interval          time.Duration
+	enabled           bool
+	gcRetention       time.Duration
+	gcInterval        time.Duration
+	client            *http.Client
+	logger            *slog.Logger
+	now               func() time.Time
 
 	checkMu sync.Mutex
 	stateMu sync.RWMutex
@@ -111,6 +113,7 @@ type nginxReleaseManifest struct {
 
 func NewNginxUpdateManager(config NginxUpdateManagerConfig) (*NginxUpdateManager, error) {
 	config.Directory = strings.TrimSpace(config.Directory)
+	config.OperationLockRoot = strings.TrimSpace(config.OperationLockRoot)
 	config.Repository = strings.TrimSpace(config.Repository)
 	config.GitHubAPIURL = strings.TrimRight(strings.TrimSpace(config.GitHubAPIURL), "/")
 	config.GitHubToken = strings.TrimSpace(config.GitHubToken)
@@ -120,6 +123,12 @@ func NewNginxUpdateManager(config NginxUpdateManagerConfig) (*NginxUpdateManager
 	}
 	if config.Directory == "" {
 		return nil, errors.New("Nginx artifact directory is required")
+	}
+	if config.OperationLockRoot != "" {
+		config.OperationLockRoot = filepath.Clean(config.OperationLockRoot)
+		if config.OperationLockRoot == "." {
+			return nil, errors.New("Nginx artifact operation lock root is invalid")
+		}
 	}
 	if !githubRepositoryPattern.MatchString(config.Repository) {
 		return nil, errors.New("NGINX_UPDATE_GITHUB_REPOSITORY must be owner/repository")
@@ -139,6 +148,11 @@ func NewNginxUpdateManager(config NginxUpdateManagerConfig) (*NginxUpdateManager
 	}
 	if err := os.MkdirAll(config.Directory, 0o750); err != nil {
 		return nil, fmt.Errorf("create Nginx artifact directory: %w", err)
+	}
+	if config.OperationLockRoot != "" {
+		if err := os.MkdirAll(config.OperationLockRoot, 0o2750); err != nil {
+			return nil, fmt.Errorf("create Nginx artifact operation lock root: %w", err)
+		}
 	}
 	client := config.Client
 	if client == nil {
@@ -160,7 +174,8 @@ func NewNginxUpdateManager(config NginxUpdateManagerConfig) (*NginxUpdateManager
 		now = time.Now
 	}
 	manager := &NginxUpdateManager{
-		store: config.Store, directory: config.Directory, repository: config.Repository,
+		store: config.Store, directory: config.Directory, operationLockRoot: config.OperationLockRoot,
+		repository:   config.Repository,
 		githubAPIURL: config.GitHubAPIURL, githubToken: config.GitHubToken,
 		fallbackVersion: config.FallbackVersion, interval: config.Interval,
 		enabled: config.Enabled, gcRetention: gcRetention, gcInterval: gcInterval,
@@ -188,19 +203,38 @@ func (m *NginxUpdateManager) Run(ctx context.Context) {
 		}
 	}
 	runCheck()
+	if ctx.Err() != nil {
+		return
+	}
 	runGC()
-	checkTicker := time.NewTicker(m.interval)
-	gcTicker := time.NewTicker(m.gcInterval)
-	defer checkTicker.Stop()
-	defer gcTicker.Stop()
+	if ctx.Err() != nil {
+		return
+	}
+	var checkTimer *time.Timer
+	var checkTimerChannel <-chan time.Time
+	if m.enabled {
+		checkTimer = time.NewTimer(m.interval)
+		checkTimerChannel = checkTimer.C
+		defer checkTimer.Stop()
+	}
+	gcTimer := time.NewTimer(m.gcInterval)
+	defer gcTimer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-checkTicker.C:
+		case <-checkTimerChannel:
 			runCheck()
-		case <-gcTicker.C:
+			if ctx.Err() != nil {
+				return
+			}
+			checkTimer.Reset(m.interval)
+		case <-gcTimer.C:
 			runGC()
+			if ctx.Err() != nil {
+				return
+			}
+			gcTimer.Reset(m.gcInterval)
 		}
 	}
 }
@@ -323,6 +357,15 @@ func (m *NginxUpdateManager) ArtifactPath(sha256 string) string {
 // retention. Abandoned download temporary files older than one hour are removed
 // unconditionally. Unknown files are never deleted.
 func (m *NginxUpdateManager) GC(ctx context.Context) error {
+	// Backups hold this lock in shared mode from the SQLite snapshot through the
+	// artifact archive, so the catalog and files cannot diverge during capture.
+	if m.operationLockRoot != "" {
+		operationLock, err := acquireOnlineRestoreOperationLock(ctx, m.operationLockRoot)
+		if err != nil {
+			return fmt.Errorf("acquire Nginx artifact GC operation lock: %w", err)
+		}
+		defer operationLock.Close()
+	}
 	m.checkMu.Lock()
 	defer m.checkMu.Unlock()
 	catalog, err := m.store.ListNginxArtifacts()
