@@ -54,6 +54,7 @@ var schemaMigrations = []schemaMigration{
 	{Version: 35, Name: "ipv6-dns-management", Apply: migrateIPv6DNSManagement},
 	{Version: 36, Name: "site-node-drains", Apply: migrateSiteNodeDrains},
 	{Version: 37, Name: "publication-dns-ttl-history", Apply: migratePublicationDNSTTLHistory},
+	{Version: 38, Name: "deployment-task-site-lookup", Apply: migrateDeploymentTaskSiteLookup},
 }
 
 func migrateSiteNodeDrains(tx *sql.Tx) error {
@@ -88,6 +89,17 @@ func migrateSiteNodeDrains(tx *sql.Tx) error {
 
 func migratePublicationDNSTTLHistory(tx *sql.Tx) error {
 	return addColumnIfMissing(tx, "site_publications", "dns_ttl_seconds", "dns_ttl_seconds INTEGER")
+}
+
+// migrateDeploymentTaskSiteLookup supports the per-site latest-task lookups
+// (correlated NOT EXISTS and ORDER BY created_at DESC, id DESC) so they seek by
+// site instead of scanning the unbounded publish history.
+func migrateDeploymentTaskSiteLookup(tx *sql.Tx) error {
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_tasks_site_kind_created
+		ON deployment_tasks(site_id, kind, created_at DESC, id DESC)`); err != nil {
+		return fmt.Errorf("create deployment task site lookup index: %w", err)
+	}
+	return nil
 }
 
 func migrateIPv6DNSManagement(tx *sql.Tx) error {

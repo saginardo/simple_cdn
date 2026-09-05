@@ -889,6 +889,31 @@ func TestNodeCacheLimitMigrationAddsNodeOverrideAndClearsSiteOverrides(t *testin
 	}
 }
 
+func TestDeploymentTaskSiteLookupMigrationAddsCompositeIndex(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err := database.db.Exec(`DROP INDEX idx_tasks_site_kind_created`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`DELETE FROM schema_migrations WHERE version >= 38`); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := database.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master
+		WHERE type = 'index' AND name = 'idx_tasks_site_kind_created'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatal("deployment task site lookup index was not created")
+	}
+}
+
 func TestSiteProxyBufferingMigrationBackfillsPublishedSnapshots(t *testing.T) {
 	database, err := Open(filepath.Join(t.TempDir(), "control.db"))
 	if err != nil {
