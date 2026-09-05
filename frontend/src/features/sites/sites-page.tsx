@@ -148,13 +148,15 @@ export function SitesPage() {
 function SiteStatus({ site }: { site: Site }) {
   if (site.deleting)
     return <StatusBadge status="applying" label={t("删除中")} />;
-  if (!site.enabled)
-    return <StatusBadge status="pending" label={t("已停用")} />;
+  // Disabled sites can still publish (the next publish withdraws the entry
+  // service), so a running or failed task must stay visible.
   const task = site.latest_task;
   if (task && activeTask(task))
     return <StatusBadge status="applying" label={t("发布中")} />;
   if (task && (task.status === "partial" || task.status === "failed"))
     return <StatusBadge status={task.status} />;
+  if (!site.enabled)
+    return <StatusBadge status="pending" label={t("已停用")} />;
   return (
     <StatusBadge
       status={site.published ? "succeeded" : "pending"}

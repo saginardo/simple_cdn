@@ -1571,6 +1571,45 @@ test("sites list shows unpublished configuration without task polling", async ({
   await expect(row.getByText("成功", { exact: true })).toHaveCount(0);
 });
 
+test("sites list keeps publish task state visible for disabled sites", async ({
+  page,
+}) => {
+  const drainingSite = {
+    ...site,
+    name: "停用撤销站",
+    domains: ["drain.example.com"],
+    enabled: false,
+    latest_task: {
+      id: "site-task-1",
+      kind: "publish_site",
+      site_id: site.id,
+      status: "applying",
+      created_at: now.toISOString(),
+      updated_at: now.toISOString(),
+    },
+  };
+  const disabledSite = {
+    ...site,
+    name: "已停用站",
+    domains: ["disabled.example.com"],
+    enabled: false,
+  };
+  await mockAPI(page, {
+    "/api/sites": [drainingSite, disabledSite],
+  });
+  await page.goto("/#/sites");
+
+  const drainingRow = page
+    .getByRole("row")
+    .filter({ hasText: drainingSite.name });
+  await expect(drainingRow.getByText("发布中", { exact: true })).toBeVisible();
+  await expect(drainingRow.getByText("已停用", { exact: true })).toHaveCount(0);
+  const disabledRow = page
+    .getByRole("row")
+    .filter({ hasText: disabledSite.name });
+  await expect(disabledRow.getByText("已停用", { exact: true })).toBeVisible();
+});
+
 test("certificate workspace shows renewal state and manual actions", async ({
   page,
 }, testInfo) => {
