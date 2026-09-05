@@ -2577,21 +2577,14 @@ func (s *Store) PublishStatus(siteID string) (domain.PublishStatus, error) {
 	return s.deploymentStatus(task)
 }
 
-// PublishStatuses returns the latest task for every site together with recent
-// publish history. It reconciles active and late edge confirmations once so a
-// workspace poll observes the same state across both result sets.
-func (s *Store) PublishStatuses(historyLimit int) ([]domain.PublishStatus, []domain.PublishStatus, error) {
-	if historyLimit < 1 {
-		historyLimit = 50
-	}
-	if historyLimit > 200 {
-		historyLimit = 200
-	}
+// LatestPublishTasks returns the newest publish_site task of every site,
+// reconciling active and late edge confirmations first so callers observe the
+// same state a publish-status poll would.
+func (s *Store) LatestPublishTasks() ([]domain.DeploymentTask, error) {
 	if err := s.ReconcilePublishTasks(); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-
-	latestTasks, err := s.publishTasks(`SELECT id, kind, site_id, status, detail, deadline_at, created_at, updated_at
+	return s.publishTasks(`SELECT id, kind, site_id, status, detail, deadline_at, created_at, updated_at
 		FROM deployment_tasks AS task
 		WHERE task.kind = 'publish_site'
 		AND NOT EXISTS (
@@ -2600,6 +2593,18 @@ func (s *Store) PublishStatuses(historyLimit int) ([]domain.PublishStatus, []dom
 			AND (newer.created_at > task.created_at OR (newer.created_at = task.created_at AND newer.id > task.id))
 		)
 		ORDER BY task.updated_at DESC`)
+}
+
+// PublishStatuses returns the latest task for every site together with recent
+// publish history.
+func (s *Store) PublishStatuses(historyLimit int) ([]domain.PublishStatus, []domain.PublishStatus, error) {
+	if historyLimit < 1 {
+		historyLimit = 50
+	}
+	if historyLimit > 200 {
+		historyLimit = 200
+	}
+	latestTasks, err := s.LatestPublishTasks()
 	if err != nil {
 		return nil, nil, err
 	}

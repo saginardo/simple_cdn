@@ -545,6 +545,7 @@ export interface Site {
   }>;
   config_version: number;
   published: boolean;
+  latest_task?: DeploymentTask | null;
   enabled: boolean;
   deleting: boolean;
   created_at: string;

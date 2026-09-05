@@ -240,6 +240,13 @@ export function SiteDetailPage() {
       replace: true,
     });
   }, [deletion.data?.task?.status, navigate, queryClient]);
+  useEffect(() => {
+    const task = publish.data?.task;
+    if (!task || activeTask(task)) return;
+    void queryClient.invalidateQueries({
+      queryKey: ["sites"],
+    });
+  }, [publish.data?.task, queryClient]);
   const save = useMutation({
     mutationFn: () =>
       api<Site>(isNew ? "/api/sites" : `/api/sites/${encodedID}`, {

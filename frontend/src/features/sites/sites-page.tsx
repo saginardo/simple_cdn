@@ -25,12 +25,16 @@ import { formatDateTime, formatNumber } from "@/lib/format";
 import type { Site } from "@/lib/types";
 import { useListPagination } from "@/hooks/use-list-pagination";
 import { t, useI18n } from "@/lib/i18n";
+import { activeTask } from "./publish-status";
 export function SitesPage() {
   useI18n();
   const query = useQuery({
     queryKey: ["sites"],
     queryFn: () => api<Site[]>("/api/sites"),
-    refetchInterval: 20_000,
+    refetchInterval: (query) =>
+      query.state.data?.some((site) => activeTask(site.latest_task))
+        ? 5_000
+        : 20_000,
   });
   const pagination = useListPagination(query.data ?? []);
   return (
@@ -146,6 +150,11 @@ function SiteStatus({ site }: { site: Site }) {
     return <StatusBadge status="applying" label={t("删除中")} />;
   if (!site.enabled)
     return <StatusBadge status="pending" label={t("已停用")} />;
+  const task = site.latest_task;
+  if (task && activeTask(task))
+    return <StatusBadge status="applying" label={t("发布中")} />;
+  if (task && (task.status === "partial" || task.status === "failed"))
+    return <StatusBadge status={task.status} />;
   return (
     <StatusBadge
       status={site.published ? "succeeded" : "pending"}

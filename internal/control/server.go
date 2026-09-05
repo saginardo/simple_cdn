@@ -800,13 +800,38 @@ func (s *Server) setNodeStatus(response http.ResponseWriter, request *http.Reque
 	writeJSON(response, http.StatusOK, map[string]bool{"ok": true, "smart_routing_disabled": smartRoutingDisabled})
 }
 
+// siteListItem flattens the site row and adds the latest publish task so list
+// views can show an in-flight or failed publish without extra requests.
+// Encoding only: the embedded Site's UnmarshalJSON would drop LatestTask.
+type siteListItem struct {
+	domain.Site
+	LatestTask *domain.DeploymentTask `json:"latest_task,omitempty"`
+}
+
 func (s *Server) listSites(response http.ResponseWriter, request *http.Request) {
 	sites, err := s.Store.ListSites()
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(response, http.StatusOK, sites)
+	latestTasks, err := s.Store.LatestPublishTasks()
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, err)
+		return
+	}
+	latestBySite := make(map[string]domain.DeploymentTask, len(latestTasks))
+	for _, task := range latestTasks {
+		latestBySite[task.SiteID] = task
+	}
+	items := make([]siteListItem, 0, len(sites))
+	for _, site := range sites {
+		item := siteListItem{Site: site}
+		if task, found := latestBySite[site.ID]; found && publishTaskMatchesSite(task, site) {
+			item.LatestTask = &task
+		}
+		items = append(items, item)
+	}
+	writeJSON(response, http.StatusOK, items)
 }
 
 type originRequest struct {

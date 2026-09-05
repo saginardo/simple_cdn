@@ -607,6 +607,7 @@ const english = {
   "创建站点后配置域名、源站与边缘节点":
     "Configure domains, origins, and edge nodes after creating a site",
   待发布: "Pending publish",
+  发布中: "Publishing",
   待发布配置: "Pending configurations",
   发布状态: "Publish status",
   配置状态: "Configuration status",
