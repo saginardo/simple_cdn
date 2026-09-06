@@ -174,7 +174,7 @@ jobs:
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: ${{ env.IMAGE_NAME }}
-          flavor: latest=false
+          flavor: latest=${{ github.event_name != 'pull_request' }}
           tags: |
             type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
             type=raw,value=sha-${{ github.sha }},enable=${{ github.event_name != 'pull_request' && github.ref_type != 'tag' }}
