@@ -10,10 +10,11 @@ import {
   ShieldCheck,
   Trash2,
 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 import { toast } from "sonner";
 
 import { ListPagination } from "@/components/list-pagination";
+import { StatBand, StatItem } from "@/components/stat-band";
 import {
   EmptyState,
   PageBody,
@@ -24,7 +25,6 @@ import {
 } from "@/components/page";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
@@ -55,14 +55,12 @@ import { useListPagination } from "@/hooks/use-list-pagination";
 import { api, errorMessage, jsonBody } from "@/lib/api";
 import { formatDateTime, formatNumber } from "@/lib/format";
 import { t, useI18n } from "@/lib/i18n";
-import { toneSurface } from "@/lib/tones";
 import type {
   SmartRoutingConfig,
   SmartRoutingNode,
   SmartRoutingOverview,
   SmartRoutingWindow,
 } from "@/lib/types";
-import { cn } from "@/lib/utils";
 
 export function SchedulingPage() {
   useI18n();
@@ -124,32 +122,34 @@ export function SchedulingPage() {
       />
       <PageBody>
         {query.isLoading ? <PageLoading /> : null}
-        {query.error ? <PageError error={query.error} /> : null}
+        {query.error ? (
+          <PageError error={query.error} onRetry={() => void query.refetch()} />
+        ) : null}
         {query.data ? (
           <>
-            <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-              <Summary
-                icon={<Route />}
+            <StatBand className="grid-cols-2 xl:grid-cols-4">
+              <StatItem
+                icon={Route}
                 label={t("已配置节点")}
                 value={`${configured.length} / ${nodes.length}`}
               />
-              <Summary
-                icon={<ShieldCheck />}
+              <StatItem
+                icon={ShieldCheck}
                 label={t("已接管节点")}
                 value={formatNumber(managed.length)}
               />
-              <Summary
-                icon={<Gauge />}
+              <StatItem
+                icon={Gauge}
                 label={t("受阻节点")}
                 value={formatNumber(blocked.length)}
-                danger={blocked.length > 0}
+                tone={blocked.length > 0 ? "danger" : "neutral"}
               />
-              <Summary
-                icon={<CalendarClock />}
+              <StatItem
+                icon={CalendarClock}
                 label={t("时间规则")}
                 value={formatNumber(scheduled.length)}
               />
-            </section>
+            </StatBand>
 
             {nodes.length ? (
               <Panel>
@@ -781,35 +781,4 @@ function smartRoutingValidationError(config: SmartRoutingConfig) {
     return t("每个时间窗都需要星期、开始和结束时间");
   }
   return "";
-}
-
-function Summary({
-  icon,
-  label,
-  value,
-  danger = false,
-}: {
-  icon: ReactNode;
-  label: string;
-  value: string;
-  danger?: boolean;
-}) {
-  return (
-    <Card size="sm">
-      <CardContent className="flex items-center gap-3">
-        <div
-          className={cn(
-            "grid size-9 shrink-0 place-items-center rounded-md [&_svg]:size-4",
-            toneSurface[danger ? "danger" : "neutral"],
-          )}
-        >
-          {icon}
-        </div>
-        <div className="min-w-0">
-          <div className="text-xs text-muted-foreground">{label}</div>
-          <div className="text-lg font-semibold tabular-nums">{value}</div>
-        </div>
-      </CardContent>
-    </Card>
-  );
 }

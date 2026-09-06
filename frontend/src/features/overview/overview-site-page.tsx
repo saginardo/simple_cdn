@@ -8,9 +8,9 @@ import {
   PageError,
   PageHeader,
   PageLoading,
-  Panel,
 } from "@/components/page";
 import { ListPagination } from "@/components/list-pagination";
+import { StatBand, StatItem } from "@/components/stat-band";
 import {
   OverviewAreaChart,
   chartPoint,
@@ -79,7 +79,9 @@ export function OverviewSitePage() {
       />
       <PageBody>
         {query.isLoading ? <PageLoading /> : null}
-        {query.error ? <PageError error={query.error} /> : null}
+        {query.error ? (
+          <PageError error={query.error} onRetry={() => void query.refetch()} />
+        ) : null}
         {query.data && !site ? (
           <EmptyState
             title={t("未找到站点")}
@@ -88,27 +90,27 @@ export function OverviewSitePage() {
         ) : null}
         {site ? (
           <>
-            <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-              <Summary
+            <StatBand className="grid-cols-2 xl:grid-cols-4">
+              <StatItem
                 label={t("请求数")}
                 value={formatNumber(site.requests)}
               />
-              <Summary
+              <StatItem
                 label={t("下行流量")}
                 value={formatBytes(site.downstream_bytes)}
               />
-              <Summary
+              <StatItem
                 label={t("上行流量")}
                 value={formatBytes(site.upstream_bytes)}
               />
-              <Summary
+              <StatItem
                 label={t("错误率")}
                 value={formatPercent(
                   site.requests ? site.error_requests / site.requests : 0,
                   2,
                 )}
               />
-            </section>
+            </StatBand>
             <Card>
               <CardHeader className="flex-col items-start justify-between gap-4 sm:flex-row">
                 <div>
@@ -181,13 +183,5 @@ export function OverviewSitePage() {
         ) : null}
       </PageBody>
     </>
-  );
-}
-function Summary({ label, value }: { label: string; value: string }) {
-  return (
-    <Panel className="px-5 py-4">
-      <p className="text-sm text-muted-foreground">{label}</p>
-      <p className="mt-2 text-2xl font-semibold tabular-nums">{value}</p>
-    </Panel>
   );
 }

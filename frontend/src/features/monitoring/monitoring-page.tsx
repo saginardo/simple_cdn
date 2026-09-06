@@ -11,11 +11,12 @@ import {
   Server,
   Trash2,
 } from "lucide-react";
-import { useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router";
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { ListPagination } from "@/components/list-pagination";
+import { StatBand, StatItem } from "@/components/stat-band";
 import {
   EmptyState,
   PageBody,
@@ -26,7 +27,6 @@ import {
 } from "@/components/page";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -57,13 +57,11 @@ import { useListPagination } from "@/hooks/use-list-pagination";
 import { usePersistentEnum } from "@/hooks/use-persistent-state";
 import { api, errorMessage, jsonBody } from "@/lib/api";
 import { formatDateTime, formatNumber } from "@/lib/format";
-import { toneSurface } from "@/lib/tones";
 import type {
   MonitoringNode,
   MonitoringOverview,
   MonitoringTarget,
 } from "@/lib/types";
-import { cn } from "@/lib/utils";
 import { t, useI18n } from "@/lib/i18n";
 export function MonitoringPage() {
   useI18n();
@@ -170,12 +168,14 @@ export function MonitoringPage() {
       />
       <PageBody>
         {query.isLoading ? <PageLoading /> : null}
-        {query.error ? <PageError error={query.error} /> : null}
+        {query.error ? (
+          <PageError error={query.error} onRetry={() => void query.refetch()} />
+        ) : null}
         {data ? (
           <>
-            <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-              <Summary
-                icon={<Activity />}
+            <StatBand className="grid-cols-2 xl:grid-cols-4">
+              <StatItem
+                icon={Activity}
                 label={t("启用目标")}
                 value={formatNumber(enabledTargets.length)}
                 detail={t("{value0} 秒 / 每轮 {value1} 次", {
@@ -183,28 +183,28 @@ export function MonitoringPage() {
                   value1: data.attempts_per_round,
                 })}
               />
-              <Summary
-                icon={<Server />}
+              <StatItem
+                icon={Server}
                 label={t("监测覆盖")}
                 value={`${capableNodes.length} / ${data.nodes.length}`}
                 detail={t("已支持节点")}
               />
-              <Summary
-                icon={<Gauge />}
+              <StatItem
+                icon={Gauge}
                 label={t("当前正常")}
                 value={`${healthyNodes.length} / ${capableNodes.length}`}
                 detail={t("健康线 {value0} 分", {
                   value0: data.healthy_score,
                 })}
               />
-              <Summary
-                icon={<Clock />}
+              <StatItem
+                icon={Clock}
                 label={t("需关注节点")}
                 value={formatNumber(unhealthyNodes.length)}
                 detail={t("评分偏低或数据过期")}
-                danger={Boolean(unhealthyNodes.length)}
+                tone={unhealthyNodes.length ? "danger" : "neutral"}
               />
-            </section>
+            </StatBand>
 
             {!enabledTargets.length ? (
               <EmptyState
@@ -501,8 +501,20 @@ function NodeRow({
               label: t("异常"),
             };
   const historyPath = `/monitoring/nodes/${encodeURIComponent(node.node_id)}`;
+  const openHistory = () => navigate(historyPath);
   return (
-    <TableRow className="cursor-pointer" onClick={() => navigate(historyPath)}>
+    <TableRow
+      className="cursor-pointer"
+      tabIndex={0}
+      aria-label={t("查看 {value0} 拨测历史", { value0: node.name })}
+      onClick={openHistory}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          openHistory();
+        }
+      }}
+    >
       <TableCell className="pl-5">
         <div className="font-medium">{node.name}</div>
         <div className="font-mono text-xs text-muted-foreground">
@@ -561,39 +573,6 @@ function NodeRow({
         </Button>
       </TableCell>
     </TableRow>
-  );
-}
-function Summary({
-  icon,
-  label,
-  value,
-  detail,
-  danger = false,
-}: {
-  icon: ReactNode;
-  label: string;
-  value: string;
-  detail: string;
-  danger?: boolean;
-}) {
-  return (
-    <Card size="sm">
-      <CardContent className="flex items-center gap-3">
-        <div
-          className={cn(
-            "grid size-9 shrink-0 place-items-center rounded-md [&_svg]:size-4",
-            toneSurface[danger ? "danger" : "neutral"],
-          )}
-        >
-          {icon}
-        </div>
-        <div className="min-w-0">
-          <div className="text-xs text-muted-foreground">{label}</div>
-          <div className="text-lg font-semibold tabular-nums">{value}</div>
-          <div className="truncate text-xs text-muted-foreground">{detail}</div>
-        </div>
-      </CardContent>
-    </Card>
   );
 }
 function CreateTargetDialog({

@@ -62,12 +62,15 @@ const historyRanges: Array<{
     label: "7 天",
   },
 ];
+/* Multi-target latency lines need distinguishable hues; grayscale chart
+   tokens would render five indistinguishable series. Semantic tokens stay
+   dark-mode aware; the violet fallback covers the fifth target. */
 const chartColors = [
-  "var(--chart-1)",
-  "var(--chart-2)",
-  "var(--chart-3)",
-  "var(--chart-4)",
-  "var(--chart-5)",
+  "var(--info)",
+  "var(--success)",
+  "var(--warning)",
+  "oklch(0.6 0.13 300)",
+  "var(--destructive)",
 ];
 interface ChartSeries {
   series: MonitoringHistorySeries;
@@ -171,7 +174,11 @@ export function MonitoringNodeHistoryPage() {
       <PageBody>
         {query.isLoading ? <PageLoading /> : null}
         {query.error ? (
-          <PageError title={t("拨测历史加载失败")} error={query.error} />
+          <PageError
+            title={t("拨测历史加载失败")}
+            error={query.error}
+            onRetry={() => void query.refetch()}
+          />
         ) : null}
         {data ? (
           <>

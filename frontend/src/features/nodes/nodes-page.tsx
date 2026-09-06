@@ -119,7 +119,9 @@ export function NodesPage() {
       <PageBody>
         <NginxArtifactPanel />
         {nodes.isLoading ? <PageLoading /> : null}
-        {nodes.error ? <PageError error={nodes.error} /> : null}
+        {nodes.error ? (
+          <PageError error={nodes.error} onRetry={() => void nodes.refetch()} />
+        ) : null}
         {nodes.data ? (
           nodes.data.length ? (
             <Panel>

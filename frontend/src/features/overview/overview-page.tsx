@@ -23,6 +23,7 @@ import {
   PageLoading,
 } from "@/components/page";
 import { ListPagination } from "@/components/list-pagination";
+import { StatBand, StatItem } from "@/components/stat-band";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -62,13 +63,7 @@ import {
   formatNumber,
   formatPercent,
 } from "@/lib/format";
-import {
-  httpStatusTone,
-  toneFill,
-  toneSurface,
-  toneText,
-  type Tone,
-} from "@/lib/tones";
+import { httpStatusTone, toneFill } from "@/lib/tones";
 import type { Overview, OverviewPoint, OverviewSite } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { useListPagination } from "@/hooks/use-list-pagination";
@@ -163,7 +158,7 @@ export function OverviewPage() {
       label: t("请求数"),
       value: formatNumber(totals?.requests),
       meta: t("最近 24 小时"),
-      tone: "info" as const,
+      tone: "neutral" as const,
     },
     {
       id: "downstream-bytes",
@@ -171,7 +166,7 @@ export function OverviewPage() {
       label: t("下行流量"),
       value: formatBytes(totals?.downstream_bytes),
       meta: t("客户端响应正文"),
-      tone: "success" as const,
+      tone: "neutral" as const,
     },
     {
       id: "upstream-bytes",
@@ -179,7 +174,7 @@ export function OverviewPage() {
       label: t("上行流量"),
       value: formatBytes(totals?.upstream_bytes),
       meta: t("客户端请求总字节"),
-      tone: "info" as const,
+      tone: "neutral" as const,
     },
     {
       id: "errors",
@@ -197,7 +192,7 @@ export function OverviewPage() {
       meta: t("{value0} 个站点", {
         value0: formatNumber(query.data?.sites.length),
       }),
-      tone: errorRate > 0.05 ? ("danger" as const) : ("success" as const),
+      tone: errorRate > 0.05 ? ("danger" as const) : ("neutral" as const),
     },
   ];
   const sortedSites = useMemo(
@@ -247,25 +242,29 @@ export function OverviewPage() {
       />
       <PageBody>
         {query.isLoading ? <PageLoading /> : null}
-        {query.error ? <PageError error={query.error} /> : null}
+        {query.error ? (
+          <PageError error={query.error} onRetry={() => void query.refetch()} />
+        ) : null}
         {query.data ? (
           <>
             <section aria-label={t("关键指标")}>
-              <Card data-slot="metric-band" className="py-0">
-                <CardContent className="grid gap-0 px-0 sm:grid-cols-2 xl:grid-cols-5">
-                  {metricItems.map((item, index) => (
-                    <MetricBandItem
-                      key={item.id}
-                      {...item}
-                      className={metricBandDividers[index]}
-                    />
-                  ))}
-                </CardContent>
-              </Card>
+              <StatBand className="grid-cols-2 xl:grid-cols-5 [&>*:last-child]:max-xl:col-span-2">
+                {metricItems.map((item) => (
+                  <StatItem
+                    key={item.id}
+                    icon={item.icon}
+                    label={item.label}
+                    value={item.value}
+                    detail={item.meta}
+                    tone={item.tone}
+                    className="min-h-32"
+                  />
+                ))}
+              </StatBand>
             </section>
 
             <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
-              <Card className="border-t-2 border-t-info">
+              <Card>
                 <CardHeader className="flex-col gap-3 border-b border-border/70 pb-4 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
                   <div>
                     <CardTitle>{t("流量趋势")}</CardTitle>
@@ -293,11 +292,18 @@ export function OverviewPage() {
                   </Tabs>
                 </CardHeader>
                 <CardContent>
-                  <OverviewAreaChart data={chartData} metric={metric} />
+                  {chartData.length ? (
+                    <OverviewAreaChart data={chartData} metric={metric} />
+                  ) : (
+                    <EmptyState
+                      title={t("暂无流量数据")}
+                      description={t("站点开始接收请求后，这里会展示小时趋势")}
+                    />
+                  )}
                 </CardContent>
               </Card>
 
-              <Card className="border-t-2 border-t-success">
+              <Card>
                 <CardHeader>
                   <CardTitle>{t("状态码分布")}</CardTitle>
                   <CardDescription>
@@ -316,7 +322,9 @@ export function OverviewPage() {
                           <div key={item.code}>
                             <div className="mb-1 flex items-center justify-between text-xs">
                               <span className="font-mono font-medium">
-                                HTTP {item.code}
+                                {t("HTTP {value0}", {
+                                  value0: item.code,
+                                })}
                               </span>
                               <span className="text-muted-foreground">
                                 {formatPercent(ratio)} ·{" "}
@@ -345,7 +353,7 @@ export function OverviewPage() {
               </Card>
             </section>
 
-            <Card className="border-t-2 border-t-primary">
+            <Card>
               <CardHeader className="border-b border-border/70 pb-4">
                 <CardTitle>{t("站点流量")}</CardTitle>
                 <CardDescription>
@@ -376,14 +384,18 @@ export function OverviewPage() {
                             sortKey="downstream_bytes"
                             sort={siteSort}
                             onSort={handleSiteSort}
+                            className="hidden md:table-cell"
                           />
                           <SortableSiteTableHead
                             label={t("上行流量")}
                             sortKey="upstream_bytes"
                             sort={siteSort}
                             onSort={handleSiteSort}
+                            className="hidden lg:table-cell"
                           />
-                          <TableHead>{t("错误率")}</TableHead>
+                          <TableHead className="hidden lg:table-cell">
+                            {t("错误率")}
+                          </TableHead>
                           <TableHead className="w-12 pr-6">
                             <span className="sr-only">{t("详情")}</span>
                           </TableHead>
@@ -401,13 +413,13 @@ export function OverviewPage() {
                             <TableCell className="tabular-nums">
                               {formatNumber(site.requests)}
                             </TableCell>
-                            <TableCell className="tabular-nums">
+                            <TableCell className="hidden tabular-nums md:table-cell">
                               {formatBytes(site.downstream_bytes)}
                             </TableCell>
-                            <TableCell className="tabular-nums">
+                            <TableCell className="hidden tabular-nums lg:table-cell">
                               {formatBytes(site.upstream_bytes)}
                             </TableCell>
-                            <TableCell className="tabular-nums">
+                            <TableCell className="hidden tabular-nums lg:table-cell">
                               {formatPercent(
                                 site.requests
                                   ? site.error_requests / site.requests
@@ -421,6 +433,9 @@ export function OverviewPage() {
                                   type="button"
                                   variant="ghost"
                                   size="icon-sm"
+                                  aria-label={t("快速预览 {value0}", {
+                                    value0: site.name,
+                                  })}
                                   title={t("快速预览")}
                                   onClick={() => setPreviewSite(site)}
                                 >
@@ -604,7 +619,7 @@ export function OverviewAreaChart({
             <stop
               offset="5%"
               stopColor={`var(--color-${metric})`}
-              stopOpacity={0.35}
+              stopOpacity={0.16}
             />
             <stop
               offset="95%"
@@ -622,7 +637,7 @@ export function OverviewAreaChart({
           minTickGap={30}
         />
         <YAxis
-          width={58}
+          width={72}
           tickLine={false}
           axisLine={false}
           tickFormatter={(value) => selected.format(Number(value))}
@@ -690,65 +705,6 @@ export function chartPoint(point: OverviewPoint): OverviewPoint & {
     }),
   };
 }
-const metricBandDividers = [
-  "",
-  "border-t sm:border-t-0 sm:border-l",
-  "border-t xl:border-t-0 xl:border-l",
-  "border-t sm:border-l xl:border-t-0 xl:border-l",
-  "border-t xl:border-t-0 xl:border-l",
-] as const;
-
-function MetricBandItem({
-  icon: Icon,
-  label,
-  value,
-  meta,
-  tone,
-  className,
-}: {
-  icon: typeof Activity;
-  label: string;
-  value: string;
-  meta: string;
-  tone: Tone;
-  className?: string;
-}) {
-  return (
-    <div
-      data-slot="metric-band-item"
-      className={cn(
-        "group/metric flex min-h-36 flex-col px-5 py-4 transition-colors hover:bg-muted/30",
-        className,
-      )}
-    >
-      <div className="flex min-w-0 items-center gap-2">
-        <span
-          className={cn(
-            "grid size-7 shrink-0 place-items-center rounded-md shadow-2xs transition-transform duration-200 group-hover/metric:scale-105",
-            toneSurface[tone],
-          )}
-        >
-          <Icon className={cn("size-4", toneText[tone])} aria-hidden="true" />
-        </span>
-        <p className="truncate text-sm font-medium text-muted-foreground">
-          {label}
-        </p>
-      </div>
-      <p className="mt-5 text-[1.65rem] font-semibold leading-none tracking-normal tabular-nums">
-        {value}
-      </p>
-      <p className="mt-2 text-xs text-muted-foreground">{meta}</p>
-      <span
-        className={cn(
-          "mt-auto block h-0.5 w-10 rounded-full opacity-70 transition-all duration-200 group-hover/metric:w-16",
-          toneFill[tone],
-        )}
-        aria-hidden="true"
-      />
-    </div>
-  );
-}
-
 function SiteQuickPreviewSheet({
   site,
   onClose,
@@ -775,7 +731,7 @@ function SiteQuickPreviewSheet({
             </Link>
           </SheetTitle>
           <SheetDescription className="truncate font-mono text-xs mt-1">
-            ID: {site.id}
+            {t("ID: {value0}", { value0: site.id })}
           </SheetDescription>
         </SheetHeader>
 

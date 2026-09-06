@@ -39,30 +39,34 @@ export function ListPagination({
         {totalItems} {itemLabel}
       </span>
       <div className="flex items-center gap-1.5">
-        <span className="mr-1 tabular-nums">
-          {page} / {totalPages}
-          {t(" 页")}
-        </span>
-        <Button
-          type="button"
-          variant="outline"
-          size="icon-xs"
-          aria-label={t("上一页")}
-          disabled={disabled || page <= 1}
-          onClick={() => setPage(page - 1)}
-        >
-          <ChevronLeft />
-        </Button>
-        <Button
-          type="button"
-          variant="outline"
-          size="icon-xs"
-          aria-label={t("下一页")}
-          disabled={disabled || page >= totalPages}
-          onClick={() => setPage(page + 1)}
-        >
-          <ChevronRight />
-        </Button>
+        {totalPages > 1 ? (
+          <>
+            <span className="mr-1 tabular-nums">
+              {page} / {totalPages}
+              {t(" 页")}
+            </span>
+            <Button
+              type="button"
+              variant="outline"
+              size="icon-xs"
+              aria-label={t("上一页")}
+              disabled={disabled || page <= 1}
+              onClick={() => setPage(page - 1)}
+            >
+              <ChevronLeft />
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="icon-xs"
+              aria-label={t("下一页")}
+              disabled={disabled || page >= totalPages}
+              onClick={() => setPage(page + 1)}
+            >
+              <ChevronRight />
+            </Button>
+          </>
+        ) : null}
         {action ? <div className="ml-1 border-l pl-2">{action}</div> : null}
       </div>
     </nav>

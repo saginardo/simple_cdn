@@ -7,10 +7,11 @@ import {
   LoaderCircle,
   RefreshCw,
 } from "lucide-react";
-import { useMemo, type ComponentType } from "react";
+import { useMemo } from "react";
 import { Link } from "react-router";
 import { toast } from "sonner";
 import { ListPagination } from "@/components/list-pagination";
+import { StatBand, StatItem } from "@/components/stat-band";
 import {
   EmptyState,
   PageBody,
@@ -111,33 +112,35 @@ export function CertificatesPage() {
       />
       <PageBody>
         {query.isLoading ? <PageLoading /> : null}
-        {query.error ? <PageError error={query.error} /> : null}
+        {query.error ? (
+          <PageError error={query.error} onRetry={() => void query.refetch()} />
+        ) : null}
         {query.data ? (
           sites.length ? (
             <>
-              <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border bg-border lg:grid-cols-4">
-                <Metric
+              <StatBand className="grid-cols-2 lg:grid-cols-4">
+                <StatItem
                   icon={KeyRound}
                   label={t("证书站点")}
-                  value={certificateSites.length}
+                  value={formatNumber(certificateSites.length)}
                 />
-                <Metric
+                <StatItem
                   icon={BadgeCheck}
                   label={t("有效证书")}
-                  value={valid.length}
+                  value={formatNumber(valid.length)}
                 />
-                <Metric
+                <StatItem
                   icon={CircleAlert}
                   label={t("需处理")}
-                  value={attention.length}
-                  alert={attention.length > 0}
+                  value={formatNumber(attention.length)}
+                  tone={attention.length > 0 ? "warning" : "neutral"}
                 />
-                <Metric
+                <StatItem
                   icon={CalendarClock}
                   label={t("任务进行中")}
-                  value={active.length}
+                  value={formatNumber(active.length)}
                 />
-              </div>
+              </StatBand>
 
               <Tabs
                 value={filter}
@@ -245,37 +248,6 @@ export function CertificatesPage() {
         ) : null}
       </PageBody>
     </>
-  );
-}
-function Metric({
-  icon: Icon,
-  label,
-  value,
-  alert = false,
-}: {
-  icon: ComponentType<{
-    className?: string;
-    "aria-hidden"?: boolean;
-  }>;
-  label: string;
-  value: number;
-  alert?: boolean;
-}) {
-  return (
-    <div className="flex min-h-24 items-center gap-3 bg-card px-4 py-4 sm:px-5">
-      <div className="flex size-9 shrink-0 items-center justify-center rounded-md border bg-muted/30">
-        <Icon
-          className={alert ? "size-4 text-destructive" : "size-4 text-primary"}
-          aria-hidden={true}
-        />
-      </div>
-      <div className="min-w-0">
-        <div className="text-xs text-muted-foreground">{label}</div>
-        <div className="mt-0.5 text-xl font-semibold tabular-nums">
-          {formatNumber(value)}
-        </div>
-      </div>
-    </div>
   );
 }
 function CertificateRow({

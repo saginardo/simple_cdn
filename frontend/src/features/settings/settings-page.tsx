@@ -82,7 +82,9 @@ export function SettingsPage() {
       />
       <PageBody>
         {query.isLoading ? <PageLoading /> : null}
-        {query.error ? <PageError error={query.error} /> : null}
+        {query.error ? (
+          <PageError error={query.error} onRetry={() => void query.refetch()} />
+        ) : null}
         {query.data ? (
           <Tabs
             value={section}
@@ -894,7 +896,7 @@ function BackupForm({ settings }: { settings: Settings }) {
               placeholder="s3:https://account.r2.cloudflarestorage.com/bucket"
             />
           </div>
-          <Field label="Access Key ID" id="backup-key">
+          <Field label={t("Access Key ID")} id="backup-key">
             <Input
               id="backup-key"
               required
@@ -902,7 +904,7 @@ function BackupForm({ settings }: { settings: Settings }) {
               onChange={(event) => setAccessKey(event.target.value)}
             />
           </Field>
-          <Field label="Secret Access Key" id="backup-secret">
+          <Field label={t("Secret Access Key")} id="backup-secret">
             <Input
               id="backup-secret"
               type="password"
@@ -916,7 +918,7 @@ function BackupForm({ settings }: { settings: Settings }) {
               }
             />
           </Field>
-          <Field label="Region" id="backup-region">
+          <Field label={t("Region")} id="backup-region">
             <Input
               id="backup-region"
               required

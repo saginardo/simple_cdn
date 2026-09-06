@@ -141,6 +141,14 @@ export function AuthScreen({
   }
   return (
     <main className="relative grid min-h-svh place-items-center bg-muted/30 p-4 sm:p-8">
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-x-0 top-0 h-72"
+        style={{
+          background:
+            "radial-gradient(60% 100% at 50% 0%, color-mix(in oklab, var(--foreground) 6%, transparent), transparent)",
+        }}
+      />
       <div className="absolute right-3 top-3 flex items-center gap-1 sm:right-5 sm:top-4">
         <LanguageToggle />
         <ThemeToggle />

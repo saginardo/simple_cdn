@@ -16,6 +16,8 @@ import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { CopyButton } from "@/components/copy-button";
 import { ListPagination } from "@/components/list-pagination";
+import { IconAction } from "@/components/icon-action";
+import { StatBand, StatItem } from "@/components/stat-band";
 import {
   EmptyState,
   PageBody,
@@ -50,11 +52,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { useListPagination } from "@/hooks/use-list-pagination";
 import { api, errorMessage } from "@/lib/api";
 import {
@@ -129,7 +126,12 @@ export function StaticAssetsPage() {
     <>
       <PageHeader
         title={t("资源")}
-        description={t("内容寻址资源与站点精确路径分发")}
+        description={`${t("内容寻址资源与站点精确路径分发")} · ${t(
+          "单文件上限 {value0}",
+          {
+            value0: formatBytes(query.data?.max_file_bytes ?? 0),
+          },
+        )}`}
         actions={
           <Button onClick={() => setUploadOpen(true)}>
             <Upload />
@@ -139,31 +141,28 @@ export function StaticAssetsPage() {
       />
       <PageBody>
         {query.isLoading ? <PageLoading /> : null}
-        {query.error ? <PageError error={query.error} /> : null}
+        {query.error ? (
+          <PageError error={query.error} onRetry={() => void query.refetch()} />
+        ) : null}
         {query.data ? (
           <>
-            <div className="flex flex-wrap items-center gap-x-6 gap-y-2 border-y py-3 text-sm">
-              <Stat
+            <StatBand className="grid-cols-1 sm:grid-cols-3">
+              <StatItem
                 icon={Files}
                 label={t("资源")}
                 value={formatNumber(query.data.assets.length)}
               />
-              <Stat
+              <StatItem
                 icon={File}
                 label={t("存储量")}
                 value={formatBytes(totalBytes)}
               />
-              <Stat
+              <StatItem
                 icon={Link2}
                 label={t("分发路径")}
                 value={formatNumber(bindingCount)}
               />
-              <span className="ml-auto text-xs text-muted-foreground">
-                {t("单文件上限 {value0}", {
-                  value0: formatBytes(query.data.max_file_bytes),
-                })}
-              </span>
-            </div>
+            </StatBand>
 
             <section>
               <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
@@ -881,33 +880,6 @@ function BindingEditor({
   );
 }
 
-function IconAction({
-  label,
-  onClick,
-  children,
-}: {
-  label: string;
-  onClick: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          aria-label={label}
-          onClick={onClick}
-        >
-          {children}
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent>{label}</TooltipContent>
-    </Tooltip>
-  );
-}
-
 function Field({
   label,
   id,
@@ -921,24 +893,6 @@ function Field({
     <div className="grid gap-2">
       <Label htmlFor={id}>{label}</Label>
       {children}
-    </div>
-  );
-}
-
-function Stat({
-  icon: Icon,
-  label,
-  value,
-}: {
-  icon: typeof Files;
-  label: string;
-  value: string;
-}) {
-  return (
-    <div className="flex items-center gap-2">
-      <Icon className="size-4 text-muted-foreground" />
-      <span className="text-muted-foreground">{label}</span>
-      <span className="font-medium tabular-nums">{value}</span>
     </div>
   );
 }

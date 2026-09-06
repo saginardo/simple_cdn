@@ -19,6 +19,7 @@ import { toast } from "sonner";
 
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { ListPagination } from "@/components/list-pagination";
+import { StatBand, StatItem } from "@/components/stat-band";
 import {
   EmptyState,
   PageBody,
@@ -30,7 +31,6 @@ import {
 import { StatusBadge } from "@/components/status-badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
@@ -221,7 +221,9 @@ export function SecurityPage() {
       />
       <PageBody>
         {query.isLoading ? <PageLoading /> : null}
-        {query.error ? <PageError error={query.error} /> : null}
+        {query.error ? (
+          <PageError error={query.error} onRetry={() => void query.refetch()} />
+        ) : null}
         {data ? (
           <>
             {data.deployment_error ? (
@@ -230,28 +232,28 @@ export function SecurityPage() {
                 <AlertDescription>{data.deployment_error}</AlertDescription>
               </Alert>
             ) : null}
-            <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-              <Summary
+            <StatBand className="grid-cols-2 xl:grid-cols-4">
+              <StatItem
                 icon={ShieldCheck}
                 label={t("启用策略")}
                 value={formatNumber(enabled)}
               />
-              <Summary
+              <StatItem
                 icon={Ban}
                 label={t("活动封禁")}
                 value={formatNumber(data.active_ban_count)}
               />
-              <Summary
+              <StatItem
                 icon={Zap}
                 label={t("现代安全能力")}
                 value={`${modernNodes.length} / ${eligibleNodes.length}`}
               />
-              <Summary
+              <StatItem
                 icon={Rocket}
                 label={t("已应用节点")}
                 value={`${appliedNodes.length} / ${modernNodes.length}`}
               />
-            </section>
+            </StatBand>
             <Tabs
               value={section}
               onValueChange={(value) => setSection(value as typeof section)}
@@ -1920,28 +1922,6 @@ function ConditionSummary({ conditions }: { conditions: SecurityCondition[] }) {
         </span>
       ) : null}
     </div>
-  );
-}
-
-function Summary({
-  icon: Icon,
-  label,
-  value,
-}: {
-  icon: typeof ShieldCheck;
-  label: string;
-  value: string;
-}) {
-  return (
-    <Card>
-      <CardContent className="flex items-start justify-between p-5">
-        <div>
-          <p className="text-sm text-muted-foreground">{label}</p>
-          <p className="mt-2 text-2xl font-semibold tabular-nums">{value}</p>
-        </div>
-        <Icon className="size-4 text-info" />
-      </CardContent>
-    </Card>
   );
 }
 

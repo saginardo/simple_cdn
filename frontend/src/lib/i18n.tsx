@@ -1489,6 +1489,22 @@ const english = {
   静态资源已上传: "Static resource uploaded",
   静态资源已删除: "Static resource deleted",
   非: "Not",
+  "快速预览 {value0}": "Quick preview {value0}",
+  "HTTP {value0}": "HTTP {value0}",
+  "ID: {value0}": "ID: {value0}",
+  暂无流量数据: "No traffic data yet",
+  "站点开始接收请求后，这里会展示小时趋势":
+    "Hourly trends appear once sites start serving requests",
+  "有未保存的更改，保存后才能发布最新配置":
+    "Unsaved changes — save before publishing the latest configuration",
+  "HTTP + TCP": "HTTP + TCP",
+  "HTTP / gRPC / WS": "HTTP / gRPC / WS",
+  "Host Header": "Host Header",
+  "Access Key ID": "Access Key ID",
+  "Secret Access Key": "Secret Access Key",
+  Region: "Region",
+  MTU: "MTU",
+  "Cache Version V{value0}": "Cache version V{value0}",
 } as const;
 
 type TranslationKey = keyof typeof english;

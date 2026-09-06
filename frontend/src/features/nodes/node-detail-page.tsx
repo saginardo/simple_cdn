@@ -255,7 +255,11 @@ export function NodeDetailPage() {
       <PageBody>
         {detail.isLoading ? <PageLoading /> : null}
         {detail.error ? (
-          <PageError title={t("节点加载失败")} error={detail.error} />
+          <PageError
+            title={t("节点加载失败")}
+            error={detail.error}
+            onRetry={() => void detail.refetch()}
+          />
         ) : null}
         {node && detail.data ? (
           <>

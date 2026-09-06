@@ -268,7 +268,11 @@ export function LogsPage() {
 
         {logs.isLoading ? <PageLoading rows={3} /> : null}
         {logs.error ? (
-          <PageError title={t("日志检索失败")} error={logs.error} />
+          <PageError
+            title={t("日志检索失败")}
+            error={logs.error}
+            onRetry={() => void logs.refetch()}
+          />
         ) : null}
         {logs.data ? (
           <Card>

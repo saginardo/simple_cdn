@@ -86,7 +86,11 @@ export function WireGuardDetailPage() {
       <PageBody>
         {detail.isLoading ? <PageLoading /> : null}
         {detail.error ? (
-          <PageError title={t("隧道加载失败")} error={detail.error} />
+          <PageError
+            title={t("隧道加载失败")}
+            error={detail.error}
+            onRetry={() => void detail.refetch()}
+          />
         ) : null}
         {tunnel && detail.data ? (
           <>

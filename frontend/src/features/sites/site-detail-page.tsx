@@ -507,8 +507,8 @@ export function SiteDetailPage() {
                       draft.tcp_only
                         ? t("仅 TCP / TLS")
                         : draft.tcp_forwards.length
-                          ? "HTTP + TCP"
-                          : "HTTP / gRPC / WS"
+                          ? t("HTTP + TCP")
+                          : t("HTTP / gRPC / WS")
                     }
                   />
                   {!draft.tcp_only ? (
@@ -593,6 +593,7 @@ export function SiteDetailPage() {
               {site ? (
                 <SiteOperations
                   site={site}
+                  dirty={dirty}
                   tls={tls.data}
                   publish={publish.data}
                   deletion={deletion.data}
@@ -964,7 +965,7 @@ function TrafficSettings({
           }
         >
           <TabsList>
-            <TabsTrigger value="http">HTTP / gRPC / WS</TabsTrigger>
+            <TabsTrigger value="http">{t("HTTP / gRPC / WS")}</TabsTrigger>
             <TabsTrigger value="tcp">{t("仅 TCP / TLS")}</TabsTrigger>
           </TabsList>
           <TabsContent value="http" className="mt-5 space-y-5">
@@ -1378,7 +1379,7 @@ function OriginFields({
           placeholder="https://origin.example.com:443"
         />
       </Field>
-      <Field label="Host Header" id={`${title}-host`}>
+      <Field label={t("Host Header")} id={`${title}-host`}>
         <Input
           id={`${title}-host`}
           value={host}
@@ -1790,6 +1791,7 @@ function TCPForwards({
 
 function SiteOperations({
   site,
+  dirty,
   tls,
   publish,
   deletion,
@@ -1801,6 +1803,7 @@ function SiteOperations({
   onDelete,
 }: {
   site: Site;
+  dirty: boolean;
   tls?: TLSStatus;
   publish?: PublishStatus;
   deletion?: PublishStatus;
@@ -1868,14 +1871,21 @@ function SiteOperations({
             extra={tls?.published_after_certificate ? t("已部署") : undefined}
           />
         ) : null}
-        <Button
-          type="button"
-          disabled={site.deleting || pending || publishActive}
-          onClick={onPublish}
-        >
-          <Rocket />
-          {site.published ? t("重新发布") : t("发布站点")}
-        </Button>
+        <div className="grid gap-1.5">
+          <Button
+            type="button"
+            disabled={site.deleting || pending || publishActive || dirty}
+            onClick={onPublish}
+          >
+            <Rocket />
+            {site.published ? t("重新发布") : t("发布站点")}
+          </Button>
+          {dirty ? (
+            <p className="text-xs text-warning">
+              {t("有未保存的更改，保存后才能发布最新配置")}
+            </p>
+          ) : null}
+        </div>
         {needsTLS && tls && !certActive ? (
           <Button
             type="button"
@@ -1892,7 +1902,9 @@ function SiteOperations({
             <div className="min-w-0">
               <div className="text-sm">{t("缓存版本")}</div>
               <div className="text-xs text-muted-foreground">
-                Cache Version V{formatNumber(site.cache_generation)}
+                {t("Cache Version V{value0}", {
+                  value0: formatNumber(site.cache_generation),
+                })}
               </div>
             </div>
             <Button

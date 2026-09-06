@@ -20,12 +20,13 @@ import {
   type FormEvent,
   type ReactNode,
 } from "react";
-import { Link } from "react-router";
 import { toast } from "sonner";
 
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { CopyButton } from "@/components/copy-button";
 import { ListPagination } from "@/components/list-pagination";
+import { IconAction, IconLinkAction } from "@/components/icon-action";
+import { StatBand, StatItem } from "@/components/stat-band";
 import {
   EmptyState,
   PageBody,
@@ -63,11 +64,6 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { useListPagination } from "@/hooks/use-list-pagination";
 import { api, errorMessage, jsonBody } from "@/lib/api";
 import { formatDateTime, formatNumber, formatPercent } from "@/lib/format";
@@ -253,46 +249,51 @@ export function WireGuardPage() {
           <PageLoading />
         ) : null}
         {tunnels.error || nodes.error || tests.error ? (
-          <PageError error={tunnels.error || nodes.error || tests.error} />
+          <PageError
+            error={tunnels.error || nodes.error || tests.error}
+            onRetry={() => {
+              void tunnels.refetch();
+              void nodes.refetch();
+              void tests.refetch();
+            }}
+          />
         ) : null}
         {tunnels.data && nodes.data && tests.data ? (
           <>
-            <Panel>
-              <div className="grid divide-y sm:grid-cols-2 sm:divide-x sm:divide-y-0 xl:grid-cols-4">
-                <Summary
-                  icon={<Cable />}
-                  label={t("可发布隧道")}
-                  value={`${readyTunnels.length} / ${data.length}`}
-                  detail={t("源站与边缘修订一致")}
-                />
-                <Summary
-                  icon={<Server />}
-                  label={t("边缘 Peer")}
-                  value={formatNumber(peers.length)}
-                  detail={t("{value0} 个已应用", {
-                    value0: data.reduce(
-                      (count, tunnel) =>
-                        count +
-                        tunnel.peers.filter((peer) => peerApplied(peer, tunnel))
-                          .length,
-                      0,
-                    ),
-                  })}
-                />
-                <Summary
-                  icon={<Activity />}
-                  label={t("近期握手")}
-                  value={`${freshHandshakes.length} / ${peers.length}`}
-                  detail={t("最近 3 分钟")}
-                />
-                <Summary
-                  icon={<Gauge />}
-                  label={t("性能任务")}
-                  value={formatNumber(tests.data.length)}
-                  detail={t("含公网 TCP 对照")}
-                />
-              </div>
-            </Panel>
+            <StatBand className="grid-cols-2 xl:grid-cols-4">
+              <StatItem
+                icon={Cable}
+                label={t("可发布隧道")}
+                value={`${readyTunnels.length} / ${data.length}`}
+                detail={t("源站与边缘修订一致")}
+              />
+              <StatItem
+                icon={Server}
+                label={t("边缘 Peer")}
+                value={formatNumber(peers.length)}
+                detail={t("{value0} 个已应用", {
+                  value0: data.reduce(
+                    (count, tunnel) =>
+                      count +
+                      tunnel.peers.filter((peer) => peerApplied(peer, tunnel))
+                        .length,
+                    0,
+                  ),
+                })}
+              />
+              <StatItem
+                icon={Activity}
+                label={t("近期握手")}
+                value={`${freshHandshakes.length} / ${peers.length}`}
+                detail={t("最近 3 分钟")}
+              />
+              <StatItem
+                icon={Gauge}
+                label={t("性能任务")}
+                value={formatNumber(tests.data.length)}
+                detail={t("含公网 TCP 对照")}
+              />
+            </StatBand>
 
             <Tabs
               value={section}
@@ -620,7 +621,7 @@ function TunnelDialog({
                 placeholder="10.253.0.0/24"
               />
             </Field>
-            <Field label="MTU" id="wireguard-mtu">
+            <Field label={t("MTU")} id="wireguard-mtu">
               <Input
                 id="wireguard-mtu"
                 required
@@ -1091,86 +1092,6 @@ function PerformanceTable({ tests }: { tests: WireGuardPerformanceTest[] }) {
         </TableBody>
       </Table>
     </Panel>
-  );
-}
-
-function Summary({
-  icon,
-  label,
-  value,
-  detail,
-}: {
-  icon: ReactNode;
-  label: string;
-  value: string;
-  detail: string;
-}) {
-  return (
-    <div className="flex min-h-28 items-center gap-3 p-4 sm:p-5">
-      <span className="flex size-9 shrink-0 items-center justify-center rounded-md border bg-muted/40 text-muted-foreground [&>svg]:size-4">
-        {icon}
-      </span>
-      <div className="min-w-0">
-        <div className="text-xs text-muted-foreground">{label}</div>
-        <div className="mt-1 text-xl font-semibold tabular-nums">{value}</div>
-        <div className="mt-1 truncate text-xs text-muted-foreground">
-          {detail}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function IconAction({
-  label,
-  onClick,
-  disabled,
-  children,
-}: {
-  label: string;
-  onClick: () => void;
-  disabled?: boolean;
-  children: ReactNode;
-}) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          aria-label={label}
-          disabled={disabled}
-          onClick={onClick}
-        >
-          {children}
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent>{label}</TooltipContent>
-    </Tooltip>
-  );
-}
-
-function IconLinkAction({
-  label,
-  to,
-  children,
-}: {
-  label: string;
-  to: string;
-  children: ReactNode;
-}) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button asChild variant="ghost" size="icon-sm">
-          <Link to={to} aria-label={label}>
-            {children}
-          </Link>
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent>{label}</TooltipContent>
-    </Tooltip>
   );
 }
 

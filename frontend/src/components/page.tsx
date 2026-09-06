@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
-import { AlertCircle, Inbox } from "lucide-react";
+import { AlertCircle, Inbox, RotateCcw } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { t } from "@/lib/i18n";
@@ -91,16 +92,26 @@ export function PageLoading({ rows = 4 }: { rows?: number }) {
 export function PageError({
   title = t("加载失败"),
   error,
+  onRetry,
 }: {
   title?: string;
   error: unknown;
+  onRetry?: () => void;
 }) {
   return (
     <Alert variant="destructive">
       <AlertCircle />
       <AlertTitle>{title}</AlertTitle>
-      <AlertDescription>
-        {error instanceof Error ? error.message : t("发生未知错误")}
+      <AlertDescription className="flex flex-wrap items-center justify-between gap-3">
+        <span className="min-w-0 break-words">
+          {error instanceof Error ? error.message : t("发生未知错误")}
+        </span>
+        {onRetry ? (
+          <Button type="button" variant="outline" size="sm" onClick={onRetry}>
+            <RotateCcw />
+            {t("重试")}
+          </Button>
+        ) : null}
       </AlertDescription>
     </Alert>
   );

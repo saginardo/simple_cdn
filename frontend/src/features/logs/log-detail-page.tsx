@@ -11,6 +11,7 @@ import type { ReactNode } from "react";
 import { useNavigate, useParams } from "react-router";
 import { CopyButton } from "@/components/copy-button";
 import { HTTPStatusBadge } from "@/components/http-status-badge";
+import { StatItem } from "@/components/stat-band";
 import {
   EmptyState,
   PageBody,
@@ -65,7 +66,11 @@ export function LogDetailPage() {
       <PageBody>
         {log.isLoading ? <PageLoading rows={3} /> : null}
         {log.error ? (
-          <PageError title={t("请求详情加载失败")} error={log.error} />
+          <PageError
+            title={t("请求详情加载失败")}
+            error={log.error}
+            onRetry={() => void log.refetch()}
+          />
         ) : null}
         {log.data ? (
           <LogDetails
@@ -120,38 +125,38 @@ function LogDetails({
           </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-px border-t bg-border sm:grid-cols-2 xl:grid-cols-4">
-          <Metric
-            icon={<Globe2 />}
+          <StatItem
+            icon={Globe2}
             label={t("客户端")}
             value={entry.client_ip || "--"}
           />
-          <Metric
-            icon={<Server />}
+          <StatItem
+            icon={Server}
             label={t("站点")}
             value={siteName || entry.site_id}
           />
-          <Metric
-            icon={<Server />}
+          <StatItem
+            icon={Server}
             label={t("节点")}
             value={nodeName || entry.node_id}
           />
-          <Metric
-            icon={<Clock3 />}
+          <StatItem
+            icon={Clock3}
             label={t("总耗时")}
             value={`${formatNumber(entry.duration_ms)} ms`}
           />
-          <Metric
-            icon={<ArrowUpFromLine />}
+          <StatItem
+            icon={ArrowUpFromLine}
             label={t("请求大小")}
             value={formatBytes(entry.request_bytes)}
           />
-          <Metric
-            icon={<ArrowDownToLine />}
+          <StatItem
+            icon={ArrowDownToLine}
             label={t("响应大小")}
             value={formatBytes(entry.bytes)}
           />
-          <Metric
-            icon={<Globe2 />}
+          <StatItem
+            icon={Globe2}
             label={t("协议")}
             value={
               [entry.scheme?.toUpperCase(), entry.protocol]
@@ -159,8 +164,8 @@ function LogDetails({
                 .join(" · ") || "--"
             }
           />
-          <Metric
-            icon={<Server />}
+          <StatItem
+            icon={Server}
             label={t("上游")}
             value={entry.upstream || "--"}
           />
@@ -282,27 +287,6 @@ function LogDetails({
           )}
         </CardContent>
       </Card>
-    </div>
-  );
-}
-function Metric({
-  icon,
-  label,
-  value,
-}: {
-  icon: ReactNode;
-  label: string;
-  value: string;
-}) {
-  return (
-    <div className="min-w-0 bg-card p-4">
-      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-        {icon}
-        {label}
-      </div>
-      <div className="mt-2 truncate text-sm font-medium" title={value}>
-        {value}
-      </div>
     </div>
   );
 }

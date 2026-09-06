@@ -12,17 +12,12 @@ import {
   Search,
   Server,
 } from "lucide-react";
-import {
-  useEffect,
-  useMemo,
-  useState,
-  type FormEvent,
-  type ReactNode,
-} from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router";
 import { toast } from "sonner";
 
 import { ListPagination } from "@/components/list-pagination";
+import { StatBand, StatItem } from "@/components/stat-band";
 import {
   EmptyState,
   PageBody,
@@ -258,31 +253,33 @@ export function CachePage() {
       />
       <PageBody>
         {query.isLoading ? <PageLoading /> : null}
-        {query.error ? <PageError error={query.error} /> : null}
+        {query.error ? (
+          <PageError error={query.error} onRetry={() => void query.refetch()} />
+        ) : null}
         {query.data ? (
           <>
-            <div className="grid grid-cols-2 border-y sm:grid-cols-4">
-              <OverviewStat
+            <StatBand className="grid-cols-2 sm:grid-cols-4">
+              <StatItem
                 icon={DatabaseZap}
                 label={t("可管理站点")}
                 value={formatNumber(eligibleSites.length)}
               />
-              <OverviewStat
+              <StatItem
                 icon={Activity}
                 label={t("执行中")}
                 value={formatNumber(activeOperationCount)}
               />
-              <OverviewStat
+              <StatItem
                 icon={Flame}
                 label={t("活动规则")}
                 value={formatNumber(query.data.rules.length)}
               />
-              <OverviewStat
+              <StatItem
                 icon={Server}
                 label={t("精确上报节点")}
                 value={formatNumber(reportingNodes)}
               />
-            </div>
+            </StatBand>
 
             <Tabs value={tab} onValueChange={updateTab}>
               <TabsList
@@ -912,21 +909,28 @@ function OperationDetailDialog({
             · {formatDateTime(operation.created_at)}
           </DialogDescription>
         </DialogHeader>
-        <div className="grid grid-cols-2 border-y sm:grid-cols-4">
-          <DetailStat
+        <StatBand className="grid-cols-2 sm:grid-cols-4">
+          <StatItem
+            density="compact"
             label={t("状态")}
             value={<StatusBadge status={operation.status} />}
           />
-          <DetailStat label={t("范围")} value={scopeLabel(operation.scope)} />
-          <DetailStat
+          <StatItem
+            density="compact"
+            label={t("范围")}
+            value={scopeLabel(operation.scope)}
+          />
+          <StatItem
+            density="compact"
             label={t("缓存代际")}
             value={`V${formatNumber(operation.cache_generation)}`}
           />
-          <DetailStat
+          <StatItem
+            density="compact"
             label={t("预热 URL")}
             value={formatNumber(operation.prewarm_paths.length)}
           />
-        </div>
+        </StatBand>
         <div className="grid gap-1 text-sm">
           <span className="text-xs text-muted-foreground">{t("匹配目标")}</span>
           <code className="break-all text-xs">
@@ -1053,37 +1057,6 @@ function OperationDetailDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  );
-}
-
-function OverviewStat({
-  icon: Icon,
-  label,
-  value,
-}: {
-  icon: typeof Activity;
-  label: string;
-  value: string;
-}) {
-  return (
-    <div className="flex min-w-0 items-center gap-3 border-r px-3 py-3 last:border-r-0 sm:px-4">
-      <Icon className="size-4 shrink-0 text-muted-foreground" />
-      <div className="min-w-0">
-        <div className="truncate text-xs text-muted-foreground">{label}</div>
-        <div className="font-mono text-base font-semibold tabular-nums">
-          {value}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function DetailStat({ label, value }: { label: string; value: ReactNode }) {
-  return (
-    <div className="min-w-0 border-r px-3 py-3 last:border-r-0">
-      <div className="text-xs text-muted-foreground">{label}</div>
-      <div className="mt-1 text-sm font-medium">{value}</div>
-    </div>
   );
 }
 
