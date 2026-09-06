@@ -63,7 +63,6 @@ export function StatusBadge({
 }) {
   const tone = tones[status];
   const isPulsing = [
-    "active",
     "running",
     "applying",
     "dispatching",
@@ -92,7 +91,7 @@ export function StatusBadge({
           {isPulsing ? (
             <span
               className={cn(
-                "absolute inline-flex size-full animate-ping rounded-full opacity-75",
+                "absolute inline-flex size-full motion-safe:animate-ping rounded-full opacity-75",
                 dotColors[tone].ping,
               )}
             />

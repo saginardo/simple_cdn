@@ -15,17 +15,19 @@ export function PageHeader({
   actions?: ReactNode;
 }) {
   return (
-    <header className="flex min-w-0 flex-col gap-3 border-b bg-background px-4 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:px-8">
-      <div className="min-w-0 border-l-[3px] border-primary pl-3">
-        <h1 className="text-xl font-semibold leading-tight tracking-normal">
+    <header className="flex min-w-0 flex-col gap-4 px-4 pb-2 pt-6 sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:px-8 lg:pt-7">
+      <div className="min-w-0">
+        <h1 className="break-words text-2xl font-semibold leading-tight tracking-normal">
           {title}
         </h1>
         {description ? (
-          <p className="mt-1 text-sm text-muted-foreground">{description}</p>
+          <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
+            {description}
+          </p>
         ) : null}
       </div>
       {actions ? (
-        <div className="flex shrink-0 self-end flex-wrap items-center gap-2 sm:self-auto">
+        <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2 sm:justify-end">
           {actions}
         </div>
       ) : null}
@@ -42,7 +44,7 @@ export function PageBody({
   return (
     <div
       className={cn(
-        "min-w-0 flex-1 space-y-4 p-4 sm:p-6 lg:p-8 animate-in fade-in-50 slide-in-from-bottom-1 duration-200",
+        "min-w-0 flex-1 space-y-5 p-4 sm:p-6 lg:px-8 lg:pb-8",
         className,
       )}
     >
@@ -52,8 +54,7 @@ export function PageBody({
 }
 
 /**
- * Framed surface for tables and stat grids that sit directly on the page body.
- * Mirrors Card's radius and ring so both container styles read as one system.
+ * Full-width data surface, separated from the canvas by horizontal rules.
  */
 export function Panel({
   className,
@@ -65,7 +66,7 @@ export function Panel({
   return (
     <div
       className={cn(
-        "overflow-hidden rounded-lg border bg-card text-sm text-card-foreground shadow-xs dark:shadow-[0_1px_0_0_rgba(255,255,255,0.05)_inset]",
+        "min-w-0 overflow-hidden border-y bg-card text-sm text-card-foreground",
         className,
       )}
     >
@@ -128,8 +129,8 @@ export function EmptyState({
   action?: ReactNode;
 }) {
   return (
-    <div className="flex min-h-48 flex-col items-center justify-center rounded-xl border border-dashed bg-muted/15 px-6 py-10 text-center transition-colors">
-      <div className="mb-3.5 flex size-12 items-center justify-center rounded-full bg-background border shadow-2xs text-muted-foreground/80">
+    <div className="flex min-h-48 flex-col items-center justify-center px-6 py-10 text-center">
+      <div className="mb-3.5 flex size-10 items-center justify-center rounded-lg bg-muted text-muted-foreground">
         <Icon className="size-6 stroke-[1.5]" aria-hidden="true" />
       </div>
       <h3 className="text-sm font-semibold text-foreground">{title}</h3>

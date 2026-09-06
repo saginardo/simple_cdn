@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { ArrowRight, CirclePlus, RefreshCw } from "lucide-react";
+import { ArrowRight, CirclePlus, Globe2, RefreshCw } from "lucide-react";
 import { Link } from "react-router";
 import {
   EmptyState,
@@ -77,9 +77,25 @@ export function SitesPage() {
                   {pagination.items.map((site) => (
                     <TableRow key={site.id}>
                       <TableCell className="pl-5">
-                        <div className="font-medium">{site.name}</div>
-                        <div className="max-w-sm truncate text-xs text-muted-foreground">
-                          {site.domains.join(", ") || t("无 HTTP 域名")}
+                        <div className="flex items-center gap-3">
+                          <span className="grid size-8 shrink-0 place-items-center rounded-md border bg-muted/25 text-muted-foreground">
+                            <Globe2 className="size-4" aria-hidden="true" />
+                          </span>
+                          <div className="min-w-0">
+                            <Link
+                              to={`/sites/${encodeURIComponent(site.id)}`}
+                              className="block max-w-64 truncate font-medium hover:text-primary hover:underline"
+                              title={site.name}
+                            >
+                              {site.name}
+                            </Link>
+                            <div
+                              className="mt-1 max-w-64 truncate text-xs text-muted-foreground"
+                              title={site.domains.join(", ")}
+                            >
+                              {site.domains.join(", ") || t("无 HTTP 域名")}
+                            </div>
+                          </div>
                         </div>
                       </TableCell>
                       <TableCell className="text-sm">
@@ -104,7 +120,12 @@ export function SitesPage() {
                         {formatDateTime(site.updated_at)}
                       </TableCell>
                       <TableCell className="pr-5">
-                        <Button asChild variant="ghost" size="icon-sm">
+                        <Button
+                          asChild
+                          variant="ghost"
+                          size="icon-sm"
+                          className="text-primary"
+                        >
                           <Link
                             to={`/sites/${encodeURIComponent(site.id)}`}
                             aria-label={t("管理 {value0}", {

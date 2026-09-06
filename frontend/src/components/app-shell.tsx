@@ -81,11 +81,11 @@ export function AppShell() {
         onLogout={() => void logout()}
       />
       <SidebarInset className="min-w-0 bg-background">
-        <header className="sticky top-0 z-20 flex h-14 shrink-0 items-center gap-2 border-b bg-background/95 px-3 backdrop-blur supports-[backdrop-filter]:bg-background/80 sm:px-5">
+        <header className="sticky top-0 z-20 flex h-15 shrink-0 items-center gap-2 border-b bg-card px-3 sm:px-5 lg:px-7">
           <SidebarTrigger aria-label={t("切换侧边栏")} />
           <Separator orientation="vertical" className="mx-1 h-5" />
           <nav
-            className="flex min-w-0 items-center gap-1 font-mono text-xs"
+            className="flex min-w-0 items-center gap-2 text-xs"
             aria-label={t("面包屑")}
           >
             <Link

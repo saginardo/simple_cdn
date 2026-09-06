@@ -1,11 +1,11 @@
 export type Tone = "success" | "warning" | "info" | "danger" | "neutral";
 
-/** Outlined badge surfaces. */
+/** Subtle status surfaces, shared by badges and inline results. */
 export const toneBadge: Record<Tone, string> = {
-  success: "border-success/25 bg-success/10 text-success",
-  warning: "border-warning/25 bg-warning/10 text-warning",
-  info: "border-info/25 bg-info/10 text-info",
-  danger: "border-destructive/25 bg-destructive/10 text-destructive",
+  success: "border-success/10 bg-success/10 text-success",
+  warning: "border-warning/10 bg-warning/10 text-warning",
+  info: "border-info/10 bg-info/10 text-info",
+  danger: "border-destructive/10 bg-destructive/10 text-destructive",
   neutral: "border-border bg-muted text-muted-foreground",
 };
 

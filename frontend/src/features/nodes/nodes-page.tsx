@@ -117,7 +117,6 @@ export function NodesPage() {
         }
       />
       <PageBody>
-        <NginxArtifactPanel />
         {nodes.isLoading ? <PageLoading /> : null}
         {nodes.error ? (
           <PageError error={nodes.error} onRetry={() => void nodes.refetch()} />
@@ -143,9 +142,25 @@ export function NodesPage() {
                   {pagination.items.map((node) => (
                     <TableRow key={node.id}>
                       <TableCell className="pl-5">
-                        <div className="font-medium">{node.name}</div>
-                        <div className="font-mono text-xs text-muted-foreground">
-                          {node.id}
+                        <div className="flex items-center gap-3">
+                          <span className="grid size-8 shrink-0 place-items-center rounded-md border bg-muted/25 text-muted-foreground">
+                            <Server className="size-4" aria-hidden="true" />
+                          </span>
+                          <div className="min-w-0">
+                            <Link
+                              to={`/nodes/${encodeURIComponent(node.id)}`}
+                              className="block max-w-56 truncate font-medium hover:text-primary hover:underline"
+                              title={node.name}
+                            >
+                              {node.name}
+                            </Link>
+                            <div
+                              className="mt-1 max-w-56 truncate font-mono text-xs text-muted-foreground"
+                              title={node.id}
+                            >
+                              {node.id}
+                            </div>
+                          </div>
                         </div>
                       </TableCell>
                       <TableCell>
@@ -185,7 +200,12 @@ export function NodesPage() {
                         />
                       </TableCell>
                       <TableCell className="pr-5">
-                        <Button asChild variant="ghost" size="icon-sm">
+                        <Button
+                          asChild
+                          variant="ghost"
+                          size="icon-sm"
+                          className="text-primary"
+                        >
                           <Link
                             to={`/nodes/${encodeURIComponent(node.id)}`}
                             aria-label={t("管理 {value0}", {
@@ -224,6 +244,7 @@ export function NodesPage() {
             />
           )
         ) : null}
+        <NginxArtifactPanel />
       </PageBody>
       <CreateNodeDialog open={createOpen} onOpenChange={setCreateOpen} />
     </>

@@ -90,7 +90,7 @@ export function AppSidebar({
     : `v${productVersion}`;
   return (
     <Sidebar collapsible="icon" className="bg-sidebar">
-      <SidebarHeader className="px-3 py-4">
+      <SidebarHeader className="px-3 py-5">
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton
@@ -109,7 +109,9 @@ export function AppSidebar({
                 </span>
               ) : (
                 <span className="grid min-w-0 text-left leading-tight">
-                  <span className="truncate font-semibold">{brandName}</span>
+                  <span className="truncate text-base font-semibold text-foreground">
+                    {brandName}
+                  </span>
                   {brandSubtitle ? (
                     <span className="truncate text-xs text-muted-foreground">
                       {t(brandSubtitle)}
@@ -121,11 +123,10 @@ export function AppSidebar({
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarHeader>
-      <SidebarSeparator />
       <SidebarContent>
         {groups.map((group) => (
           <SidebarGroup key={group.label} className="px-2 py-2.5">
-            <SidebarGroupLabel className="h-8 justify-start px-2.5 text-[0.8125rem] font-semibold text-sidebar-foreground/80">
+            <SidebarGroupLabel className="h-8 justify-start px-2.5 text-xs font-normal text-muted-foreground">
               {t(group.label)}
             </SidebarGroupLabel>
             <SidebarGroupContent>
@@ -141,7 +142,7 @@ export function AppSidebar({
                         asChild
                         tooltip={itemLabel}
                         isActive={active}
-                        className="relative h-9 justify-start rounded-md px-2.5 text-[0.8125rem] data-[active=true]:before:absolute data-[active=true]:before:inset-y-2 data-[active=true]:before:left-0 data-[active=true]:before:w-0.5 data-[active=true]:before:rounded-r data-[active=true]:before:bg-sidebar-primary group-data-[collapsible=icon]:data-[active=true]:before:left-0.5"
+                        className="h-10 justify-start rounded-md px-2.5 text-[0.8125rem] data-[active=true]:font-semibold data-[active=true]:text-sidebar-accent-foreground"
                       >
                         <Link
                           to={item.to}
