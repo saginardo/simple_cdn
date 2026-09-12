@@ -108,7 +108,9 @@ func (s *Store) ReferencedUpgradeNginxSHA256s() (map[string]struct{}, error) {
 		WHERE status IN (?, ?) AND length(trim(target_nginx_sha256)) = 64
 		UNION
 		SELECT DISTINCT lower(trim(source_nginx_sha256)) FROM node_upgrade_tasks
-		WHERE status IN (?, ?) AND length(trim(source_nginx_sha256)) = 64`,
+		WHERE status IN (?, ?) AND length(trim(source_nginx_sha256)) = 64
+		UNION SELECT lower(trim(target_nginx_sha256)) FROM node_upgrade_rollouts
+		WHERE state IN ('running', 'paused') AND length(trim(target_nginx_sha256)) = 64`,
 		domain.NodeUpgradeQueued, domain.NodeUpgradeApplying,
 		domain.NodeUpgradeQueued, domain.NodeUpgradeApplying)
 	if err != nil {

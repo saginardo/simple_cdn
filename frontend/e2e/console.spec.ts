@@ -1272,6 +1272,8 @@ async function mockAPI(page: Page, overrides: Record<string, unknown> = {}) {
         passkeys: [],
       },
       "/api/backups/status": null,
+      "/api/backups/health": null,
+      "/api/nodes/upgrade-rollouts/current": null,
       "/api/backups/snapshots": [],
       "/api/backups/restores/current": null,
       ...overrides,
@@ -2673,11 +2675,31 @@ test("security workspace exposes WAF and PoW controls without overflow", async (
 }, testInfo) => {
   const errors = trackPageErrors(page);
   await page.setViewportSize({ width: 1440, height: 900 });
-  await mockAPI(page);
+  await mockAPI(page, {
+    "/api/security": {
+      ...securityOverview,
+      nodes: [
+        { ...securityOverview.nodes[0], ipv6_ban_capable: true },
+        {
+          ...securityOverview.nodes[0],
+          id: "node-legacy",
+          name: "edge-legacy",
+          ipv6_ban_capable: false,
+        },
+      ],
+    },
+  });
   await page.goto("/#/security");
 
   await expect(page.getByText("路径穿越防护", { exact: true })).toBeVisible();
   await expect(page.getByText("API 客户端检查", { exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "节点覆盖" }).click();
+  await expect(
+    page.getByText("IPv4 / IPv6 封禁", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("仅 IPv4 封禁，IPv6 需升级", { exact: true }),
+  ).toBeVisible();
   await page.getByRole("tab", { name: "浏览器验证" }).click();
   await expect(page.getByText("登录入口验证", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "新增" }).click();
@@ -3764,7 +3786,7 @@ test("site editor tolerates null TCP forwards from API responses", async ({
   expect(errors).toEqual([]);
 });
 
-test("bulk node upgrade refreshes the page without opening a result dialog", async ({
+test("rolling upgrade accepts a canary and explicit concurrency", async ({
   page,
 }) => {
   const node = {
@@ -3806,10 +3828,24 @@ test("bulk node upgrade refreshes the page without opening a result dialog", asy
     const url = new URL(request.url());
     return url.pathname === "/api/nodes" && request.method() === "GET";
   });
-  await page.getByRole("button", { name: /全部升级/ }).click();
+  await page.getByRole("button", { name: /分批升级/ }).click();
+  await expect(page.getByRole("dialog", { name: "分批升级" })).toBeVisible();
+  await page.getByLabel("最大并发节点").fill("2");
+  await page.getByLabel("健康观察（秒）").fill("90");
+  const dispatch = page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === "/api/nodes/upgrade-all" &&
+      request.method() === "POST",
+  );
+  await page.getByRole("button", { name: "开始分批升级" }).click();
+  expect((await dispatch).postDataJSON()).toEqual({
+    max_parallel: 2,
+    health_window_seconds: 90,
+    canary_node_id: node.id,
+  });
   await nodesRefresh;
 
-  await expect(page.getByText("已创建 1 个升级任务")).toBeVisible();
+  await expect(page.getByText("已纳入 1 个节点")).toBeVisible();
   await expect(page.getByRole("dialog", { name: "批量升级结果" })).toHaveCount(
     0,
   );
@@ -4497,3 +4533,152 @@ function trackPageErrors(page: Page) {
   page.on("pageerror", (error) => errors.push(error.message));
   return errors;
 }
+
+test("rolling upgrade shows progress and supports pause resume cancel", async ({
+  page,
+}, testInfo) => {
+  const errors = trackPageErrors(page);
+  let rollout = {
+    id: "rollout-1",
+    revision: 1,
+    state: "running",
+    max_parallel: 2,
+    health_window_seconds: 60,
+    target_agent_sha256: "a".repeat(64),
+    created_at: now.toISOString(),
+    updated_at: now.toISOString(),
+    detail: "等待金丝雀节点通过健康观察",
+    members: [
+      {
+        node_id: "node-1",
+        name: "edge-canary",
+        state: "verifying",
+        detail: "健康观察中",
+      },
+      { node_id: "node-2", name: "edge-next", state: "pending" },
+    ],
+  };
+  await mockAPI(page);
+  await page.route("**/api/nodes/upgrade-rollouts/**", async (route) => {
+    const action = new URL(route.request().url()).pathname.split("/").at(-1);
+    if (route.request().method() === "POST") {
+      rollout = {
+        ...rollout,
+        state:
+          action === "pause"
+            ? "paused"
+            : action === "resume"
+              ? "running"
+              : "cancelled",
+        detail:
+          action === "pause"
+            ? "已暂停派发，正在执行的节点将继续完成"
+            : action === "resume"
+              ? "已恢复分批升级"
+              : "已取消后续派发，已下发的升级仍会执行",
+      };
+    }
+    await route.fulfill({ json: rollout });
+  });
+  await page.goto("/#/nodes");
+  await expect(page.getByText("edge-canary", { exact: false })).toBeVisible();
+  await page.getByRole("button", { name: "暂停派发" }).click();
+  await expect(page.getByRole("button", { name: "恢复升级" })).toBeVisible();
+  await page.getByRole("button", { name: "恢复升级" }).click();
+  await expect(page.getByRole("button", { name: "暂停派发" })).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("rolling-upgrade-desktop.png"),
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({
+    path: testInfo.outputPath("rolling-upgrade-mobile.png"),
+    fullPage: true,
+  });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+  await page.getByRole("button", { name: "取消后续升级" }).click();
+  await expect(
+    page.getByText("已取消后续派发，已下发的升级仍会执行"),
+  ).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("backup freshness and isolated verification retain the last recovery point", async ({
+  page,
+}, testInfo) => {
+  const errors = trackPageErrors(page);
+  const past = new Date(now.getTime() - 3 * 86400000).toISOString();
+  let health = {
+    state: "stale",
+    summary: "最近成功备份已过期",
+    observed_at: now.toISOString(),
+    last_succeeded_at: past,
+    verification_overdue: true,
+    verification: {
+      state: "failed",
+      job_id: "verify-old",
+      error: "snapshot checksum mismatch",
+      last_verified_at: past,
+      last_verified_snapshot_id: "a".repeat(64),
+      last_verified_snapshot_time: past,
+    },
+  };
+  await mockAPI(page, {
+    "/api/backups/status": {
+      version: 1,
+      state: "succeeded",
+      started_at: past,
+      updated_at: past,
+      finished_at: past,
+      attempt: 1,
+      max_attempts: 3,
+    },
+  });
+  await page.route("**/api/backups/health", (route) =>
+    route.fulfill({ json: health }),
+  );
+  await page.route("**/api/backups/verify", async (route) => {
+    health = {
+      ...health,
+      verification: {
+        ...health.verification,
+        state: "validating",
+        job_id: "verify-new",
+        error: "",
+      },
+    };
+    await route.fulfill({
+      status: 202,
+      json: { id: "verify-new", state: "validating", verify_only: true },
+    });
+  });
+  await page.goto("/#/settings");
+  await page.getByRole("tab", { name: "备份与恢复" }).click();
+  await expect(
+    page.getByText("最近成功备份已过期", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("校验失败", { exact: true })).toBeVisible();
+  await expect(page.getByText(/可恢复至：/)).toBeVisible();
+  await page.getByRole("button", { name: "立即校验最新快照" }).click();
+  await expect(page.getByRole("button", { name: "取消校验" })).toBeVisible();
+  await expect(page.getByText(/可恢复至：/)).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("backup-verification-desktop.png"),
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({
+    path: testInfo.outputPath("backup-verification-mobile.png"),
+    fullPage: true,
+  });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+  expect(errors).toEqual([]);
+});

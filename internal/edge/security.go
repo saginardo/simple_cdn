@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -70,15 +69,23 @@ func nftablesRuleset(bans []domain.SecurityBan, currentExists, legacyExists bool
 	type element struct {
 		ip      string
 		seconds int64
+		ipv4    bool
 	}
-	elements := make([]element, 0, len(bans))
+	byIP := make(map[string]element)
 	for _, ban := range bans {
-		address, err := netip.ParseAddr(ban.IP)
+		address, err := domain.ParseSecurityIP(ban.IP)
 		seconds := int64(ban.ExpiresAt.Sub(now).Seconds())
-		if err != nil || !address.Is4() || !address.IsGlobalUnicast() || address.IsPrivate() || !ban.ExpiresAt.After(now) || seconds < 1 {
+		if err != nil || seconds < 1 {
 			continue
 		}
-		elements = append(elements, element{ip: address.String(), seconds: seconds})
+		key := address.String()
+		if previous, found := byIP[key]; !found || seconds > previous.seconds {
+			byIP[key] = element{ip: key, seconds: seconds, ipv4: address.Is4()}
+		}
+	}
+	elements := make([]element, 0, len(byIP))
+	for _, item := range byIP {
+		elements = append(elements, item)
 	}
 	sort.Slice(elements, func(i, j int) bool { return elements[i].ip < elements[j].ip })
 	var script strings.Builder
@@ -88,21 +95,26 @@ func nftablesRuleset(bans []domain.SecurityBan, currentExists, legacyExists bool
 	if legacyExists {
 		script.WriteString("delete table inet " + project.LegacyNftablesTable + "\n")
 	}
-	script.WriteString("table inet " + project.NftablesTable + " {\n  set banned_ipv4 {\n    type ipv4_addr\n    flags timeout\n")
-	if len(elements) > 0 {
-		script.WriteString("    elements = { ")
-		for index, item := range elements {
-			if index > 0 {
-				script.WriteString(", ")
+	script.WriteString("table inet " + project.NftablesTable + " {\n")
+	for _, family := range []struct {
+		name, kind string
+		ipv4       bool
+	}{
+		{"banned_ipv4", "ipv4_addr", true}, {"banned_ipv6", "ipv6_addr", false},
+	} {
+		fmt.Fprintf(&script, "  set %s {\n    type %s\n    flags timeout\n", family.name, family.kind)
+		var entries []string
+		for _, item := range elements {
+			if item.ipv4 == family.ipv4 {
+				entries = append(entries, fmt.Sprintf("%s timeout %ds", item.ip, item.seconds))
 			}
-			script.WriteString(item.ip)
-			script.WriteString(" timeout ")
-			script.WriteString(strconv.FormatInt(item.seconds, 10))
-			script.WriteString("s")
 		}
-		script.WriteString(" }\n")
+		if len(entries) > 0 {
+			fmt.Fprintf(&script, "    elements = { %s }\n", strings.Join(entries, ", "))
+		}
+		script.WriteString("  }\n")
 	}
-	script.WriteString("  }\n  chain input {\n    type filter hook input priority -10; policy accept;\n    tcp dport { 80, 443 } ip saddr @banned_ipv4 drop\n    udp dport 443 ip saddr @banned_ipv4 drop\n  }\n}\n")
+	script.WriteString("  chain input {\n    type filter hook input priority -10; policy accept;\n    tcp dport { 80, 443 } ip saddr @banned_ipv4 drop\n    udp dport 443 ip saddr @banned_ipv4 drop\n    tcp dport { 80, 443 } ip6 saddr @banned_ipv6 drop\n    udp dport 443 ip6 saddr @banned_ipv6 drop\n  }\n}\n")
 	return script.String()
 }
 
@@ -360,14 +372,14 @@ func decodeSecurityLog(line []byte) (domain.SecurityEvent, error) {
 	if _, err := uuid.Parse(raw.PolicyID); err != nil {
 		return domain.SecurityEvent{}, errors.New("invalid security policy ID")
 	}
-	address, err := netip.ParseAddr(strings.TrimSpace(raw.ClientIP))
-	if err != nil || !address.IsGlobalUnicast() || address.IsPrivate() {
+	address, err := domain.ParseSecurityIP(raw.ClientIP)
+	if err != nil {
 		return domain.SecurityEvent{}, errors.New("security event client IP is not public")
 	}
 	if raw.Action != domain.SecurityActionLog && raw.Action != domain.SecurityActionBlock && raw.Action != domain.SecurityActionBan {
 		return domain.SecurityEvent{}, errors.New("invalid security action")
 	}
-	if raw.Action == domain.SecurityActionBan && (!address.Is4() || !domain.ValidSecurityBanDuration(raw.BanSeconds)) {
+	if raw.Action == domain.SecurityActionBan && !domain.ValidSecurityBanDuration(raw.BanSeconds) {
 		return domain.SecurityEvent{}, errors.New("invalid security ban duration")
 	}
 	if raw.Action != domain.SecurityActionBan {
@@ -634,8 +646,8 @@ func (m *SecurityManager) syncBans(ctx context.Context, controlURL string, clien
 	previousBans := limitLocalSecurityBans(localBanMapValues(activeByIP))
 	byIP := make(map[string]localSecurityBan, len(remote.Bans)+len(local.Bans))
 	for _, ban := range remote.Bans {
-		address, err := netip.ParseAddr(ban.IP)
-		if err == nil && address.Is4() && address.IsGlobalUnicast() && !address.IsPrivate() && ban.ExpiresAt.After(now) {
+		address, err := domain.ParseSecurityIP(ban.IP)
+		if err == nil && ban.ExpiresAt.After(now) {
 			ban.IP = address.String()
 			byIP[ban.IP] = localSecurityBan{SecurityBan: domain.SecurityBan{IP: ban.IP, ExpiresAt: ban.ExpiresAt}}
 		}
@@ -685,7 +697,9 @@ func (m *SecurityManager) firewallNeedsRetry() bool {
 func activeLocalBans(bans []localSecurityBan, now time.Time) []localSecurityBan {
 	result := bans[:0]
 	for _, ban := range bans {
-		if ban.ExpiresAt.After(now) {
+		address, err := domain.ParseSecurityIP(ban.IP)
+		if err == nil && ban.ExpiresAt.After(now) {
+			ban.IP = address.String()
 			result = append(result, ban)
 		}
 	}

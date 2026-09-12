@@ -17,6 +17,7 @@ type securityCoverageNode struct {
 	ID                  string            `json:"id"`
 	Name                string            `json:"name"`
 	Status              domain.NodeStatus `json:"status"`
+	IPv6BanCapable      bool              `json:"ipv6_ban_capable"`
 	Capable             bool              `json:"capable"`
 	Configured          bool              `json:"configured"`
 	RateLimitCapable    bool              `json:"rate_limit_capable"`
@@ -154,6 +155,7 @@ func (s *Server) securityOverview(deploymentErr error) (securityOverviewResponse
 		coverage = append(coverage, securityCoverageNode{
 			ID: node.ID, Name: node.Name, Status: node.Status,
 			Capable:             slices.Contains(node.Capabilities, domain.EdgeCapabilitySecurity),
+			IPv6BanCapable:      slices.Contains(node.Capabilities, domain.EdgeCapabilitySecurityIPv6),
 			Configured:          configured,
 			RateLimitCapable:    slices.Contains(node.Capabilities, domain.EdgeCapabilityRateLimit),
 			RateLimitConfigured: rateLimitConfigured,

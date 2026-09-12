@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -352,5 +353,56 @@ func TestSecurityBanListingLimitAndCount(t *testing.T) {
 	recent, err := database.ListRecentSecurityEvents(10)
 	if err != nil || len(recent) != len(events) {
 		t.Fatalf("events after idempotent replay=%#v, err=%v", recent, err)
+	}
+}
+
+func TestSecurityIPv6BanLifecycle(t *testing.T) {
+	for _, rateLimit := range []bool{false, true} {
+		t.Run(fmt.Sprintf("rate_limit_%t", rateLimit), func(t *testing.T) {
+			database, err := Open(filepath.Join(t.TempDir(), "control.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer database.Close()
+			node, err := database.CreateNode("ipv6-edge", "203.0.113.77")
+			if err != nil {
+				t.Fatal(err)
+			}
+			policyID := domain.DefaultSecurityPolicyID
+			if rateLimit {
+				policy, err := database.CreateRateLimitPolicy(domain.RateLimitPolicy{
+					Name: "IPv6 errors", Enabled: true, RequestsPerSecond: 5,
+					ResponseConditionEnabled: true, ResponseStatusClasses: []int{4, 5},
+					BanEnabled: true, BanAfterConsecutive429: 3, BanDurationSeconds: 3600,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				policyID = policy.ID
+			}
+			event := domain.SecurityEvent{ID: "11111111-1111-4111-8111-111111111111", PolicyID: policyID,
+				ClientIP: "2001:4860:4860:0:0:0:0:8888", Host: "cdn.example.test", Path: "/.env",
+				Method: "GET", Action: domain.SecurityActionBan, BanDurationSeconds: 3600, ObservedAt: time.Now().UTC()}
+			for attempt := 0; attempt < 2; attempt++ {
+				if count, err := database.RecordSecurityEvents(node.ID, []domain.SecurityEvent{event}); err != nil || count != 1 {
+					t.Fatalf("record: %d %v", count, err)
+				}
+			}
+			bans, err := database.ListActiveSecurityBans()
+			if err != nil || len(bans) != 1 || bans[0].IP != "2001:4860:4860::8888" {
+				t.Fatalf("bans: %#v %v", bans, err)
+			}
+			if err := database.DeleteSecurityBan(event.ClientIP); err != nil {
+				t.Fatal(err)
+			}
+			if count, err := database.CountActiveSecurityBans(); err != nil || count != 0 {
+				t.Fatalf("unban: %d %v", count, err)
+			}
+			event.ID = "22222222-2222-4222-8222-222222222222"
+			event.ObservedAt = time.Now().UTC().Add(-8 * 24 * time.Hour)
+			if _, err := database.RecordSecurityEvents(node.ID, []domain.SecurityEvent{event}); err == nil {
+				t.Fatal("accepted expired event")
+			}
+		})
 	}
 }

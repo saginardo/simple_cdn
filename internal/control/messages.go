@@ -117,7 +117,7 @@ func (s *Server) reconcileMessages() error {
 	}
 	if s.OnlineRestore != nil {
 		job := s.OnlineRestore.Current()
-		if job != nil && !job.UpdatedAt.Before(retentionCutoff) && restoreStateNotifiable(job.State) {
+		if job != nil && !job.VerifyOnly && !job.UpdatedAt.Before(retentionCutoff) && restoreStateNotifiable(job.State) {
 			severity, title := restoreMessagePresentation(job.State)
 			body := job.Detail
 			if job.Error != "" {

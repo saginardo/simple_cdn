@@ -43,10 +43,10 @@ type Store struct {
 }
 
 type siteSnapshotCache struct {
-	marker    string
-	sites     []domain.Site
-	summaries []domain.SiteSummary
-	loaded    bool
+	sitesMarker     string
+	sites           []domain.Site
+	summariesMarker string
+	summaries       []domain.SiteSummary
 }
 
 func (s *Store) ReadOnly() bool { return s.readOnly }
@@ -1741,7 +1741,7 @@ func (s *Store) ListSites() ([]domain.Site, error) {
 		return nil, err
 	}
 	s.siteCacheMu.Lock()
-	if s.siteCache.loaded && s.siteCache.marker == marker && s.siteCache.sites != nil {
+	if s.siteCache.sitesMarker == marker && s.siteCache.sites != nil {
 		sites := cloneSites(s.siteCache.sites)
 		s.siteCacheMu.Unlock()
 		return sites, nil
@@ -1766,7 +1766,8 @@ func (s *Store) ListSites() ([]domain.Site, error) {
 	}
 
 	s.siteCacheMu.Lock()
-	s.siteCache = siteSnapshotCache{marker: marker, sites: sites, summaries: s.siteCache.summaries, loaded: true}
+	s.siteCache.sitesMarker = marker
+	s.siteCache.sites = sites
 	s.siteCacheMu.Unlock()
 	return cloneSites(sites), nil
 }
@@ -1779,7 +1780,7 @@ func (s *Store) ListSiteSummaries() ([]domain.SiteSummary, error) {
 		return nil, err
 	}
 	s.siteCacheMu.Lock()
-	if s.siteCache.loaded && s.siteCache.marker == marker && s.siteCache.summaries != nil {
+	if s.siteCache.summariesMarker == marker && s.siteCache.summaries != nil {
 		summaries := cloneSiteSummaries(s.siteCache.summaries)
 		s.siteCacheMu.Unlock()
 		return summaries, nil
@@ -1808,7 +1809,8 @@ func (s *Store) ListSiteSummaries() ([]domain.SiteSummary, error) {
 	}
 
 	s.siteCacheMu.Lock()
-	s.siteCache = siteSnapshotCache{marker: marker, sites: s.siteCache.sites, summaries: summaries, loaded: true}
+	s.siteCache.summariesMarker = marker
+	s.siteCache.summaries = summaries
 	s.siteCacheMu.Unlock()
 	return cloneSiteSummaries(summaries), nil
 }

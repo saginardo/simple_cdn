@@ -13,6 +13,62 @@ export type Locale = "zh-CN" | "en";
 const localeStorageKey = "simple-cdn.locale";
 
 const english = {
+  分批升级: "Rolling upgrade",
+  金丝雀节点: "Canary node",
+  金丝雀: "Canary",
+  "先升级金丝雀节点，通过健康观察后按并发上限继续；任一节点失败即暂停后续派发。":
+    "Upgrade the canary first, observe its health, then continue within the concurrency limit. Any failure pauses further dispatch.",
+  最大并发节点: "Concurrent nodes",
+  "健康观察（秒）": "Health window (seconds)",
+  "将纳入 {value0} 个可升级节点，批次创建后固定节点与目标版本。":
+    "Include {value0} eligible nodes. Membership and target artifacts are fixed when the rollout starts.",
+  开始分批升级: "Start rolling upgrade",
+  "已纳入 {value0} 个节点": "Included {value0} nodes",
+  等待派发: "Awaiting dispatch",
+  健康观察中: "Observing health",
+  已通过: "Passed",
+  恢复升级: "Resume upgrade",
+  暂停派发: "Pause dispatch",
+  取消后续升级: "Cancel remaining upgrades",
+  "并发上限 {value0} · 健康观察 {value1} 秒":
+    "Concurrency {value0} · Health window {value1}s",
+  "暂停或取消后，已下发的升级仍会执行。":
+    "Already dispatched upgrades continue after pausing or cancelling.",
+  节点已纳入进行中的分批升级: "Node is reserved by an active rollout",
+  等待金丝雀节点通过健康观察:
+    "Waiting for the canary to pass health observation",
+  等待节点完成升级: "Waiting for the node to finish upgrading",
+  升级和健康观察均已通过: "Upgrade and health observation passed",
+  全部节点已通过升级和健康观察:
+    "All nodes passed upgrade and health observation",
+  "已暂停派发，正在执行的节点将继续完成":
+    "Dispatch paused; in-flight upgrades will finish",
+  "已取消后续派发，已下发的升级仍会执行":
+    "Remaining dispatch cancelled; in-flight upgrades continue",
+  已恢复分批升级: "Rolling upgrade resumed",
+
+  恢复校验已开始: "Recovery verification started",
+  校验失败: "Verification failed",
+  尚未校验: "Not yet verified",
+  恢复校验: "Recovery verification",
+  取消校验: "Cancel verification",
+  立即校验最新快照: "Verify latest snapshot",
+  "定期下载备份并执行隔离恢复校验，完成后清理临时数据。":
+    "Backups are periodically restored and verified in isolation; temporary data is then removed.",
+  "最近成功备份：": "Last successful backup: ",
+  "最近校验通过：": "Last verified: ",
+  "可恢复至：": "Recoverable point: ",
+  "恢复校验已到期，等待自动执行或手动启动。":
+    "Recovery verification is due and will run automatically, or you can start it now.",
+  备份健康状态加载失败: "Unable to load backup health",
+  最近成功备份已过期: "Last successful backup is stale",
+  备份任务长时间未完成: "Backup has been running too long",
+  备份状态无法读取: "Unable to read backup status",
+  备份状态时间异常: "Backup status has an invalid timestamp",
+  尚无成功备份记录: "No successful backup recorded",
+  "IPv4 / IPv6 封禁": "IPv4 / IPv6 bans",
+  "仅 IPv4 封禁，IPv6 需升级": "IPv4 bans only; upgrade for IPv6",
+  "IP 封禁不可用": "IP bans unavailable",
   工作区: "Workspace",
   运营: "Operations",
   系统: "System",

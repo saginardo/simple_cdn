@@ -929,6 +929,7 @@ export interface SecurityOverview {
     name: string;
     status: NodeStatus;
     capable: boolean;
+    ipv6_ban_capable?: boolean;
     configured: boolean;
     rate_limit_capable: boolean;
     rate_limit_configured: boolean;
@@ -1063,6 +1064,28 @@ export interface BackupRunStatus {
   error?: string;
 }
 
+export interface BackupHealthStatus {
+  state: string;
+  summary: string;
+  observed_at: string;
+  last_succeeded_at?: string;
+  expires_at?: string;
+  verification_due_at?: string;
+  verification_overdue: boolean;
+  verification: {
+    job_id?: string;
+    state: string;
+    snapshot_id?: string;
+    snapshot_time?: string;
+    started_at?: string;
+    finished_at?: string;
+    error?: string;
+    last_verified_at?: string;
+    last_verified_snapshot_id?: string;
+    last_verified_snapshot_time?: string;
+  };
+}
+
 export interface RestoreSnapshot {
   id: string;
   short_id: string;
@@ -1073,6 +1096,7 @@ export interface RestoreSnapshot {
 }
 
 export interface RestoreJob {
+  verify_only?: boolean;
   version: number;
   id: string;
   snapshot_id: string;
@@ -1111,4 +1135,26 @@ export interface NodeUninstallStatus {
   can_generate_command: boolean;
   ready_in_seconds: number;
   uninstall_command?: string;
+}
+
+export interface NodeUpgradeRollout {
+  id: string;
+  state: string;
+  revision: number;
+  max_parallel: number;
+  health_window_seconds: number;
+  target_agent_sha256: string;
+  target_nginx_sha256?: string;
+  detail: string;
+  created_at: string;
+  updated_at: string;
+  members: {
+    node_id: string;
+    name: string;
+    state: string;
+    task_id?: string;
+    detail?: string;
+    healthy_since?: string;
+    last_observed_at?: string;
+  }[];
 }

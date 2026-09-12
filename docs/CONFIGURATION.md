@@ -43,6 +43,9 @@ Docker Compose 部署使用三类环境文件：
 | `SETUP_ALLOW_CIDRS`                 | 空                                             | 允许首次初始化的客户端 CIDR，逗号分隔；公网启动前建议限制为管理员出口。                                                                          |
 | `TRUSTED_PROXY_CIDRS`               | 空                                             | 可以提供 `X-Real-IP` 的反向代理 CIDR。不要填写不受控制的公网地址段。                                                                             |
 | `BACKUP_STATUS_FILE`                | `/var/lib/cdn-platform-operations/backup.json` | 主控读取备份调度状态的位置；Compose 已显式设置并只读挂载。                                                                                       |
+| `BACKUP_MAX_AGE` | `26h` | 最近成功备份的有效期，额外加上计划随机延迟；超过后标记 stale 并告警。 |
+| `BACKUP_STALLED_AFTER` | `6h` | running/retrying 超过此时长标记 stalled 并告警。 |
+| `BACKUP_VERIFY_INTERVAL` | `168h` | 最近成功隔离恢复校验的有效期；到期自动校验最新 Compose 快照，失败至少间隔 1 小时重试。 |
 
 管理入口和边缘 mTLS 可以共用同一个 TLS listener，但反向代理不得终止边缘客户端证书。推荐拓扑见 [COMPOSE_DEPLOYMENT.md](COMPOSE_DEPLOYMENT.md)。
 

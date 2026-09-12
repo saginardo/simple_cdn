@@ -821,6 +821,13 @@ export function SecurityPage() {
                                 : node.capable
                                   ? t("兼容模式")
                                   : t("需升级")}
+                              <div className="mt-1 text-xs text-muted-foreground">
+                                {node.ipv6_ban_capable
+                                  ? t("IPv4 / IPv6 封禁")
+                                  : node.capable
+                                    ? t("仅 IPv4 封禁，IPv6 需升级")
+                                    : t("IP 封禁不可用")}
+                              </div>
                             </TableCell>
                             <TableCell>
                               {node.pow_capable

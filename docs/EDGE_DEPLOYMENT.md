@@ -211,3 +211,14 @@ Back up these non-recreatable paths:
 - `/opt/cdn-edge/static/objects`: managed static resources and validated precompressed sidecars when the edge is expected to serve them during a control-plane outage.
 
 `logs` is optional when uploaded logs are already retained by the controller. `bin`, `nginx`, `systemd`, generated Nginx fragments, and `cache` are checksum-verified or recreatable and are normally excluded.
+
+
+## Controlled fleet upgrades
+
+The Nodes page starts a rolling upgrade with an explicit canary, a concurrency limit (1–10; default 1), and a continuous health window (30–600 seconds; default 60). Membership and artifact digests are frozen at creation. Only the canary is dispatched initially. After a successful install, a post-install heartbeat no older than 90 seconds, matching Agent/Nginx digests, cleared updater state, current desired configuration with no error, and public service probes must pass throughout the window. Observation gaps over 30 seconds restart the window; a failed probe or a five-minute readiness timeout pauses dispatch. Remaining nodes are dispatched within the limit only after the canary passes. Failed installers keep the existing edge rollback behavior.
+
+Progress is persisted in SQLite (schema migration 39); task creation and membership linkage share one transaction. Control restarts resume the batch, but downtime never counts as health observation. Active/paused batch artifacts are protected from garbage collection. A changed control artifact target pauses the batch; cancel it and create another batch for the new target. Single-node upgrades cannot bypass membership reservations.
+
+Pause stops further dispatch. Resume retries failed members; if installation already succeeded, only health verification repeats. Cancel skips pending members. Already queued or applying node tasks continue after pause/cancel and remain visible in each node's upgrade history. Publishing or uninstalling a pending node can pause dispatch through existing operation guards.
+
+API: `POST /api/nodes/upgrade-all` accepts optional `canary_node_id`, `max_parallel` and `health_window_seconds`; the response contains `rollout` and `created` counts admitted members, including those awaiting dispatch. `GET /api/nodes/upgrade-rollouts/current` returns the latest batch. `POST /api/nodes/upgrade-rollouts/{id}/pause`, `/resume`, and `/cancel` control it. All routes require the existing administrator session and CSRF protection.

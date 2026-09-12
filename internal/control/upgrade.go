@@ -2,8 +2,10 @@ package control
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -42,11 +44,12 @@ type nodeUpgradeAllResult struct {
 }
 
 type nodeUpgradeAllResponse struct {
-	Created       int                    `json:"created"`
-	AlreadyActive int                    `json:"already_active"`
-	UpToDate      int                    `json:"up_to_date"`
-	Blocked       int                    `json:"blocked"`
-	Results       []nodeUpgradeAllResult `json:"results"`
+	Rollout       *domain.NodeUpgradeRollout `json:"rollout,omitempty"`
+	Created       int                        `json:"created"`
+	AlreadyActive int                        `json:"already_active"`
+	UpToDate      int                        `json:"up_to_date"`
+	Blocked       int                        `json:"blocked"`
+	Results       []nodeUpgradeAllResult     `json:"results"`
 }
 
 func (s *Server) buildNodeUpgradeStatus(node domain.Node) (nodeUpgradeStatusResponse, error) {
@@ -121,6 +124,12 @@ func (s *Server) buildNodeUpgradeStatus(node domain.Node) (nodeUpgradeStatusResp
 		return result, err
 	} else if active {
 		result.UpgradeBlocker = "节点正在确认站点配置"
+		return result, nil
+	}
+	if reserved, err := s.Store.NodeReservedByUpgradeRollout(node.ID); err != nil {
+		return result, err
+	} else if reserved {
+		result.UpgradeBlocker = "节点已纳入进行中的分批升级"
 		return result, nil
 	}
 	result.CanUpgrade = true
@@ -233,20 +242,46 @@ func (s *Server) startNodeUpgrade(response http.ResponseWriter, request *http.Re
 }
 
 func (s *Server) startAllNodeUpgrades(response http.ResponseWriter, request *http.Request) {
+	s.upgradeRolloutMu.Lock()
+	defer s.upgradeRolloutMu.Unlock()
+	options := struct {
+		MaxParallel         int    `json:"max_parallel"`
+		CanaryNodeID        string `json:"canary_node_id"`
+		HealthWindowSeconds int    `json:"health_window_seconds"`
+	}{MaxParallel: 1, HealthWindowSeconds: 60}
+	decoder := json.NewDecoder(http.MaxBytesReader(response, request.Body, 4096))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&options); err != nil && !errors.Is(err, io.EOF) {
+		writeError(response, http.StatusBadRequest, err)
+		return
+	}
+	if options.MaxParallel < 1 || options.MaxParallel > 10 || options.HealthWindowSeconds < 30 || options.HealthWindowSeconds > 600 {
+		writeError(response, http.StatusBadRequest, errors.New("并发数须为 1–10，健康观察须为 30–600 秒"))
+		return
+	}
+	if current, err := s.Store.LatestUpgradeRollout(); err == nil && (current.State == "running" || current.State == "paused") {
+		writeJSON(response, http.StatusConflict, map[string]any{"error": "已有进行中的分批升级", "rollout": current})
+		return
+	} else if err != nil && !errors.Is(err, store.ErrNotFound) {
+		writeStoreError(response, err)
+		return
+	}
 	if err := s.Store.ReconcileNodeUpgrades(); err != nil {
-		writeError(response, http.StatusInternalServerError, err)
+		writeStoreError(response, err)
 		return
 	}
 	nodes, err := s.Store.ListNodes()
 	if err != nil {
-		writeError(response, http.StatusInternalServerError, err)
+		writeStoreError(response, err)
 		return
 	}
 	result := nodeUpgradeAllResponse{Results: make([]nodeUpgradeAllResult, 0, len(nodes))}
+	rollout := domain.NodeUpgradeRollout{MaxParallel: options.MaxParallel, HealthWindowSeconds: options.HealthWindowSeconds, TargetAgentSHA256: strings.ToLower(strings.TrimSpace(s.EdgeBinarySHA256))}
+	frozen := map[string]domain.NodeUpgradeInstruction{}
 	for _, node := range nodes {
 		status, err := s.buildNodeUpgradeStatus(node)
 		if err != nil {
-			writeError(response, http.StatusInternalServerError, err)
+			writeStoreError(response, err)
 			return
 		}
 		item := nodeUpgradeAllResult{NodeID: node.ID, Name: node.Name}
@@ -261,27 +296,52 @@ func (s *Server) startAllNodeUpgrades(response http.ResponseWriter, request *htt
 			item.State, item.Detail = "blocked", status.UpgradeBlocker
 			result.Blocked++
 		default:
-			task, _, err := s.Store.CreateOrGetNodeUpgrade(node.ID, s.nodeUpgradeInstruction(node), time.Now().UTC().Add(nodeUpgradeTimeout))
-			if err != nil {
-				if errors.Is(err, store.ErrNodeOperationActive) || errors.Is(err, store.ErrNodeUpgradeActive) || errors.Is(err, store.ErrUpgradeRetryNotReady) {
-					item.State, item.Detail = "blocked", err.Error()
-					result.Blocked++
-					break
-				}
-				writeStoreError(response, err)
-				return
-			}
-			item.State, item.Detail, item.Task = "created", "节点升级已排队", &task
+			item.State, item.Detail = "pending", "等待分批升级"
 			result.Created++
-			s.audit(request, adminID(request.Context()), "start_upgrade", "node", node.ID, "bulk target sha256:"+task.TargetSHA256)
+			rollout.TargetNginxSHA256 = status.TargetNginxSHA256
+			rollout.Members = append(rollout.Members, domain.NodeUpgradeRolloutMember{NodeID: node.ID, Name: node.Name})
+			frozen[node.ID] = s.nodeUpgradeInstruction(node)
 		}
 		result.Results = append(result.Results, item)
 	}
-	statusCode := http.StatusOK
-	if result.Created != 0 {
-		statusCode = http.StatusAccepted
+	if options.CanaryNodeID != "" {
+		found := false
+		for i := range rollout.Members {
+			if rollout.Members[i].NodeID == options.CanaryNodeID {
+				rollout.Members[0], rollout.Members[i] = rollout.Members[i], rollout.Members[0]
+				found = true
+				break
+			}
+		}
+		if !found {
+			writeError(response, http.StatusBadRequest, errors.New("金丝雀节点不可升级"))
+			return
+		}
 	}
-	writeJSON(response, statusCode, result)
+	if result.Created == 0 {
+		writeJSON(response, http.StatusOK, result)
+		return
+	}
+	rollout, err = s.Store.CreateUpgradeRollout(rollout, frozen)
+	if err != nil {
+		writeError(response, http.StatusConflict, err)
+		return
+	}
+	// Dispatching and linking the canary is atomic; a crash here is resumed by RunUpgradeRollouts.
+	dispatched, err := s.Store.DispatchUpgradeRolloutNode(rollout.ID, rollout.Members[0].NodeID, time.Now().UTC().Add(nodeUpgradeTimeout))
+	if err != nil {
+		rollout.State = "paused"
+		rollout.Detail = err.Error()
+		if saveErr := s.Store.SaveUpgradeRollout(&rollout); saveErr != nil {
+			writeStoreError(response, saveErr)
+			return
+		}
+	} else {
+		rollout = dispatched
+	}
+	result.Rollout = &rollout
+	s.audit(request, adminID(request.Context()), "start_upgrade_rollout", "upgrade_rollout", rollout.ID, rollout.TargetAgentSHA256)
+	writeJSON(response, http.StatusAccepted, result)
 }
 
 func (s *Server) edgeUpgradeInstruction(response http.ResponseWriter, request *http.Request) {

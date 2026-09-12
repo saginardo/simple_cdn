@@ -313,6 +313,7 @@ func New(config Config) (*Agent, error) {
 	config.SecurityFirewall = defaultSecurityFirewall(config.SecurityFirewall)
 	if config.SecurityFirewall != nil {
 		config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilitySecurity)
+		config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilitySecurityIPv6)
 	}
 	if err := os.MkdirAll(config.StateDir, 0o750); err != nil {
 		return nil, err

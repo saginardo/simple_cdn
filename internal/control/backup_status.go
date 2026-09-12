@@ -20,15 +20,16 @@ const (
 )
 
 type BackupRunStatus struct {
-	Version     int        `json:"version"`
-	State       string     `json:"state"`
-	Attempt     int        `json:"attempt"`
-	MaxAttempts int        `json:"max_attempts"`
-	Host        string     `json:"host,omitempty"`
-	StartedAt   time.Time  `json:"started_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
-	FinishedAt  *time.Time `json:"finished_at,omitempty"`
-	Error       string     `json:"error,omitempty"`
+	Version         int        `json:"version"`
+	State           string     `json:"state"`
+	Attempt         int        `json:"attempt"`
+	MaxAttempts     int        `json:"max_attempts"`
+	Host            string     `json:"host,omitempty"`
+	StartedAt       time.Time  `json:"started_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+	FinishedAt      *time.Time `json:"finished_at,omitempty"`
+	LastSucceededAt *time.Time `json:"last_succeeded_at,omitempty"`
+	Error           string     `json:"error,omitempty"`
 }
 
 func NewBackupRunStatus(state string, attempt, maxAttempts int, host string, startedAt, updatedAt time.Time, detail string) (BackupRunStatus, error) {
@@ -91,6 +92,15 @@ func WriteBackupRunStatus(path string, status BackupRunStatus) error {
 		return err
 	}
 	path = filepath.Clean(path)
+	if status.State == BackupRunSucceeded {
+		finished := *status.FinishedAt
+		status.LastSucceededAt = &finished
+	} else if previous, err := ReadBackupRunStatus(path); err == nil {
+		status.LastSucceededAt = previous.LastSucceededAt
+		if status.LastSucceededAt == nil && previous.State == BackupRunSucceeded {
+			status.LastSucceededAt = previous.FinishedAt
+		}
+	}
 	directory := filepath.Dir(path)
 	if err := os.MkdirAll(directory, 0o750); err != nil {
 		return fmt.Errorf("create backup status directory: %w", err)

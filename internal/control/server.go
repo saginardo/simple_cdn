@@ -55,6 +55,7 @@ type Server struct {
 	Settings                    *SettingsManager
 	BackupValidator             BackupRepositoryValidator
 	BackupStatusPath            string
+	BackupHealth                *BackupHealthManager
 	OnlineRestore               *OnlineRestoreManager
 	Notifier                    integrations.Notifier
 	Logs                        logstore.Store
@@ -92,6 +93,7 @@ type Server struct {
 	machineStatusDemandTimerIDs map[string]uint64
 	machineStatusDemandTimerID  uint64
 	machineStatusDemandGrace    time.Duration
+	upgradeRolloutMu            sync.Mutex
 	edgeSecurityRevisionMu      sync.Mutex
 	edgeSecurityRevision        string
 	edgeSecurityExpiresAt       time.Time
@@ -160,6 +162,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/settings/backup", s.requireAdmin(s.clearBackupSettings))
 	mux.HandleFunc("POST /api/settings/backup/test", s.requireAdmin(s.testBackupSettings))
 	mux.HandleFunc("GET /api/backups/status", s.requireAdmin(s.backupRunStatus))
+	mux.HandleFunc("GET /api/backups/health", s.requireAdmin(s.backupHealthStatus))
+	mux.HandleFunc("POST /api/backups/verify", s.requireAdmin(s.verifyLatestBackup))
 	mux.HandleFunc("GET /api/backups/snapshots", s.requireAdmin(s.listBackupSnapshots))
 	mux.HandleFunc("DELETE /api/backups/snapshots/{id}", s.requireAdmin(s.deleteBackupSnapshot))
 	mux.HandleFunc("GET /api/backups/restores/current", s.requireAdmin(s.currentOnlineRestore))
@@ -199,6 +203,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/nginx/artifacts/{sha256}/promote", s.requireAdmin(s.promoteNginxArtifact))
 	mux.HandleFunc("POST /api/nodes", s.requireAdmin(s.createNode))
 	mux.HandleFunc("POST /api/nodes/upgrade-all", s.requireAdmin(s.startAllNodeUpgrades))
+	mux.HandleFunc("GET /api/nodes/upgrade-rollouts/current", s.requireAdmin(s.currentUpgradeRollout))
+	mux.HandleFunc("POST /api/nodes/upgrade-rollouts/{id}/pause", s.requireAdmin(s.changeUpgradeRollout))
+	mux.HandleFunc("POST /api/nodes/upgrade-rollouts/{id}/resume", s.requireAdmin(s.changeUpgradeRollout))
+	mux.HandleFunc("POST /api/nodes/upgrade-rollouts/{id}/cancel", s.requireAdmin(s.changeUpgradeRollout))
 	mux.HandleFunc("GET /api/nodes/{id}", s.requireAdmin(s.nodeDetail))
 	mux.HandleFunc("GET /api/nodes/{id}/machine-status/events", s.requireAdmin(s.machineStatusEvents))
 	mux.HandleFunc("GET /api/nodes/{id}/cache-status", s.requireAdmin(s.nodeCacheStatus))

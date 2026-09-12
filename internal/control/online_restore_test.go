@@ -301,6 +301,65 @@ esac
 	if !strings.Contains(string(calls), "snapshots --no-lock --json --tag cdn-control-compose") {
 		t.Fatalf("snapshot listing acquired a repository lock: %s", calls)
 	}
+	// Exercise the same encrypted/static/Nginx/ClickHouse snapshot through the
+	// automatic verification path before allowing a manual restore.
+	beforeVerification, err := fileSHA256(filepath.Join(dataDir, "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	health := &BackupHealthManager{Server: &Server{OnlineRestore: manager, Settings: settings, Store: settingsDatabase, BackupStatusPath: filepath.Join(temporary, "backup.json")}}
+	if err := health.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	verification := *manager.Current()
+	waitRestoreState(t, manager, OnlineRestoreVerified)
+	manager.wg.Wait()
+	if err := health.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if manager.Current().ID != verification.ID {
+		t.Fatal("scheduler repeated a recent verification")
+	}
+	if _, err := manager.Commit(verification.ID, "RESTORE"); err == nil {
+		t.Fatal("verification job allowed live cutover")
+	}
+	if _, err := os.Stat(onlineRestoreMaintenancePath(restoreRoot)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("verification created maintenance lock: %v", err)
+	}
+	if _, err := os.Stat(manager.jobRoot(verification.ID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("verification retained temporary files: %v", err)
+	}
+	if exists, _ := clickHouse.DatabaseExists(context.Background(), verification.TemporaryDatabase); exists {
+		t.Fatal("verification retained temporary database")
+	}
+	if exists, _ := clickHouse.DatabaseExists(context.Background(), project.ClickHouseDatabase); !exists {
+		t.Fatal("verification removed live ClickHouse database")
+	}
+	afterVerification, err := fileSHA256(filepath.Join(dataDir, "control.db"))
+	if err != nil || beforeVerification != afterVerification {
+		t.Fatalf("verification changed live SQLite: %v", err)
+	}
+	history, err := readBackupVerification(restoreRoot)
+	if err != nil || history.State != OnlineRestoreVerified || history.LastVerifiedSnapshotID != snapshotID {
+		t.Fatalf("verification history: %#v %v", history, err)
+	}
+	// A corrupt subsequent snapshot fails and retains the last proven point.
+	fixtureObject := filepath.Join(restoredStaticDirectory, restoredStaticDigest)
+	if err := os.WriteFile(fixtureObject, []byte("corrupt"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.StartVerification(snapshotID); err != nil {
+		t.Fatal(err)
+	}
+	waitRestoreState(t, manager, OnlineRestoreFailed)
+	manager.wg.Wait()
+	history, err = readBackupVerification(restoreRoot)
+	if err != nil || history.State != OnlineRestoreFailed || history.LastVerifiedSnapshotID != snapshotID {
+		t.Fatalf("failed verification history: %#v %v", history, err)
+	}
+	if err := os.WriteFile(fixtureObject, restoredStaticContents, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	job, err := manager.Start(snapshotID, snapshotID[:8])
 	if err != nil {
 		t.Fatal(err)
@@ -322,6 +381,16 @@ esac
 	}
 	if job.Version != OnlineRestoreJobVersion || job.DatabaseSHA256 == "" || job.StaticAssetsSHA256 == "" || job.CAFingerprint == "" || job.SchemaVersion != store.LatestSchemaVersion() || job.Database != project.ClickHouseDatabase || job.SourceDatabase != project.LegacyClickHouseDatabase {
 		t.Fatalf("verified job = %#v", job)
+	}
+	health.Now = func() time.Time { return time.Now().Add(8 * 24 * time.Hour) }
+	if err := health.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if manager.Current().ID != job.ID {
+		t.Fatal("scheduler replaced a prepared manual restore")
+	}
+	if _, err := health.VerifyNow(context.Background()); !errors.Is(err, errOnlineRestoreActive) {
+		t.Fatalf("manual/automatic conflict: %v", err)
 	}
 	stagedStaticPath := filepath.Join(restoreRoot, "jobs", job.ID, "snapshot", "backup", "staging", "control", "static-assets", "objects", restoredStaticDigest)
 	if err := os.WriteFile(stagedStaticPath, []byte(strings.Repeat("x", len(restoredStaticContents))), 0o644); err != nil {
@@ -923,4 +992,20 @@ func writeRestoreTestArchive(path, root string) error {
 		return errors.Join(copyErr, closeErr)
 	})
 	return errors.Join(walkErr, archive.Close(), compressed.Close(), file.Close())
+}
+
+func waitRestoreState(t *testing.T, manager *OnlineRestoreManager, wanted string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		job := manager.Current()
+		if job != nil && job.State == wanted {
+			return
+		}
+		if job != nil && job.State == OnlineRestoreFailed && wanted != OnlineRestoreFailed {
+			t.Fatalf("restore failed: %s", job.Error)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("restore never reached %s: %#v", wanted, manager.Current())
 }

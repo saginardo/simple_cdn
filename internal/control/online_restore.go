@@ -29,6 +29,7 @@ const (
 	OnlineRestoreCompleted   = "completed"
 	OnlineRestoreFailed      = "failed"
 	OnlineRestoreCancelled   = "cancelled"
+	OnlineRestoreVerified    = "verified"
 )
 
 const onlineRestoreJobVersionWithoutStaticAssets = 1
@@ -54,6 +55,8 @@ type OnlineRestoreJob struct {
 	ID                 string     `json:"id"`
 	SnapshotID         string     `json:"snapshot_id"`
 	SnapshotShortID    string     `json:"snapshot_short_id"`
+	SnapshotTime       time.Time  `json:"snapshot_time,omitempty"`
+	VerifyOnly         bool       `json:"verify_only,omitempty"`
 	State              string     `json:"state"`
 	Phase              string     `json:"phase,omitempty"`
 	Detail             string     `json:"detail,omitempty"`
@@ -315,6 +318,20 @@ func (m *OnlineRestoreManager) DeleteSnapshot(ctx context.Context, snapshotID, c
 }
 
 func (m *OnlineRestoreManager) Start(snapshotID, confirmation string) (OnlineRestoreJob, error) {
+	return m.start(snapshotID, confirmation, false)
+}
+
+func (m *OnlineRestoreManager) StartVerification(snapshotID string) (OnlineRestoreJob, error) {
+	if !validResticSnapshotID(snapshotID) {
+		return OnlineRestoreJob{}, errResticSnapshotID
+	}
+	return m.start(snapshotID, snapshotID[:8], true)
+}
+
+func (m *OnlineRestoreManager) start(snapshotID, confirmation string, verifyOnly bool) (OnlineRestoreJob, error) {
+	if m.ctx.Err() != nil {
+		return OnlineRestoreJob{}, m.ctx.Err()
+	}
 	snapshotID = strings.ToLower(strings.TrimSpace(snapshotID))
 	confirmation = strings.ToLower(strings.TrimSpace(confirmation))
 	if !validResticSnapshotID(snapshotID) {
@@ -327,7 +344,7 @@ func (m *OnlineRestoreManager) Start(snapshotID, confirmation string) (OnlineRes
 	defer m.snapshotMu.Unlock()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.job != nil && onlineRestoreActive(m.job.State) {
+	if m.jobCancel != nil || (m.job != nil && onlineRestoreActive(m.job.State)) {
 		return OnlineRestoreJob{}, errOnlineRestoreActive
 	}
 	if m.job != nil {
@@ -343,6 +360,7 @@ func (m *OnlineRestoreManager) Start(snapshotID, confirmation string) (OnlineRes
 		ID:                id,
 		SnapshotID:        snapshotID,
 		SnapshotShortID:   snapshotID[:8],
+		VerifyOnly:        verifyOnly,
 		State:             OnlineRestoreQueued,
 		Detail:            "Waiting to download and validate the selected snapshot.",
 		Database:          m.config.Database,
@@ -370,6 +388,9 @@ func (m *OnlineRestoreManager) Commit(jobID, confirmation string) (OnlineRestore
 	}
 	if m.job.State != OnlineRestoreReady {
 		return OnlineRestoreJob{}, fmt.Errorf("restore job is %s, not ready", m.job.State)
+	}
+	if m.job.VerifyOnly {
+		return OnlineRestoreJob{}, errors.New("a verification job cannot replace live data")
 	}
 	if strings.TrimSpace(confirmation) != "RESTORE" {
 		return OnlineRestoreJob{}, errors.New("confirmation must be RESTORE")
@@ -415,7 +436,7 @@ func (m *OnlineRestoreManager) Cancel(jobID string) (OnlineRestoreJob, error) {
 		m.mu.Unlock()
 		return OnlineRestoreJob{}, errors.New("restore job was not found")
 	}
-	if m.job.State == OnlineRestoreCommitting || m.job.State == OnlineRestoreCompleted {
+	if m.job.State == OnlineRestoreCommitting || m.job.State == OnlineRestoreCompleted || m.job.State == OnlineRestoreVerified {
 		state := m.job.State
 		m.mu.Unlock()
 		return OnlineRestoreJob{}, fmt.Errorf("restore job cannot be cancelled while %s", state)
@@ -483,6 +504,9 @@ func (m *OnlineRestoreManager) stage(ctx context.Context, jobID string) {
 	for _, snapshot := range snapshots {
 		if strings.EqualFold(snapshot.ID, job.SnapshotID) {
 			found = true
+			if _, ok := m.updateJob(jobID, func(job *OnlineRestoreJob) { job.SnapshotTime = snapshot.Time }); !ok {
+				return
+			}
 			break
 		}
 	}
@@ -538,6 +562,24 @@ func (m *OnlineRestoreManager) stage(ctx context.Context, jobID string) {
 	if err := m.config.ClickHouse.ValidateDatabase(ctx, job.TemporaryDatabase); err != nil {
 		_ = m.config.ClickHouse.DropDatabase(context.Background(), job.TemporaryDatabase)
 		m.failJob(jobID, fmt.Errorf("validate temporary ClickHouse database: %w", err))
+		return
+	}
+	if job.VerifyOnly {
+		if err := m.config.ClickHouse.DropDatabase(ctx, job.TemporaryDatabase); err != nil {
+			m.failJob(jobID, fmt.Errorf("clean up verified ClickHouse database: %w", err))
+			return
+		}
+		if err := os.RemoveAll(jobRoot); err != nil {
+			m.failJob(jobID, fmt.Errorf("clean up verified snapshot: %w", err))
+			return
+		}
+		m.updateJob(jobID, func(job *OnlineRestoreJob) {
+			now := m.config.Now().UTC()
+			job.State = OnlineRestoreVerified
+			job.Detail = "Isolated recovery verification passed; temporary data was removed."
+			job.SchemaVersion = artifacts.SchemaVersion
+			job.FinishedAt = &now
+		})
 		return
 	}
 	m.updateJob(jobID, func(job *OnlineRestoreJob) {
@@ -760,7 +802,13 @@ func readOnlineRestoreJob(root string) (*OnlineRestoreJob, error) {
 }
 
 func writeOnlineRestoreJob(root string, job OnlineRestoreJob) error {
-	return writeOnlineRestoreJSON(onlineRestoreJobPath(root), job, 0o600)
+	if err := writeOnlineRestoreJSON(onlineRestoreJobPath(root), job, 0o600); err != nil {
+		return err
+	}
+	if job.VerifyOnly {
+		return recordBackupVerification(root, job)
+	}
+	return nil
 }
 
 func writeOnlineRestoreMaintenanceLock(root, jobID string) error {

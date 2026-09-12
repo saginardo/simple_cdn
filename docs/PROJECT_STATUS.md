@@ -62,16 +62,16 @@ cdn-edge-agent -- mTLS --> 控制面 desired state、心跳、日志、升级任
 | 区域         | 当前实现                                                                                                                                                     |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | 认证与管理   | Argon2id 密码、TOTP（始终开启）、恢复码、Passkey、CSRF、会话限速、审计、品牌和持久消息中心。                                                                 |
-| 节点生命周期 | 15 分钟一次性注册令牌、内部 CA/mTLS、manifest 增量轮询、机器状态 SSE、撤销、确认保护卸载和单节点/全量升级。                                                  |
+| 节点生命周期 | 15 分钟一次性注册令牌、内部 CA/mTLS、manifest 增量轮询、机器状态 SSE、撤销、确认保护卸载和单节点/金丝雀分批升级。                                                  |
 | Nginx 交付   | 自编译 HTTP/2、HTTP/3、Lua、Brotli、Zstandard、stream bundle；GitHub stable 独立更新；安装器和在线升级均支持事务回滚。                                       |
-| 站点发布     | 草稿与已发布快照分离，DNS-01 证书成功后才允许发布；统一发布工作区聚合版本分发、逐节点确认、失败节点重试和变更记录；IPv4/IPv6 健康独立计算并采用 A/AAAA 滞回调度。 |
+| 站点发布     | 草稿与已发布快照分离，DNS-01 证书成功后才允许发布；站点列表/详情聚合版本分发、逐节点确认、失败节点重试和变更记录；IPv4/IPv6 健康独立计算并采用 A/AAAA 滞回调度。 |
 | HTTP 流量    | 静态后缀共享缓存、缓存锁/revalidate/stale、整站/URL/前缀失效、边缘本地预热、动态 gzip/Brotli/Zstandard、WebSocket、SSE、OpenAI 风格 POST 流式和 Range 透传。 |
 | 回源         | HTTP/HTTPS/H2C/HTTP2、gRPC/GRPCS、主备切换、共享连接池、两层主动探测与熔断、TLS Host/SNI 分离。                                                              |
 | TCP 与隧道   | stream TCP 转发、监听/上游 TLS/SNI、动态 DNS、WireGuard 源站隧道、限速和双向 TCP/UDP 性能测试。                                                              |
-| 安全         | 有序 WAF 链、站点 PoW、客户端 IP 限速、nftables IPv4 封禁、能力门控和结构化安全事件。                                                                        |
+| 安全         | 有序 WAF 链、站点 PoW、客户端 IP 限速、nftables IPv4/IPv6 封禁、能力门控和结构化安全事件。                                                                        |
 | 托管资源     | 最大 32 MiB 的内容寻址对象、精确 URL 绑定、mTLS 边缘同步、大小/SHA 校验、gzip/Brotli/Zstandard sidecar。                                                     |
 | 可观测性     | ClickHouse 7 天原始日志、30 天分钟聚合、三类请求 ID、回源阶段耗时、压缩统计、节点缓存/机器状态和 7 天拨测历史。                                              |
-| 恢复         | Restic 日备份、短期重试、最终失败告警、离线 verify-only/切换回滚、带临时 ClickHouse 的在线恢复。                                                             |
+| 恢复         | Restic 日备份、短期重试、最终失败告警、离线 verify-only/切换回滚、带临时 ClickHouse 的在线恢复、备份过期/卡住告警和定期隔离恢复校验。                                                             |
 
 ## 6. 管理台工作区
 
@@ -85,7 +85,7 @@ cdn-edge-agent -- mTLS --> 控制面 desired state、心跳、日志、升级任
 - 站点列表/详情、发布（任务、分层状态、节点能力与变更记录）、证书；
 - 设置（品牌、DNS、缓存、Cloudflare、SMTP、备份/恢复、登录与安全）。
 
-节点页的 Nginx 区域只负责检查和批准工件；批准后仍需显式选择单节点或全部升级。
+节点页的 Nginx 区域只负责检查和批准工件；批准后仍需显式选择单节点或分批升级。
 
 ## 7. 版本与发布模型
 
@@ -111,7 +111,7 @@ cdn-edge-agent -- mTLS --> 控制面 desired state、心跳、日志、升级任
 | ClickHouse 拨测历史     | 7 天 TTL。                                                                                                                                                    |
 | 控制面消息              | 已读消息保留三个月。                                                                                                                                          |
 | 边缘访问日志            | 控制面不可达时进入本地队列，确认后上传。                                                                                                                      |
-| Nginx 动态工件          | current/candidate 与在途升级任务引用的 retired 文件始终保留；未引用文件超过 `NGINX_UPDATE_ARTIFACT_RETENTION`（默认 7 天）后自动回收，残留 `.nginx-download-*.tmp` 超过 1 小时清理。仍建议监控磁盘。                                                                                                                              |
+| Nginx 动态工件          | current/candidate 与进行中或暂停批次、在途升级任务引用的 retired 文件始终保留；未引用文件超过 `NGINX_UPDATE_ARTIFACT_RETENTION`（默认 7 天）后自动回收，残留 `.nginx-download-*.tmp` 超过 1 小时清理。仍建议监控磁盘。                                                                                                                              |
 | 托管静态资源对象        | Compose 备份按 SQLite 在线副本中的清单暂存对象，校验大小与 SHA-256 后写入 Restic；在线和离线恢复都会在切换前验证并恢复对象集。                         |
 
 离线恢复会替换整个 `data/control`，在线恢复会原子切换已验证的 SQLite、CA、证书、托管静态资源对象、Nginx 工件和 ClickHouse。旧快照若包含静态资源元数据但缺少对应对象，会在切换前被拒绝。

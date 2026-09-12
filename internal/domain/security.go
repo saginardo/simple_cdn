@@ -12,6 +12,7 @@ import (
 
 const (
 	EdgeCapabilitySecurity                 = "edge_security_v1"
+	EdgeCapabilitySecurityIPv6             = "edge_security_ipv6_v1"
 	EdgeCapabilityRateLimit                = "edge_rate_limit_v1"
 	EdgeCapabilityWAFChain                 = "waf_chain_v1"
 	EdgeCapabilityPOWChallenge             = "pow_challenge_v1"

@@ -38,7 +38,13 @@ import {
 } from "@/components/ui/tooltip";
 import { api, errorMessage } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
-import type { BackupRunStatus, RestoreJob, RestoreSnapshot } from "@/lib/types";
+import { BackupVerification } from "./backup-verification";
+import type {
+  BackupHealthStatus,
+  BackupRunStatus,
+  RestoreJob,
+  RestoreSnapshot,
+} from "@/lib/types";
 import { useListPagination } from "@/hooks/use-list-pagination";
 import { t } from "@/lib/i18n";
 export function BackupRestore() {
@@ -51,6 +57,12 @@ export function BackupRestore() {
     queryKey: ["backup-status"],
     queryFn: () => api<BackupRunStatus | null>("/api/backups/status"),
     refetchInterval: 30_000,
+  });
+  const health = useQuery({
+    queryKey: ["backup-health"],
+    queryFn: () => api<BackupHealthStatus | null>("/api/backups/health"),
+    refetchInterval: (query) =>
+      activeRestore(query.state.data?.verification.state) ? 2_000 : 30_000,
   });
   const snapshots = useQuery({
     queryKey: ["backup-snapshots"],
@@ -65,6 +77,7 @@ export function BackupRestore() {
   });
   const refresh = () => {
     void status.refetch();
+    void health.refetch();
     void snapshots.refetch();
     void job.refetch();
   };
@@ -193,8 +206,18 @@ export function BackupRestore() {
           {status.data ? (
             <div className="flex flex-col gap-2 rounded-lg border px-4 py-3 sm:flex-row sm:items-center">
               <StatusBadge
-                status={backupState(status.data.state)}
-                label={backupLabel(status.data.state)}
+                status={
+                  health.data &&
+                  ["stale", "stalled", "unknown"].includes(health.data.state)
+                    ? "failed"
+                    : backupState(status.data.state)
+                }
+                label={
+                  health.data &&
+                  ["stale", "stalled", "unknown"].includes(health.data.state)
+                    ? t(health.data.summary)
+                    : backupLabel(status.data.state)
+                }
               />
               <span className="text-sm">
                 {t("最近备份：")}
@@ -215,7 +238,16 @@ export function BackupRestore() {
               {t("尚无备份运行状态")}
             </div>
           )}
-          {current ? (
+          {health.error ? (
+            <PageError title={t("备份健康状态加载失败")} error={health.error} />
+          ) : null}
+          {health.data ? (
+            <BackupVerification
+              health={health.data}
+              restoreActive={activeRestore(current?.state)}
+            />
+          ) : null}
+          {current && !current.verify_only ? (
             <RestoreJobPanel
               job={current}
               onCommit={() => setCommitOpen(true)}

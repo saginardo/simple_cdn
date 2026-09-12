@@ -26,6 +26,26 @@ func (s *Store) CreateOrGetNodeUpgrade(nodeID string, instruction domain.NodeUpg
 	}
 	defer tx.Rollback()
 
+	task, created, err := createOrGetNodeUpgradeTx(tx, nodeID, instruction, deadline, "")
+	if err != nil {
+		return task, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.NodeUpgradeTask{}, false, err
+	}
+	return task, created, nil
+}
+
+func createOrGetNodeUpgradeTx(tx *sql.Tx, nodeID string, instruction domain.NodeUpgradeInstruction, deadline time.Time, rolloutID string) (domain.NodeUpgradeTask, bool, error) {
+	var reserved int
+	if err := tx.QueryRow(`SELECT count(*) FROM node_upgrade_rollouts, json_each(body, '$.members') AS member
+		WHERE state IN ('running', 'paused') AND node_upgrade_rollouts.id <> ? AND json_extract(member.value, '$.node_id') = ?`, rolloutID, nodeID).Scan(&reserved); err != nil {
+		return domain.NodeUpgradeTask{}, false, err
+	}
+	if reserved != 0 {
+		return domain.NodeUpgradeTask{}, false, ErrUpgradeRolloutActive
+	}
+
 	active, err := scanNodeUpgradeTask(tx.QueryRow(`SELECT `+nodeUpgradeTaskColumns+` FROM node_upgrade_tasks
 		WHERE node_id = ? AND status IN (?, ?) ORDER BY created_at DESC LIMIT 1`,
 		nodeID, domain.NodeUpgradeQueued, domain.NodeUpgradeApplying))
@@ -97,9 +117,6 @@ func (s *Store) CreateOrGetNodeUpgrade(nodeID string, instruction domain.NodeUpg
 		nginxBundle.URL, nginxBundle.SHA256, nginxService.URL, nginxService.SHA256,
 		task.Detail, stamp(task.DeadlineAt), stamp(task.CreatedAt), stamp(task.UpdatedAt))
 	if err != nil {
-		return domain.NodeUpgradeTask{}, false, err
-	}
-	if err := tx.Commit(); err != nil {
 		return domain.NodeUpgradeTask{}, false, err
 	}
 	return task, true, nil

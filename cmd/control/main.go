@@ -270,7 +270,14 @@ func main() {
 	server.HealthManager = healthManager
 	certificateManager.Start(ctx)
 	defer certificateManager.Stop()
+	server.BackupHealth = &control.BackupHealthManager{Server: server,
+		MaxAge:               durationEnvironment("BACKUP_MAX_AGE", 26*time.Hour),
+		StalledAfter:         durationEnvironment("BACKUP_STALLED_AFTER", 6*time.Hour),
+		VerificationInterval: durationEnvironment("BACKUP_VERIFY_INTERVAL", 7*24*time.Hour),
+	}
+	go server.BackupHealth.Run(ctx)
 	go healthManager.Run(ctx)
+	go server.RunUpgradeRollouts(ctx)
 	go certificateManager.Run(ctx)
 	go nginxUpdates.Run(ctx)
 	certificatePath, privateKeyPath := os.Getenv("CONTROL_TLS_CERT"), os.Getenv("CONTROL_TLS_KEY")

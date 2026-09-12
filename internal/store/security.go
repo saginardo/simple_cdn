@@ -267,9 +267,8 @@ func (s *Store) RecordSecurityEvents(nodeID string, events []domain.SecurityEven
 			}
 			return accepted, err
 		}
-		address, err := netip.ParseAddr(strings.TrimSpace(input.ClientIP))
-		if err != nil || !address.IsGlobalUnicast() || address.IsPrivate() ||
-			(policy.Action == domain.SecurityActionBan && !address.Is4()) {
+		address, err := domain.ParseSecurityIP(input.ClientIP)
+		if err != nil {
 			return invalid(index, errors.New("security event client IP is not supported"))
 		}
 		path := strings.TrimSpace(input.Path)
@@ -561,8 +560,8 @@ func (s *Store) ListRecentSecurityEvents(limit int) ([]domain.SecurityEvent, err
 }
 
 func (s *Store) DeleteSecurityBan(ip string) error {
-	address, err := netip.ParseAddr(strings.TrimSpace(ip))
-	if err != nil || !address.Is4() {
+	address, err := domain.ParseSecurityIP(ip)
+	if err != nil {
 		return errors.New("invalid security ban IP")
 	}
 	result, err := s.db.Exec(`DELETE FROM security_bans WHERE ip = ?`, address.String())

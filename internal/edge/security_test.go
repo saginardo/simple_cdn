@@ -2,10 +2,12 @@ package edge
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -106,7 +108,7 @@ func TestDecodeSecurityLogRejectsPrivateIPAndDuration(t *testing.T) {
 
 func TestNftablesRulesetSyntax(t *testing.T) {
 	now := time.Now().UTC()
-	ruleset := nftablesRuleset([]domain.SecurityBan{{IP: "8.8.8.8", ExpiresAt: now.Add(time.Hour)}}, false, true, now)
+	ruleset := nftablesRuleset([]domain.SecurityBan{{IP: "8.8.8.8", ExpiresAt: now.Add(time.Hour)}, {IP: "2606:4700:4700::1111", ExpiresAt: now.Add(time.Hour)}}, false, true, now)
 	for _, wanted := range []string{"delete table inet " + project.LegacyNftablesTable, "table inet " + project.NftablesTable, "flags timeout", "8.8.8.8 timeout 3600s", "tcp dport { 80, 443 }", "udp dport 443", "@banned_ipv4 drop"} {
 		if !strings.Contains(ruleset, wanted) {
 			t.Fatalf("ruleset lacks %q:\n%s", wanted, ruleset)
@@ -117,7 +119,7 @@ func TestNftablesRulesetSyntax(t *testing.T) {
 		t.Skip("nft is not installed")
 	}
 	command := exec.Command(binary, "--check", "--file", "-")
-	command.Stdin = strings.NewReader(nftablesRuleset([]domain.SecurityBan{{IP: "8.8.8.8", ExpiresAt: now.Add(time.Hour)}}, false, false, now))
+	command.Stdin = strings.NewReader(nftablesRuleset([]domain.SecurityBan{{IP: "8.8.8.8", ExpiresAt: now.Add(time.Hour)}, {IP: "2606:4700:4700::1111", ExpiresAt: now.Add(time.Hour)}}, false, false, now))
 	if output, err := command.CombinedOutput(); err != nil && !strings.Contains(string(output), "Operation not permitted") {
 		t.Fatalf("nft --check: %v\n%s\n%s", err, output, ruleset)
 	}
@@ -312,5 +314,75 @@ func TestSecurityFlushSkipsBanPullWhenRevisionIsUnchanged(t *testing.T) {
 	}
 	if postCount != 1 || getCount != 0 {
 		t.Fatalf("security requests: post=%d get=%d", postCount, getCount)
+	}
+}
+
+func TestSecurityIPv6LocalAndRemoteLifecycle(t *testing.T) {
+	address := "2001:4860:4860::8888"
+	event, err := decodeSecurityLog([]byte(fmt.Sprintf(`{"timestamp":"%s","policy_id":"%s","action":"ban","ban_seconds":3600,"client_ip":"2001:4860:4860:0:0:0:0:8888","path":"/.env"}`, time.Now().UTC().Format(time.RFC3339), domain.DefaultSecurityPolicyID)))
+	if err != nil || event.ClientIP != address {
+		t.Fatalf("decode: %#v %v", event, err)
+	}
+	firewall := &fakeSecurityFirewall{}
+	directory := t.TempDir()
+	manager := NewSecurityManager(directory, filepath.Join(directory, "security.json"), time.Second, firewall)
+	if err := manager.initialize(); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.applyLocalBans([]domain.SecurityEvent{event}); err != nil {
+		t.Fatal(err)
+	}
+	if last := firewall.bans[len(firewall.bans)-1]; len(last) != 1 || last[0].IP != address {
+		t.Fatalf("local bans: %#v", last)
+	}
+	if err := manager.clearPending([]domain.SecurityEvent{event}); err != nil {
+		t.Fatal(err)
+	}
+	// A restart must keep a confirmed IPv6 ban, then accept a fleet-wide unban.
+	restarted := NewSecurityManager(directory, manager.logPath, time.Second, firewall)
+	if err := restarted.initialize(); err != nil {
+		t.Fatal(err)
+	}
+	remote := []domain.EdgeSecurityBan{{IP: "2001:4860:4860:0:0:0:0:8888", ExpiresAt: time.Now().Add(time.Hour)}, {IP: "fc00::1", ExpiresAt: time.Now().Add(time.Hour)}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(domain.EdgeSecurityBanState{Bans: remote})
+	}))
+	defer server.Close()
+	if err := restarted.syncBans(context.Background(), server.URL, server.Client()); err != nil {
+		t.Fatal(err)
+	}
+	if last := firewall.bans[len(firewall.bans)-1]; len(last) != 1 || last[0].IP != address {
+		t.Fatalf("remote bans: %#v", last)
+	}
+	remote = nil
+	if err := restarted.syncBans(context.Background(), server.URL, server.Client()); err != nil {
+		t.Fatal(err)
+	}
+	if last := firewall.bans[len(firewall.bans)-1]; len(last) != 0 {
+		t.Fatalf("unban: %#v", last)
+	}
+}
+
+func TestNftablesDualStackRulesExcludeUnsafeAndExpiredAddresses(t *testing.T) {
+	now := time.Now().UTC()
+	bans := []domain.SecurityBan{
+		{IP: "8.8.8.8", ExpiresAt: now.Add(time.Hour)}, {IP: "::ffff:8.8.8.8", ExpiresAt: now.Add(2 * time.Hour)},
+		{IP: "2001:4860:4860::8888", ExpiresAt: now.Add(time.Hour)},
+		{IP: "2001:4860:4860::8844", ExpiresAt: now.Add(-time.Hour)},
+		{IP: "fc00::1", ExpiresAt: now.Add(time.Hour)}, {IP: "fe80::1%eth0", ExpiresAt: now.Add(time.Hour)},
+	}
+	rules := nftablesRuleset(bans, true, false, now)
+	for _, want := range []string{"type ipv4_addr", "type ipv6_addr", "8.8.8.8 timeout 7200s", "2001:4860:4860::8888 timeout 3600s", "tcp dport { 80, 443 } ip6 saddr @banned_ipv6 drop", "udp dport 443 ip6 saddr @banned_ipv6 drop"} {
+		if !strings.Contains(rules, want) {
+			t.Fatalf("missing %q:\n%s", want, rules)
+		}
+	}
+	for _, unwanted := range []string{"::ffff:", "::8844", "fc00::1", "fe80::", "dport 22"} {
+		if strings.Contains(rules, unwanted) {
+			t.Fatalf("unexpected %q:\n%s", unwanted, rules)
+		}
+	}
+	if strings.Count(rules, "8.8.8.8 timeout") != 1 {
+		t.Fatalf("duplicate mapped address:\n%s", rules)
 	}
 }

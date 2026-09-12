@@ -51,15 +51,17 @@ import {
   formatNumber,
   shortHash,
 } from "@/lib/format";
-import type { NginxArtifactStatus, Node, NodeUpgradeTask } from "@/lib/types";
+import type {
+  NginxArtifactStatus,
+  Node,
+  NodeUpgradeTask,
+  NodeUpgradeRollout,
+} from "@/lib/types";
 import { useListPagination } from "@/hooks/use-list-pagination";
 import { t, useI18n } from "@/lib/i18n";
-interface BulkUpgradeResult {
-  created: number;
-}
+import { UpgradeRolloutDialog, UpgradeRolloutPanel } from "./upgrade-rollout";
 export function NodesPage() {
   useI18n();
-  const queryClient = useQueryClient();
   const [createOpen, setCreateOpen] = useState(false);
   const nodes = useQuery({
     queryKey: ["nodes"],
@@ -70,23 +72,15 @@ export function NodesPage() {
         : 20_000,
   });
   const pagination = useListPagination(nodes.data ?? []);
-  const bulkUpgrade = useMutation({
-    mutationFn: () =>
-      api<BulkUpgradeResult>("/api/nodes/upgrade-all", {
-        method: "POST",
-      }),
-    onSuccess: (result) => {
-      void queryClient.invalidateQueries({
-        queryKey: ["nodes"],
-      });
-      toast.success(
-        t("已创建 {value0} 个升级任务", {
-          value0: result.created,
-        }),
-      );
-    },
-    onError: (error) => toast.error(errorMessage(error)),
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
+  const rollout = useQuery({
+    queryKey: ["upgrade-rollout"],
+    queryFn: () =>
+      api<NodeUpgradeRollout | null>("/api/nodes/upgrade-rollouts/current"),
+    refetchInterval: 5000,
   });
+  const rolloutActive =
+    rollout.data?.state === "running" || rollout.data?.state === "paused";
   const upgradeable =
     nodes.data?.filter((node) => node.can_upgrade).length ?? 0;
   return (
@@ -98,15 +92,11 @@ export function NodesPage() {
           <>
             <Button
               variant="outline"
-              disabled={!nodes.data?.length || bulkUpgrade.isPending}
-              onClick={() => bulkUpgrade.mutate()}
+              disabled={!upgradeable || rolloutActive}
+              onClick={() => setUpgradeOpen(true)}
             >
-              {bulkUpgrade.isPending ? (
-                <LoaderCircle className="animate-spin" />
-              ) : (
-                <Rocket />
-              )}
-              {t("全部升级")}
+              <Rocket />
+              {t("分批升级")}
               {upgradeable ? ` (${upgradeable})` : ""}
             </Button>
             <Button onClick={() => setCreateOpen(true)}>
@@ -116,7 +106,19 @@ export function NodesPage() {
           </>
         }
       />
+      <UpgradeRolloutDialog
+        open={upgradeOpen}
+        onOpenChange={setUpgradeOpen}
+        nodes={nodes.data ?? []}
+      />
       <PageBody>
+        {rollout.error ? (
+          <PageError
+            error={rollout.error}
+            onRetry={() => void rollout.refetch()}
+          />
+        ) : null}
+        {rollout.data ? <UpgradeRolloutPanel rollout={rollout.data} /> : null}
         {nodes.isLoading ? <PageLoading /> : null}
         {nodes.error ? (
           <PageError error={nodes.error} onRetry={() => void nodes.refetch()} />
@@ -196,7 +198,7 @@ export function NodesPage() {
                       <TableCell>
                         <NodeUpgradeAction
                           node={node}
-                          disabled={bulkUpgrade.isPending}
+                          disabled={rolloutActive}
                         />
                       </TableCell>
                       <TableCell className="pr-5">

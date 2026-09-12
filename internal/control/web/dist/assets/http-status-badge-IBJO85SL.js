@@ -1,0 +1,1 @@
+import{R as e,d as t,q as n,u as r}from"./page-ns-zwrh2.js";import{n as i}from"./status-badge-CKY7dJz8.js";var a=n();function o({status:n}){return(0,a.jsx)(i,{variant:`outline`,className:e(`font-normal tabular-nums`,t[r(n)]),children:n})}export{o as t};
