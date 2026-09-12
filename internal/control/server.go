@@ -56,6 +56,7 @@ type Server struct {
 	BackupValidator             BackupRepositoryValidator
 	BackupStatusPath            string
 	BackupHealth                *BackupHealthManager
+	SystemHealth                *SystemHealthManager
 	OnlineRestore               *OnlineRestoreManager
 	Notifier                    integrations.Notifier
 	Logs                        logstore.Store
@@ -132,6 +133,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/logout", s.requireAdmin(s.logout))
 	mux.HandleFunc("GET /api/session", s.requireAdmin(s.session))
 	mux.HandleFunc("GET /api/system/info", s.requireAdmin(s.systemInfo))
+	mux.HandleFunc("GET /api/system/health", s.requireAdmin(s.systemHealth))
 	mux.HandleFunc("GET /api/overview", s.requireAdmin(s.overview))
 	mux.HandleFunc("GET /api/health/reconciliation", s.requireAdmin(s.healthReconciliationStatus))
 	mux.HandleFunc("GET /api/messages", s.requireAdmin(s.listMessages))

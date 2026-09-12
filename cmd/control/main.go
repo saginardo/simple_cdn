@@ -276,6 +276,8 @@ func main() {
 		VerificationInterval: durationEnvironment("BACKUP_VERIFY_INTERVAL", 7*24*time.Hour),
 	}
 	go server.BackupHealth.Run(ctx)
+	server.SystemHealth = &control.SystemHealthManager{Server: server}
+	go server.SystemHealth.Run(ctx)
 	go healthManager.Run(ctx)
 	go server.RunUpgradeRollouts(ctx)
 	go certificateManager.Run(ctx)

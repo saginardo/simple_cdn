@@ -56,6 +56,7 @@ var schemaMigrations = []schemaMigration{
 	{Version: 37, Name: "publication-dns-ttl-history", Apply: migratePublicationDNSTTLHistory},
 	{Version: 38, Name: "deployment-task-site-lookup", Apply: migrateDeploymentTaskSiteLookup},
 	{Version: 39, Name: "node-upgrade-rollouts", Apply: migrateNodeUpgradeRollouts},
+	{Version: 40, Name: "system-health-snapshot", Apply: migrateSystemHealth},
 }
 
 func migrateSiteNodeDrains(tx *sql.Tx) error {

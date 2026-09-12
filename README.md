@@ -10,6 +10,7 @@ For the maintained documentation map, configuration reference, and operational g
 
 ## What is implemented
 
+- Status workspace with periodic backend snapshots, node/site/publication/certificate/backup/upgrade checks, freshness-aware status, evidence and resource links, and persistent recovery history. See [docs/HEALTH_CENTER.md](docs/HEALTH_CENTER.md).
 - Go control plane with versioned transactional SQLite migrations, Argon2id password plus TOTP login, passwordless passkey login, one-time recovery codes, persistent authentication rate limits, TOTP replay protection, CSRF protection, audit records, and a compact management UI. Login falls back to password plus TOTP when passkeys fail or the browser does not support them; **Sign-in and security** settings can replace TOTP and add or disable passkeys, while TOTP always remains enabled. The UI includes dedicated node/site detail pages, a persistent message center, per-node machine status, 24-hour cache outcomes, reported cache disk usage, and confirmation-protected workflows.
 - Node-first enrollment: create a pending node, copy a 15-minute one-time bootstrap command, then bind all later edge calls to an internally issued mTLS client certificate.
 - Per-node and fleet-wide online edge upgrades from the management UI, with eligibility reporting, mTLS task delivery, SHA-256 verification for every artifact, a detached systemd updater, new-agent heartbeat readiness, and transactional rollback.

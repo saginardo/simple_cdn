@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { healthSnapshot } from "./fixtures/health";
 
 const now = new Date();
 const series = Array.from({ length: 24 }, (_, index) => ({
@@ -1153,6 +1154,7 @@ async function mockAPI(page: Page, overrides: Record<string, unknown> = {}) {
     const responses: Record<string, unknown> = {
       "/api/session": { user: "admin", csrf_token: "e2e-csrf" },
       "/api/system/info": { name: "simple_cdn", version: "0.1.1" },
+      "/api/system/health": healthSnapshot(),
       "/api/branding": branding,
       "/api/messages": { messages: [], unread_count: 0 },
       "/api/overview": overview,
@@ -2601,6 +2603,7 @@ test("English locale covers workspaces and the WireGuard dialog", async ({
   await page.getByRole("button", { name: "切换语言" }).click();
   await page.getByRole("menuitemradio", { name: "English" }).click();
   for (const [path, heading] of [
+    ["health", "Status"],
     ["logs", "Logs"],
     ["cache", "Cache operations"],
     ["monitoring", "Monitoring"],
@@ -3733,6 +3736,7 @@ test("all primary workspaces and the new-site editor mount without runtime error
   await mockAPI(page);
 
   for (const [path, heading] of [
+    ["health", "状态"],
     ["security", "安全"],
     ["cache", "缓存运维台"],
     ["monitoring", "监测"],
@@ -4680,5 +4684,193 @@ test("backup freshness and isolated verification retain the last recovery point"
       () => document.documentElement.scrollWidth <= window.innerWidth,
     ),
   ).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test("status page filters issues and opens evidence and recovery records", async ({
+  page,
+}, testInfo) => {
+  const errors = trackPageErrors(page);
+  await mockAPI(page);
+  await page.goto("/#/overview");
+  await page.getByRole("link", { name: "状态", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "状态", level: 1 }),
+  ).toBeVisible();
+  const list = page.getByRole("list", { name: "健康检查列表" });
+  await expect(list.getByRole("button")).toHaveCount(5);
+  await page.screenshot({
+    path: testInfo.outputPath("health-desktop.png"),
+    fullPage: true,
+    animations: "disabled",
+  });
+  await page.getByLabel("检查范围", { exact: true }).click();
+  await page.getByRole("option", { name: "证书", exact: true }).click();
+  await expect(list.getByRole("button")).toHaveCount(1);
+  await list.getByRole("button").click();
+  const dialog = page.getByRole("dialog");
+  await expect(
+    dialog.getByText("服务证书到期时间", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    dialog.getByRole("link", { name: "查看站点证书" }),
+  ).toHaveAttribute("href", "#/sites/site-1");
+  await page.screenshot({
+    path: testInfo.outputPath("health-evidence.png"),
+    fullPage: true,
+    animations: "disabled",
+  });
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await page.getByRole("button", { name: "重置筛选" }).click();
+  await page.getByLabel("节点", { exact: true }).click();
+  await page.getByRole("option", { name: "edge-tokyo-02" }).click();
+  await expect(list.getByRole("button")).toHaveCount(2);
+  await page.getByLabel("站点", { exact: true }).click();
+  await page.getByRole("option", { name: "cdn.example.com" }).click();
+  await page.getByLabel("搜索", { exact: true }).fill("配置");
+  await expect(list.getByRole("button")).toHaveCount(1);
+  await page.getByRole("button", { name: "重置筛选" }).click();
+  await page.getByLabel("检查状态", { exact: true }).click();
+  await page.getByRole("option", { name: "全部状态", exact: true }).click();
+  await expect(list.getByRole("button")).toHaveCount(7);
+  await page.getByRole("tab", { name: "恢复记录", exact: true }).click();
+  await expect(page.getByText("后续检查已通过", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("检查对象已移除或停用，不代表故障恢复", { exact: true }),
+  ).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("status page links directly to backup settings", async ({ page }) => {
+  await mockAPI(page);
+  await page.goto("/#/health");
+  await page.getByRole("button", { name: /查看检查：备份时效/ }).click();
+  await page.getByRole("link", { name: "查看备份与恢复" }).click();
+  await expect(page).toHaveURL(/#\/settings\?tab=backup$/);
+  await expect(page.getByRole("tab", { name: "备份与恢复" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(page.getByText("S3 在线恢复")).toBeVisible();
+  await page.getByRole("tab", { name: "通用", exact: true }).click();
+  await expect(
+    page.getByRole("tab", { name: "通用", exact: true }),
+  ).toHaveAttribute("aria-selected", "true");
+});
+
+test("status page handles no issues, expired data and fetch errors", async ({
+  page,
+}) => {
+  const snapshot = healthSnapshot();
+  snapshot.checks = snapshot.checks.filter((c) => c.state === "healthy");
+  snapshot.state = "healthy";
+  snapshot.recoveries = [];
+  await mockAPI(page, { "/api/system/health": snapshot });
+  await page.goto("/#/health");
+  await expect(
+    page.getByText("当前筛选下没有检查项", { exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "查看全部检查" }).click();
+  await expect(
+    page
+      .getByRole("list", { name: "健康检查列表" })
+      .getByText("正常", { exact: true }),
+  ).toBeVisible();
+  snapshot.valid_until = new Date(Date.now() - 1000).toISOString();
+  await page.getByRole("button", { name: "刷新结果" }).click();
+  await expect(
+    page.getByText("健康数据已过期或尚未采集", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page
+      .getByRole("list", { name: "健康检查列表" })
+      .getByText("检查结果已过期", { exact: true }),
+  ).toBeVisible();
+  await page.route("**/api/system/health", (route) =>
+    route.fulfill({ status: 503, json: { error: "health unavailable" } }),
+  );
+  await page.getByRole("button", { name: "刷新结果" }).click();
+  await expect(
+    page.getByText("健康数据加载失败", { exact: true }),
+  ).toBeVisible();
+  await page.reload();
+  await expect(
+    page.getByText("健康数据加载失败", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "重试", exact: true }),
+  ).toBeVisible();
+});
+
+test("status page expires cached successes while offline", async ({ page }) => {
+  const snapshot = healthSnapshot();
+  snapshot.checks = snapshot.checks.filter((c) => c.state === "healthy");
+  snapshot.state = "healthy";
+  await mockAPI(page, { "/api/system/health": snapshot });
+  await page.clock.install({ time: new Date(snapshot.collected_at!) });
+  await page.goto("/#/health");
+  await expect(
+    page.getByText("当前筛选下没有检查项", { exact: true }),
+  ).toBeVisible();
+  await page.route("**/api/system/health", (route) => route.abort());
+  await page.clock.runFor(95_000);
+  await expect(
+    page.getByText("健康数据已过期或尚未采集", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("检查结果已过期", { exact: true })).toBeVisible();
+});
+
+test("status page supports English dark theme and narrow mobile layouts", async ({
+  page,
+}, testInfo) => {
+  const errors = trackPageErrors(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("simple-cdn.locale", "en");
+    localStorage.setItem("theme", "dark");
+  });
+  await mockAPI(page);
+  await page.goto("/#/health");
+  await expect(
+    page.getByRole("heading", { name: "Status", level: 1 }),
+  ).toBeVisible();
+  const list = page.getByRole("list", { name: "Health checks" });
+  await expect(
+    list.getByText("Node heartbeat has expired", { exact: true }),
+  ).toBeVisible();
+  await expect(page.locator("html")).toHaveClass(/dark/);
+  expect(await page.locator("main").innerText()).not.toMatch(/[\u4e00-\u9fff]/);
+  await page.screenshot({
+    path: testInfo.outputPath("health-dark-english.png"),
+    fullPage: true,
+    animations: "disabled",
+  });
+  for (const width of [390, 320]) {
+    await page.setViewportSize({ width, height: 844 });
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await expect
+      .poll(() =>
+        page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+      )
+      .toBe(true);
+    await page.screenshot({
+      path: testInfo.outputPath(`health-mobile-${width}.png`),
+      fullPage: true,
+      animations: "disabled",
+    });
+    await list
+      .getByRole("button", { name: /View check: Node heartbeat/ })
+      .click();
+    await expect(
+      page.getByRole("dialog").getByText("Impact", { exact: true }),
+    ).toBeVisible();
+    await expect
+      .poll(() =>
+        page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+      )
+      .toBe(true);
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog")).toBeHidden();
+  }
   expect(errors).toEqual([]);
 });

@@ -28,6 +28,7 @@ import type { Settings, SystemInfo } from "@/lib/types";
 
 const pageNames: Record<string, string> = {
   overview: "概览",
+  health: "状态",
   logs: "日志",
   security: "安全",
   cache: "缓存",

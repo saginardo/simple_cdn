@@ -15,6 +15,11 @@ const OverviewPage = lazy(() =>
     default: module.OverviewPage,
   })),
 );
+const HealthPage = lazy(() =>
+  import("@/features/health/health-page").then((module) => ({
+    default: module.HealthPage,
+  })),
+);
 const OverviewSitePage = lazy(() =>
   import("@/features/overview/overview-site-page").then((module) => ({
     default: module.OverviewSitePage,
@@ -133,6 +138,7 @@ export default function App() {
                         element={<Navigate to="/overview" replace />}
                       />
                       <Route path="/overview" element={<OverviewPage />} />
+                      <Route path="/health" element={<HealthPage />} />
                       <Route
                         path="/overview/sites/:siteId"
                         element={<OverviewSitePage />}

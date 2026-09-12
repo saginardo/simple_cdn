@@ -15,6 +15,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useSearchParams } from "react-router";
 import { toast } from "sonner";
 import { BrandMark } from "@/components/brand-mark";
 import { BackupRestore } from "@/features/settings/backup-restore";
@@ -53,11 +54,34 @@ import type { Settings } from "@/lib/types";
 import { t, useI18n } from "@/lib/i18n";
 export function SettingsPage() {
   useI18n();
-  const [section, setSection] = usePersistentEnum(
+  const [searchParams, setSearchParams] = useSearchParams();
+  const sections = [
+    "common",
+    "authentication",
+    "network",
+    "notifications",
+    "backup",
+  ] as const;
+  const [savedSection, setSavedSection] = usePersistentEnum(
     "simple-cdn.settings.tab",
-    ["common", "authentication", "network", "notifications", "backup"] as const,
+    sections,
     "common",
   );
+  const requestedSection = searchParams.get("tab");
+  const section =
+    sections.find((value) => value === requestedSection) ?? savedSection;
+  const setSection = (value: typeof section) => {
+    setSavedSection(value);
+    if (requestedSection !== null) {
+      setSearchParams(
+        (params) => {
+          params.set("tab", value);
+          return params;
+        },
+        { replace: true },
+      );
+    }
+  };
   const query = useQuery({
     queryKey: ["settings"],
     queryFn: () => api<Settings>("/api/settings"),

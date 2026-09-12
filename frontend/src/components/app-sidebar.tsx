@@ -1,5 +1,6 @@
 import {
   Activity,
+  HeartPulse,
   BadgeCheck,
   DatabaseZap,
   Files,
@@ -38,6 +39,7 @@ const groups = [
     label: "工作区",
     items: [
       { label: "概览", to: "/overview", icon: LayoutDashboard },
+      { label: "状态", to: "/health", icon: HeartPulse },
       { label: "日志", to: "/logs", icon: ScrollText },
     ],
   },

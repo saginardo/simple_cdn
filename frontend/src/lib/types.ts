@@ -1064,6 +1064,45 @@ export interface BackupRunStatus {
   error?: string;
 }
 
+export type HealthState =
+  "healthy" | "warning" | "critical" | "unknown" | "disabled";
+export interface HealthCheck {
+  id: string;
+  category: string;
+  state: HealthState;
+  title: string;
+  summary: string;
+  impact: string;
+  node_ids: string[];
+  site_ids: string[];
+  observed_at?: string;
+  since: string;
+  evidence: { label: string; value: string }[];
+  action_url: string;
+  action_label: string;
+}
+export interface HealthRecovery {
+  check_id: string;
+  title: string;
+  previous_state: HealthState;
+  outcome: "resolved" | "retired";
+  started_at: string;
+  finished_at: string;
+  node_ids: string[];
+  site_ids: string[];
+  action_url: string;
+}
+export interface SystemHealthSnapshot {
+  state: HealthState;
+  collected_at?: string;
+  valid_until?: string;
+  stale: boolean;
+  checks: HealthCheck[];
+  recoveries: HealthRecovery[];
+  nodes: { id: string; name: string }[];
+  sites: { id: string; name: string }[];
+}
+
 export interface BackupHealthStatus {
   state: string;
   summary: string;

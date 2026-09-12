@@ -71,6 +71,7 @@ cdn-edge-agent -- mTLS --> 控制面 desired state、心跳、日志、升级任
 | 安全         | 有序 WAF 链、站点 PoW、客户端 IP 限速、nftables IPv4/IPv6 封禁、能力门控和结构化安全事件。                                                                        |
 | 托管资源     | 最大 32 MiB 的内容寻址对象、精确 URL 绑定、mTLS 边缘同步、大小/SHA 校验、gzip/Brotli/Zstandard sidecar。                                                     |
 | 可观测性     | ClickHouse 7 天原始日志、30 天分钟聚合、三类请求 ID、回源阶段耗时、压缩统计、节点缓存/机器状态和 7 天拨测历史。                                              |
+| 状态     | 后台定期汇总节点、站点 IPv4/IPv6、发布、证书、备份/恢复、升级和健康协调器；支持过期提示、证据详情、对象筛选和持久恢复记录。详见 [状态](HEALTH_CENTER.md)。 |
 | 恢复         | Restic 日备份、短期重试、最终失败告警、离线 verify-only/切换回滚、带临时 ClickHouse 的在线恢复、备份过期/卡住告警和定期隔离恢复校验。                                                             |
 
 ## 6. 管理台工作区
@@ -78,6 +79,7 @@ cdn-edge-agent -- mTLS --> 控制面 desired state、心跳、日志、升级任
 当前 HashRouter 路由和侧栏工作区包括：
 
 - 概览及站点分析、日志及日志详情；
+- 状态（问题列表、证据详情、节点/站点筛选与恢复记录）；
 - 安全、托管静态资源、缓存运维；
 - 监控、节点历史、调度/智能路由；
 - WireGuard 隧道及隧道详情；
