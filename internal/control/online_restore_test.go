@@ -382,6 +382,16 @@ esac
 	if job.Version != OnlineRestoreJobVersion || job.DatabaseSHA256 == "" || job.StaticAssetsSHA256 == "" || job.CAFingerprint == "" || job.SchemaVersion != store.LatestSchemaVersion() || job.Database != project.ClickHouseDatabase || job.SourceDatabase != project.LegacyClickHouseDatabase {
 		t.Fatalf("verified job = %#v", job)
 	}
+	clickHouseBackupRoot := filepath.Join(restoreRoot, "jobs", job.ID, "snapshot", "backup", "staging", "clickhouse", "cdn-platform-current")
+	for dir := clickHouseBackupRoot; dir != restoreRoot; dir = filepath.Dir(dir) {
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !info.IsDir() || info.Mode().Perm() != 0o750 {
+			t.Fatalf("ClickHouse restore path %s is not group traversable: %v", dir, info.Mode())
+		}
+	}
 	health.Now = func() time.Time { return time.Now().Add(8 * 24 * time.Hour) }
 	if err := health.Tick(context.Background()); err != nil {
 		t.Fatal(err)
@@ -735,6 +745,51 @@ esac
 	}
 	if strings.Count(string(calls), "forget ") != 1 || !strings.Contains(string(calls), "forget "+snapshotID+" --prune") {
 		t.Fatalf("snapshot was not forgotten and pruned exactly once: %s", calls)
+	}
+}
+
+func TestPrepareClickHouseBackupPermissionsSharesRestorePathChain(t *testing.T) {
+	temporary := t.TempDir()
+	restoreRoot := filepath.Join(temporary, "online-restore")
+	backupRoot := filepath.Join(restoreRoot, "jobs", "c73e580b857c", "snapshot", "backup", "staging", "clickhouse", "simple_cdn-current")
+	controlStaging := filepath.Join(restoreRoot, "jobs", "c73e580b857c", "snapshot", "backup", "staging", "control")
+	if err := os.MkdirAll(backupRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(controlStaging, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backupRoot, ".backup"), []byte("metadata"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareClickHouseBackupPermissions(restoreRoot, backupRoot, -1); err != nil {
+		t.Fatal(err)
+	}
+	for dir := backupRoot; dir != restoreRoot; dir = filepath.Dir(dir) {
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !info.IsDir() || info.Mode().Perm() != 0o750 {
+			t.Fatalf("restore path %s is not group traversable: %v", dir, info.Mode())
+		}
+	}
+	if info, err := os.Stat(filepath.Join(backupRoot, ".backup")); err != nil || info.Mode().Perm() != 0o640 {
+		t.Fatalf(".backup mode = %v, err = %v", info.Mode(), err)
+	}
+	if info, err := os.Stat(controlStaging); err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("control staging mode = %v, err = %v", info.Mode(), err)
+	}
+}
+
+func TestPrepareClickHouseBackupPermissionsRejectsRootAsBackup(t *testing.T) {
+	temporary := t.TempDir()
+	if err := prepareClickHouseBackupPermissions(temporary, temporary, -1); err == nil {
+		t.Fatal("restore root was accepted as the ClickHouse backup")
+	}
+	outside := filepath.Join(temporary, "..", "outside")
+	if err := prepareClickHouseBackupPermissions(temporary, outside, -1); err == nil {
+		t.Fatal("backup outside the restore root was accepted")
 	}
 }
 

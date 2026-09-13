@@ -541,7 +541,7 @@ func (m *OnlineRestoreManager) stage(ctx context.Context, jobID string) {
 		m.failJob(jobID, err)
 		return
 	}
-	if err := prepareClickHouseBackupPermissions(artifacts.ClickHouseBackup, m.config.ClickHouseGroupID); err != nil {
+	if err := prepareClickHouseBackupPermissions(m.config.Root, artifacts.ClickHouseBackup, m.config.ClickHouseGroupID); err != nil {
 		m.failJob(jobID, err)
 		return
 	}

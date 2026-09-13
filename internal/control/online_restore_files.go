@@ -209,9 +209,27 @@ func resolveClickHouseBackup(snapshotRoot string) (string, string, error) {
 	return foundPath, foundDatabase, nil
 }
 
-func prepareClickHouseBackupPermissions(root string, groupID int) error {
+func prepareClickHouseBackupPermissions(restoreRoot, backupRoot string, groupID int) error {
+	restoreRoot = filepath.Clean(restoreRoot)
+	backupRoot = filepath.Clean(backupRoot)
+	if restoreRoot == backupRoot || !pathWithin(restoreRoot, backupRoot) {
+		return fmt.Errorf("ClickHouse backup %s is outside the restore root %s", backupRoot, restoreRoot)
+	}
+	// Restic recreates the directories between the restore root and the staged
+	// backup with owner-only permissions, so ClickHouse cannot reach the backup
+	// unless every directory on that path is shared with its group.
+	for dir := backupRoot; dir != restoreRoot; dir = filepath.Dir(dir) {
+		if err := os.Chmod(dir, 0o2750); err != nil {
+			return err
+		}
+		if groupID >= 0 {
+			if err := os.Chown(dir, -1, groupID); err != nil {
+				return fmt.Errorf("share ClickHouse restore path with gid %d: %w", groupID, err)
+			}
+		}
+	}
 	regularFiles := 0
-	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+	err := filepath.WalkDir(backupRoot, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
