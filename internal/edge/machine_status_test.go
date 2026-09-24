@@ -30,14 +30,15 @@ func (function machineNetworkStatusReporterFunc) CollectNetwork() (*domain.Machi
 func TestMachineStatusCollectorReportsLinuxHostAndIntervalRates(t *testing.T) {
 	now := time.Date(2026, 7, 17, 8, 0, 0, 0, time.UTC)
 	files := map[string]string{
-		"/etc/os-release":     "ID=debian\nNAME=\"Debian GNU/Linux\"\nVERSION_ID=\"13\"\n",
-		"/etc/debian_version": "13.5\n",
-		"/proc/uptime":        "90061.50 123.0\n",
-		"/proc/loadavg":       "0.50 0.75 1.25 1/100 42\n",
-		"/proc/stat":          "cpu 100 0 50 850 0 0 0 0 0 0\n",
-		"/proc/meminfo":       "MemTotal: 8388608 kB\nMemAvailable: 3145728 kB\n",
-		"/proc/net/route":     "Iface Destination Gateway Flags RefCnt Use Metric Mask MTU Window IRTT\neth0 00000000 0100000A 0003 0 0 100 00000000 0 0 0\n",
-		"/proc/net/dev":       "Inter-| Receive | Transmit\n face |bytes packets errs drop fifo frame compressed multicast|bytes packets errs drop fifo colls carrier compressed\neth0: 1000 1 0 0 0 0 0 0 2000 1 0 0 0 0 0 0\nlo: 10 1 0 0 0 0 0 0 10 1 0 0 0 0 0 0\n",
+		"/etc/os-release":                 "ID=debian\nNAME=\"Debian GNU/Linux\"\nVERSION_ID=\"13\"\n",
+		"/etc/debian_version":             "13.5\n",
+		"/proc/uptime":                    "90061.50 123.0\n",
+		"/proc/loadavg":                   "0.50 0.75 1.25 1/100 42\n",
+		"/proc/stat":                      "cpu 100 0 50 850 0 0 0 0 0 0\n",
+		"/proc/meminfo":                   "MemTotal: 8388608 kB\nMemAvailable: 3145728 kB\n",
+		"/proc/net/route":                 "Iface Destination Gateway Flags RefCnt Use Metric Mask MTU Window IRTT\neth0 00000000 0100000A 0003 0 0 100 00000000 0 0 0\n",
+		"/proc/net/dev":                   "Inter-| Receive | Transmit\n face |bytes packets errs drop fifo frame compressed multicast|bytes packets errs drop fifo colls carrier compressed\neth0: 1000 1 0 0 0 0 0 0 2000 1 0 0 0 0 0 0\nlo: 10 1 0 0 0 0 0 0 10 1 0 0 0 0 0 0\n",
+		"/proc/sys/kernel/random/boot_id": "3c329ac2-5d0a-45aa-bf7d-b856031ad9e0\n",
 	}
 	collector := &machineStatusCollector{
 		readFile: func(path string) ([]byte, error) {
@@ -71,6 +72,9 @@ func TestMachineStatusCollectorReportsLinuxHostAndIntervalRates(t *testing.T) {
 	if first.SampleSeconds != 0 || first.CPUUsagePercent != 0 || first.NetworkRXBytesPerSec != 0 || first.NetworkTXBytesPerSec != 0 {
 		t.Fatalf("first sample unexpectedly included interval rates: %#v", first)
 	}
+	if first.NetworkCounters == nil || first.NetworkCounters.RXBytes != 1000 || first.NetworkCounters.TXBytes != 2000 || first.NetworkCounters.BootID == "" {
+		t.Fatalf("missing first cumulative network counters: %#v", first.NetworkCounters)
+	}
 	if first.Nginx == nil || first.Nginx.Requests != 35 || first.Nginx.ActiveConnections != 7 {
 		t.Fatalf("unexpected Nginx status: %#v", first.Nginx)
 	}
@@ -101,6 +105,9 @@ func TestMachineStatusCollectorReportsLinuxHostAndIntervalRates(t *testing.T) {
 	}
 	if second.SampleSeconds != 30 || second.CPUUsagePercent != 50 || second.NetworkInterface != "eth0" || second.NetworkRXBytesPerSec != 100 || second.NetworkTXBytesPerSec != 200 {
 		t.Fatalf("unexpected interval report: %#v", second)
+	}
+	if second.NetworkCounters == nil || second.NetworkCounters.RXBytes != 4000 || second.NetworkCounters.TXBytes != 8000 {
+		t.Fatalf("unexpected cumulative network counters: %#v", second.NetworkCounters)
 	}
 	if !domain.ValidMachineStatus(*second) {
 		t.Fatalf("collector produced invalid report: %#v", second)

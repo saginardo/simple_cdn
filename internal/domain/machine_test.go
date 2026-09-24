@@ -36,6 +36,16 @@ func TestValidMachineStatus(t *testing.T) {
 		func() MachineStatus { value := valid; value.Load1 = math.NaN(); return value }(),
 		func() MachineStatus { value := valid; value.MemoryUsedBytes = 9 << 30; return value }(),
 		func() MachineStatus { value := valid; value.NetworkRXBytesPerSec = -1; return value }(),
+		func() MachineStatus {
+			value := valid
+			value.NetworkCounters = &MachineNetworkCounters{BootID: "", RXBytes: 1}
+			return value
+		}(),
+		func() MachineStatus {
+			value := valid
+			value.NetworkCounters = &MachineNetworkCounters{BootID: "boot", RXBytes: -1}
+			return value
+		}(),
 		func() MachineStatus { value := valid; value.CollectedAt = time.Time{}; return value }(),
 		func() MachineStatus {
 			value := valid

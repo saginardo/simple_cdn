@@ -22,25 +22,35 @@ const (
 // CPU and network rates are averages over SampleSeconds; a zero interval means
 // the agent has not collected a second sample yet.
 type MachineStatus struct {
-	Distribution         string              `json:"distribution"`
-	Version              string              `json:"version"`
-	UptimeSeconds        int64               `json:"uptime_seconds"`
-	Load1                float64             `json:"load_1"`
-	Load5                float64             `json:"load_5"`
-	Load15               float64             `json:"load_15"`
-	CPUUsagePercent      float64             `json:"cpu_usage_percent"`
-	CPULogicalCores      int                 `json:"cpu_logical_cores"`
-	MemoryUsedBytes      int64               `json:"memory_used_bytes"`
-	MemoryTotalBytes     int64               `json:"memory_total_bytes"`
-	DiskUsedBytes        int64               `json:"disk_used_bytes"`
-	DiskTotalBytes       int64               `json:"disk_total_bytes"`
-	NetworkInterface     string              `json:"network_interface"`
-	NetworkRXBytesPerSec int64               `json:"network_rx_bytes_per_second"`
-	NetworkTXBytesPerSec int64               `json:"network_tx_bytes_per_second"`
-	SampleSeconds        float64             `json:"sample_seconds"`
-	OriginProbes         []OriginProbeStatus `json:"origin_probes,omitempty"`
-	Nginx                *NginxRuntimeStatus `json:"nginx,omitempty"`
-	CollectedAt          time.Time           `json:"collected_at"`
+	Distribution         string                  `json:"distribution"`
+	Version              string                  `json:"version"`
+	UptimeSeconds        int64                   `json:"uptime_seconds"`
+	Load1                float64                 `json:"load_1"`
+	Load5                float64                 `json:"load_5"`
+	Load15               float64                 `json:"load_15"`
+	CPUUsagePercent      float64                 `json:"cpu_usage_percent"`
+	CPULogicalCores      int                     `json:"cpu_logical_cores"`
+	MemoryUsedBytes      int64                   `json:"memory_used_bytes"`
+	MemoryTotalBytes     int64                   `json:"memory_total_bytes"`
+	DiskUsedBytes        int64                   `json:"disk_used_bytes"`
+	DiskTotalBytes       int64                   `json:"disk_total_bytes"`
+	NetworkInterface     string                  `json:"network_interface"`
+	NetworkRXBytesPerSec int64                   `json:"network_rx_bytes_per_second"`
+	NetworkTXBytesPerSec int64                   `json:"network_tx_bytes_per_second"`
+	NetworkCounters      *MachineNetworkCounters `json:"network_counters,omitempty"`
+	SampleSeconds        float64                 `json:"sample_seconds"`
+	OriginProbes         []OriginProbeStatus     `json:"origin_probes,omitempty"`
+	Nginx                *NginxRuntimeStatus     `json:"nginx,omitempty"`
+	CollectedAt          time.Time               `json:"collected_at"`
+}
+
+// MachineNetworkCounters are kernel totals for the selected interface within
+// one host boot. They let the control plane recover traffic after agent or
+// control-plane interruptions without summing sampled rates.
+type MachineNetworkCounters struct {
+	BootID  string `json:"boot_id"`
+	RXBytes int64  `json:"rx_bytes"`
+	TXBytes int64  `json:"tx_bytes"`
 }
 
 // MachineNetworkStatus is a lightweight interval-rate sample collected only
@@ -103,6 +113,10 @@ func ValidMachineStatus(status MachineStatus) bool {
 		validMachineCapacity(status.DiskUsedBytes, status.DiskTotalBytes, maxBytes) &&
 		status.NetworkRXBytesPerSec >= 0 && status.NetworkRXBytesPerSec <= maxBytes &&
 		status.NetworkTXBytesPerSec >= 0 && status.NetworkTXBytesPerSec <= maxBytes &&
+		(status.NetworkCounters == nil ||
+			(validMachineText(status.NetworkCounters.BootID, 64, true) &&
+				status.NetworkCounters.RXBytes >= 0 && status.NetworkCounters.RXBytes <= maxBytes &&
+				status.NetworkCounters.TXBytes >= 0 && status.NetworkCounters.TXBytes <= maxBytes)) &&
 		validMachineFloat(status.SampleSeconds, 0, maxSample) &&
 		!status.CollectedAt.IsZero() && validOriginProbeStatuses(status.OriginProbes) &&
 		(status.Nginx == nil || ValidNginxRuntimeStatus(*status.Nginx))

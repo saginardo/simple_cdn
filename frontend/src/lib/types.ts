@@ -56,6 +56,16 @@ export interface Node {
   can_upgrade: boolean;
   upgrade_blocker?: string;
   upgrade_task?: NodeUpgradeTask;
+  monthly_traffic?: NodeTrafficMonth;
+}
+
+export interface NodeTrafficMonth {
+  month: string;
+  rx_bytes: number;
+  tx_bytes: number;
+  partial: boolean;
+  estimated: boolean;
+  collected_at: string;
 }
 
 export interface NginxArtifact {
@@ -336,6 +346,7 @@ export interface NodeMachineStatus {
 export interface NodeDetail {
   node: Node;
   machine: NodeMachineStatus;
+  traffic: NodeTrafficMonth[];
   cache: NodeCacheSettings;
   sites: Array<{
     id: string;

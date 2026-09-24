@@ -32,6 +32,7 @@
 | 文档                                               | 内容                                                  |
 | -------------------------------------------------- | ----------------------------------------------------- |
 | [压缩与缓存控制](COMPRESSION_AND_CACHE_CONTROL.md) | gzip/Brotli/Zstandard、缓存代际失效、预热和结果追踪。 |
+| [节点月流量](NODE_TRAFFIC.md)                       | 网卡月累计、数据完整性及 vnStat 方案取舍。            |
 | [透传模式](PASSTHROUGH_MODE.md)                    | HTTP(S) 整站无缓存转发及 Range 请求排障。             |
 | [回源连接](ORIGIN_CONNECTIONS.md)                  | 共享连接池、两层主动探测、熔断和实时状态。            |
 | [回源 TLS SNI](ORIGIN_TLS_SNI.md)                  | 连接地址、Host 和 TLS SNI 分离配置。                  |

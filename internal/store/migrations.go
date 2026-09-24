@@ -57,6 +57,32 @@ var schemaMigrations = []schemaMigration{
 	{Version: 38, Name: "deployment-task-site-lookup", Apply: migrateDeploymentTaskSiteLookup},
 	{Version: 39, Name: "node-upgrade-rollouts", Apply: migrateNodeUpgradeRollouts},
 	{Version: 40, Name: "system-health-snapshot", Apply: migrateSystemHealth},
+	{Version: 41, Name: "node-monthly-traffic", Apply: migrateNodeMonthlyTraffic},
+}
+
+func migrateNodeMonthlyTraffic(tx *sql.Tx) error {
+	_, err := tx.Exec(`CREATE TABLE IF NOT EXISTS node_traffic_samples (
+		node_id TEXT PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
+		boot_id TEXT NOT NULL,
+		network_interface TEXT NOT NULL,
+		rx_bytes INTEGER NOT NULL,
+		tx_bytes INTEGER NOT NULL,
+		collected_at TEXT NOT NULL
+	);
+	CREATE TABLE IF NOT EXISTS node_monthly_traffic (
+		node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+		month TEXT NOT NULL,
+		rx_bytes INTEGER NOT NULL DEFAULT 0,
+		tx_bytes INTEGER NOT NULL DEFAULT 0,
+		partial INTEGER NOT NULL DEFAULT 0,
+		estimated INTEGER NOT NULL DEFAULT 0,
+		collected_at TEXT NOT NULL,
+		PRIMARY KEY (node_id, month)
+	);`)
+	if err != nil {
+		return fmt.Errorf("create node monthly traffic schema: %w", err)
+	}
+	return nil
 }
 
 func migrateSiteNodeDrains(tx *sql.Tx) error {

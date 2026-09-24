@@ -133,6 +133,7 @@ export function NodesPage() {
                     <TableHead>{t("状态")}</TableHead>
                     <TableHead>{t("公网地址")}</TableHead>
                     <TableHead>{t("心跳")}</TableHead>
+                    <TableHead>{t("本月流量")}</TableHead>
                     <TableHead>{t("运行版本")}</TableHead>
                     <TableHead className="w-28">{t("升级")}</TableHead>
                     <TableHead className="w-12 pr-5">
@@ -178,6 +179,27 @@ export function NodesPage() {
                         {node.last_heartbeat_at
                           ? formatDateTime(node.last_heartbeat_at)
                           : t("尚未注册")}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap text-xs">
+                        {node.monthly_traffic ? (
+                          <>
+                            <div className="font-medium">
+                              {formatBytes(
+                                node.monthly_traffic.rx_bytes +
+                                  node.monthly_traffic.tx_bytes,
+                              )}
+                            </div>
+                            <div className="text-muted-foreground">
+                              {node.monthly_traffic.partial
+                                ? t("统计不完整")
+                                : node.monthly_traffic.estimated
+                                  ? t("跨月估算")
+                                  : t("UTC 自然月")}
+                            </div>
+                          </>
+                        ) : (
+                          <span className="text-muted-foreground">--</span>
+                        )}
                       </TableCell>
                       <TableCell>
                         <div className="text-sm font-medium">

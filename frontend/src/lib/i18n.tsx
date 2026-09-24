@@ -13,6 +13,19 @@ export type Locale = "zh-CN" | "en";
 const localeStorageKey = "simple-cdn.locale";
 
 const english = {
+  本月流量: "Traffic this month",
+  节点月流量: "Monthly node traffic",
+  "所选网卡的系统收发字节 · UTC 自然月":
+    "System bytes on the selected interface · UTC calendar month",
+  本月合计: "Total this month",
+  暂无月流量数据: "No monthly traffic yet",
+  月份: "Month",
+  合计: "Total",
+  统计状态: "Data quality",
+  统计不完整: "Incomplete",
+  跨月估算: "Estimated across month boundary",
+  "UTC 自然月": "UTC calendar month",
+  完整: "Complete",
   任务: "Task",
   已恢复: "Recovered",
   应用版本: "Applied version",

@@ -645,6 +645,11 @@ func (s *Server) listNodes(response http.ResponseWriter, request *http.Request) 
 			writeError(response, http.StatusInternalServerError, err)
 			return
 		}
+		status.MonthlyTraffic, err = s.Store.CurrentNodeTraffic(node.ID, time.Now().UTC())
+		if err != nil {
+			writeError(response, http.StatusInternalServerError, err)
+			return
+		}
 		result = append(result, status)
 	}
 	writeJSON(response, http.StatusOK, result)
@@ -2012,6 +2017,10 @@ func (s *Server) heartbeat(response http.ResponseWriter, request *http.Request) 
 		}
 	}
 	if input.MachineStatus != nil {
+		if err := s.persistNodeTraffic(nodeID, *input.MachineStatus); err != nil {
+			writeError(response, http.StatusInternalServerError, err)
+			return
+		}
 		s.recordNodeMachineStatus(nodeID, *input.MachineStatus)
 	}
 	result := domain.EdgeHeartbeatResponse{OK: true}

@@ -70,6 +70,71 @@ func TestEdgeMachineStatusStoresNewestSnapshot(t *testing.T) {
 	}
 }
 
+func TestEdgeMachineStatusPersistsNodeMonthlyTraffic(t *testing.T) {
+	database, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	node, err := database.CreateNode("monthly-traffic-edge", "203.0.113.92")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{Store: database}
+	first := controlTestMachineStatus(time.Now().UTC().Add(-time.Minute).Truncate(time.Millisecond))
+	first.NetworkCounters = &domain.MachineNetworkCounters{BootID: "boot-1", RXBytes: 100, TXBytes: 200}
+	payload, err := json.Marshal(heartbeatRequest{MachineStatus: &first})
+	if err != nil {
+		t.Fatal(err)
+	}
+	heartbeat := httptest.NewRequest(http.MethodPost, "/api/edge/v1/heartbeat", bytes.NewReader(payload))
+	heartbeat = heartbeat.WithContext(context.WithValue(heartbeat.Context(), edgeContextKey{}, node.ID))
+	heartbeatResponse := httptest.NewRecorder()
+	server.heartbeat(heartbeatResponse, heartbeat)
+	if heartbeatResponse.Code != http.StatusOK {
+		t.Fatalf("heartbeat traffic report = %d %s", heartbeatResponse.Code, heartbeatResponse.Body.String())
+	}
+	second := first
+	second.CollectedAt = first.CollectedAt.Add(30 * time.Second)
+	second.NetworkCounters = &domain.MachineNetworkCounters{BootID: "boot-1", RXBytes: 350, TXBytes: 600}
+	if response := reportMachineStatus(t, server, node.ID, second); response.Code != http.StatusAccepted {
+		t.Fatalf("second traffic report = %d %s", response.Code, response.Body.String())
+	}
+	if response := reportMachineStatus(t, server, node.ID, first); response.Code != http.StatusAccepted || !strings.Contains(response.Body.String(), `"accepted":false`) {
+		t.Fatalf("replayed traffic report = %d %s", response.Code, response.Body.String())
+	}
+	current, err := database.CurrentNodeTraffic(node.ID, second.CollectedAt)
+	if err != nil || current == nil || current.RXBytes != 250 || current.TXBytes != 400 || !current.Partial {
+		t.Fatalf("persisted monthly traffic = %#v, err=%v", current, err)
+	}
+	listResponse := httptest.NewRecorder()
+	server.listNodes(listResponse, httptest.NewRequest(http.MethodGet, "/api/nodes", nil))
+	if listResponse.Code != http.StatusOK {
+		t.Fatalf("list nodes = %d %s", listResponse.Code, listResponse.Body.String())
+	}
+	var listed []nodeUpgradeStatusResponse
+	if err := json.Unmarshal(listResponse.Body.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].MonthlyTraffic == nil || listed[0].MonthlyTraffic.TXBytes != 400 {
+		t.Fatalf("node list monthly traffic = %#v", listed)
+	}
+	detailRequest := httptest.NewRequest(http.MethodGet, "/api/nodes/"+node.ID, nil)
+	detailRequest.SetPathValue("id", node.ID)
+	detailResponse := httptest.NewRecorder()
+	server.nodeDetail(detailResponse, detailRequest)
+	if detailResponse.Code != http.StatusOK {
+		t.Fatalf("node detail = %d %s", detailResponse.Code, detailResponse.Body.String())
+	}
+	var detail nodeDetailResponse
+	if err := json.Unmarshal(detailResponse.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	if len(detail.Traffic) != 1 || detail.Traffic[0].RXBytes != 250 || detail.Node.MonthlyTraffic == nil {
+		t.Fatalf("node detail monthly traffic = %#v", detail)
+	}
+}
+
 func reportMachineStatus(t *testing.T, server *Server, nodeID string, report domain.MachineStatus) *httptest.ResponseRecorder {
 	t.Helper()
 	payload, err := json.Marshal(report)

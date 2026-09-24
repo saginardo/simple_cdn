@@ -112,6 +112,12 @@ func (c *machineStatusCollector) Collect() (*domain.MachineStatus, error) {
 		DiskUsedBytes: diskUsed, DiskTotalBytes: diskTotal,
 		NetworkInterface: networkInterface, CollectedAt: collectedAt,
 	}
+	if bootID, readErr := c.readFile("/proc/sys/kernel/random/boot_id"); readErr == nil &&
+		strings.TrimSpace(string(bootID)) != "" && network.rx <= 1<<60 && network.tx <= 1<<60 {
+		status.NetworkCounters = &domain.MachineNetworkCounters{
+			BootID: strings.TrimSpace(string(bootID)), RXBytes: int64(network.rx), TXBytes: int64(network.tx),
+		}
+	}
 	if c.nginxStatus != nil {
 		// Runtime Nginx telemetry is optional. A stopped or restarting Nginx must
 		// not suppress the host snapshot; the UI simply omits this section.

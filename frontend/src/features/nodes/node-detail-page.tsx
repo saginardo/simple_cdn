@@ -264,9 +264,10 @@ export function NodeDetailPage() {
         {node && detail.data ? (
           <>
             <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
-              <div className="space-y-4">
+              <div className="min-w-0 space-y-4">
                 <NodeSummary detail={detail.data} />
                 <MachineStatus detail={detail.data} />
+                <MonthlyTraffic detail={detail.data} />
                 <CacheStatus query={cache} />
                 <AssignedSites sites={detail.data.sites} />
               </div>
@@ -875,6 +876,132 @@ function MachineStatus({ detail }: { detail: NodeDetail }) {
         {report.nginx ? <NginxRuntime detail={detail} /> : null}
         {report.origin_probes?.length ? (
           <OriginConnections detail={detail} />
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+function MonthlyTraffic({ detail }: { detail: NodeDetail }) {
+  const current = detail.node.monthly_traffic;
+  const history = detail.traffic.filter(
+    (month) => month.month !== current?.month,
+  );
+  const quality = (month: NodeDetail["traffic"][number]) =>
+    [month.partial && t("统计不完整"), month.estimated && t("跨月估算")]
+      .filter(Boolean)
+      .join(" · ") || t("完整");
+  return (
+    <Card className="min-w-0">
+      <CardHeader>
+        <CardTitle>{t("节点月流量")}</CardTitle>
+        <CardDescription>
+          {t("所选网卡的系统收发字节 · UTC 自然月")}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="min-w-0 space-y-5">
+        {current ? (
+          <>
+            <div className="grid gap-4 sm:grid-cols-3">
+              <div>
+                <div className="text-xs text-muted-foreground">
+                  {t("本月合计")}
+                </div>
+                <div className="mt-1 text-xl font-semibold tabular-nums">
+                  {formatBytes(current.rx_bytes + current.tx_bytes)}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">{t("接收")}</div>
+                <div className="mt-1 text-lg font-medium tabular-nums">
+                  {formatBytes(current.rx_bytes)}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">{t("发送")}</div>
+                <div className="mt-1 text-lg font-medium tabular-nums">
+                  {formatBytes(current.tx_bytes)}
+                </div>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+              <span>{current.month} UTC</span>
+              <span>
+                {t("采集于 ")}
+                {formatDateTime(current.collected_at)}
+              </span>
+              {current.partial ? <span>{t("统计不完整")}</span> : null}
+              {current.estimated ? <span>{t("跨月估算")}</span> : null}
+            </div>
+          </>
+        ) : (
+          <div className="text-sm text-muted-foreground">
+            {t("暂无月流量数据")}
+          </div>
+        )}
+        {history.length ? (
+          <div className="min-w-0 border-t pt-4">
+            <div className="divide-y sm:hidden">
+              {history.map((month) => (
+                <div key={month.month} className="py-3 first:pt-0 last:pb-0">
+                  <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                    <span className="font-medium">{month.month}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {quality(month)}
+                    </span>
+                  </div>
+                  <div className="mt-2 grid grid-cols-3 gap-2 text-xs tabular-nums">
+                    <div>
+                      <div className="text-muted-foreground">{t("接收")}</div>
+                      <div>{formatBytes(month.rx_bytes)}</div>
+                    </div>
+                    <div>
+                      <div className="text-muted-foreground">{t("发送")}</div>
+                      <div>{formatBytes(month.tx_bytes)}</div>
+                    </div>
+                    <div>
+                      <div className="text-muted-foreground">{t("合计")}</div>
+                      <div>{formatBytes(month.rx_bytes + month.tx_bytes)}</div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="hidden overflow-x-auto sm:block">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>{t("月份")}</TableHead>
+                    <TableHead className="text-right">{t("接收")}</TableHead>
+                    <TableHead className="text-right">{t("发送")}</TableHead>
+                    <TableHead className="text-right">{t("合计")}</TableHead>
+                    <TableHead>{t("统计状态")}</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {history.map((month) => (
+                    <TableRow key={month.month}>
+                      <TableCell className="whitespace-nowrap font-medium">
+                        {month.month}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap text-right tabular-nums">
+                        {formatBytes(month.rx_bytes)}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap text-right tabular-nums">
+                        {formatBytes(month.tx_bytes)}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap text-right tabular-nums">
+                        {formatBytes(month.rx_bytes + month.tx_bytes)}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                        {quality(month)}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </div>
         ) : null}
       </CardContent>
     </Card>

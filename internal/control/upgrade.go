@@ -33,6 +33,7 @@ type nodeUpgradeStatusResponse struct {
 	CanUpgrade          bool                    `json:"can_upgrade"`
 	UpgradeBlocker      string                  `json:"upgrade_blocker,omitempty"`
 	UpgradeTask         *domain.NodeUpgradeTask `json:"upgrade_task,omitempty"`
+	MonthlyTraffic      *store.NodeTrafficMonth `json:"monthly_traffic,omitempty"`
 }
 
 type nodeUpgradeAllResult struct {

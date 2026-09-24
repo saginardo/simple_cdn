@@ -90,9 +90,23 @@ func (s *Server) edgeMachineStatus(response http.ResponseWriter, request *http.R
 	report.CollectedAt = report.CollectedAt.UTC()
 	accepted := false
 	if !report.CollectedAt.After(time.Now().UTC().Add(maxEdgeReportClockSkew)) {
+		if err := s.persistNodeTraffic(edgeNodeID(request.Context()), report); err != nil {
+			writeError(response, http.StatusInternalServerError, err)
+			return
+		}
 		accepted = s.recordNodeMachineStatus(edgeNodeID(request.Context()), report)
 	}
 	writeJSON(response, http.StatusAccepted, map[string]bool{"accepted": accepted})
+}
+
+func (s *Server) persistNodeTraffic(nodeID string, report domain.MachineStatus) error {
+	if report.NetworkCounters == nil {
+		return nil
+	}
+	if _, err := s.Store.RecordNodeTrafficSample(nodeID, report.NetworkInterface, *report.NetworkCounters, report.CollectedAt); err != nil {
+		return fmt.Errorf("record node traffic: %w", err)
+	}
+	return nil
 }
 
 func (s *Server) edgeMachineNetworkStatus(response http.ResponseWriter, request *http.Request) {

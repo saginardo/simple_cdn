@@ -3039,6 +3039,14 @@ test("node machine status updates from the realtime event stream", async ({
     upgrade_capable: true,
     upgrade_up_to_date: true,
     can_upgrade: false,
+    monthly_traffic: {
+      month: now.toISOString().slice(0, 7),
+      rx_bytes: 1_073_741_824,
+      tx_bytes: 2_147_483_648,
+      partial: true,
+      estimated: false,
+      collected_at: now.toISOString(),
+    },
   };
   const machineReport = {
     distribution: "Debian GNU/Linux",
@@ -3072,6 +3080,21 @@ test("node machine status updates from the realtime event stream", async ({
     "/api/nodes/node-1": {
       node,
       machine: { available: true, stale: false, report: machineReport },
+      traffic: [
+        node.monthly_traffic,
+        {
+          month: new Date(
+            Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1),
+          )
+            .toISOString()
+            .slice(0, 7),
+          rx_bytes: 4_294_967_296,
+          tx_bytes: 5_368_709_120,
+          partial: false,
+          estimated: true,
+          collected_at: now.toISOString(),
+        },
+      ],
       cache: {
         default_size_gb: 1,
         override_size_gb: null,
@@ -3127,6 +3150,9 @@ test("node machine status updates from the realtime event stream", async ({
     page.getByRole("heading", { name: "realtime-edge", level: 1 }),
   ).toBeVisible();
   await expect(page.getByText("12.0%", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "节点月流量" })).toBeVisible();
+  await expect(page.getByText("3.0 GiB", { exact: true })).toBeVisible();
+  await expect(page.getByRole("cell", { name: "跨月估算" })).toBeVisible();
   await expect(page.getByText(/接收\s*8\.0 KiB\/s/)).toBeVisible();
   await expect(
     page.getByRole("heading", { name: "Nginx 运行状态", level: 3 }),
@@ -3174,6 +3200,9 @@ test("node machine status updates from the realtime event stream", async ({
     fullPage: true,
   });
   await page.setViewportSize({ width: 390, height: 844 });
+  await expect(
+    page.getByText("跨月估算", { exact: true }).first(),
+  ).toBeVisible();
   await expect(
     page.getByRole("heading", { name: "Nginx 运行状态", level: 3 }),
   ).toBeVisible();
@@ -3951,6 +3980,14 @@ test("node list starts one upgrade without opening node details", async ({
     name: "edge-ready",
     upgrade_up_to_date: false,
     can_upgrade: true,
+    monthly_traffic: {
+      month: now.toISOString().slice(0, 7),
+      rx_bytes: 1_073_741_824,
+      tx_bytes: 2_147_483_648,
+      partial: true,
+      estimated: false,
+      collected_at: now.toISOString(),
+    },
   };
   const latestNode = {
     ...baseNode,
@@ -4002,6 +4039,9 @@ test("node list starts one upgrade without opening node details", async ({
     name: "升级节点 edge-ready",
   });
   await expect(upgradeButton).toBeVisible();
+  await expect(
+    page.getByRole("row").filter({ hasText: "edge-ready" }),
+  ).toContainText("3.0 GiB");
   await expect(page.getByText("最新", { exact: true })).toBeVisible();
   await expect(page.getByText("升级中", { exact: true })).toBeVisible();
   await page.screenshot({

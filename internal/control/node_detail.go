@@ -74,6 +74,7 @@ type nodeSiteSummary struct {
 type nodeDetailResponse struct {
 	Node    nodeUpgradeStatusResponse `json:"node"`
 	Machine nodeMachineStatusResponse `json:"machine"`
+	Traffic []store.NodeTrafficMonth  `json:"traffic"`
 	Cache   nodeCacheSettingsResponse `json:"cache"`
 	Sites   []nodeSiteSummary         `json:"sites"`
 }
@@ -104,6 +105,16 @@ func (s *Server) nodeDetail(response http.ResponseWriter, request *http.Request)
 		writeError(response, http.StatusInternalServerError, err)
 		return
 	}
+	traffic, err := s.Store.NodeTrafficMonths(node.ID, 12)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, err)
+		return
+	}
+	status.MonthlyTraffic, err = s.Store.CurrentNodeTraffic(node.ID, time.Now().UTC())
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, err)
+		return
+	}
 	cacheSettings, err := s.nodeCacheSettings(node)
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, err)
@@ -126,7 +137,7 @@ func (s *Server) nodeDetail(response http.ResponseWriter, request *http.Request)
 	}
 
 	writeJSON(response, http.StatusOK, nodeDetailResponse{
-		Node: status, Machine: s.nodeMachineStatus(node, time.Now().UTC()), Cache: cacheSettings, Sites: sites,
+		Node: status, Machine: s.nodeMachineStatus(node, time.Now().UTC()), Traffic: traffic, Cache: cacheSettings, Sites: sites,
 	})
 }
 
