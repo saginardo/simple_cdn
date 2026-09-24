@@ -3254,6 +3254,7 @@ test("cache defaults are configurable and overridden by individual nodes", async
         unavailable_reason: "升级边缘代理后可查看机器状态",
         stale: false,
       },
+      traffic: [],
       cache: {
         default_size_gb: 1,
         override_size_gb: null,
@@ -3350,6 +3351,7 @@ test("canceled node uninstall returns the panel to its idle state", async ({
         unavailable_reason: "升级边缘代理后可查看机器状态",
         stale: false,
       },
+      traffic: [],
       cache: {
         default_size_gb: 1,
         override_size_gb: null,
