@@ -6,7 +6,14 @@
   </logger>
   <listen_host>0.0.0.0</listen_host>
   <background_schedule_pool_size>16</background_schedule_pool_size>
+  <background_pool_size>4</background_pool_size>
+  <background_merges_mutations_concurrency_ratio>1</background_merges_mutations_concurrency_ratio>
   <max_server_memory_usage>1200000000</max_server_memory_usage>
+  <merge_tree>
+    <number_of_free_entries_in_pool_to_lower_max_size_of_merge>2</number_of_free_entries_in_pool_to_lower_max_size_of_merge>
+    <number_of_free_entries_in_pool_to_execute_mutation>1</number_of_free_entries_in_pool_to_execute_mutation>
+    <number_of_free_entries_in_pool_to_execute_optimize_entire_partition>1</number_of_free_entries_in_pool_to_execute_optimize_entire_partition>
+  </merge_tree>
   <metric_log remove="1"/>
   <asynchronous_metric_log remove="1"/>
   <trace_log remove="1"/>
@@ -17,6 +24,21 @@
   <query_metric_log remove="1"/>
   <instrumentation_trace_log remove="1"/>
   <total_memory_profiler_step>0</total_memory_profiler_step>
+  <!-- Diagnostic table retention is independent of file logger rotation. -->
+  <query_log>
+    <ttl>event_time + INTERVAL 7 DAY</ttl>
+    <flush_interval_milliseconds>60000</flush_interval_milliseconds>
+  </query_log>
+  <part_log>
+    <ttl>event_time + INTERVAL 7 DAY</ttl>
+    <flush_interval_milliseconds>60000</flush_interval_milliseconds>
+  </part_log>
+  <error_log>
+    <ttl>event_time + INTERVAL 7 DAY</ttl>
+  </error_log>
+  <backup_log>
+    <ttl>event_time + INTERVAL 7 DAY</ttl>
+  </backup_log>
   <storage_configuration>
     <disks>
       <backups>

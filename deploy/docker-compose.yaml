@@ -25,7 +25,7 @@ services:
       - ${CDN_DEPLOY_DIR:-./app}/deploy/compose/clickhouse.xml:/etc/clickhouse-server/config.d/cdn-platform.xml:ro
       - ${CDN_DEPLOY_DIR:-./app}/deploy/clickhouse/cdn-platform-users.xml:/etc/clickhouse-server/users.d/cdn-platform.xml:ro
     healthcheck:
-      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      test: ["CMD", "clickhouse-client", "--log_queries=0", "--query", "SELECT 1"]
       interval: 5s
       timeout: 3s
       retries: 20

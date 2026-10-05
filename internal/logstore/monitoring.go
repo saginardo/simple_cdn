@@ -16,9 +16,10 @@ import (
 )
 
 const (
-	MonitoringHistoryRetention = 7 * 24 * time.Hour
-	monitoringHistoryBatchSize = 512
-	monitoringHistoryQueueSize = 256
+	MonitoringHistoryRetention     = 7 * 24 * time.Hour
+	monitoringHistoryBatchSize     = 512
+	monitoringHistoryQueueSize     = 256
+	monitoringHistoryFlushInterval = 5 * time.Second
 )
 
 type MonitoringSample struct {
@@ -216,11 +217,12 @@ func parseNullableJSONFloat64(contents json.RawMessage) (*float64, error) {
 }
 
 type AsyncMonitoringWriter struct {
-	store   MonitoringHistoryStore
-	logger  *slog.Logger
-	queue   chan []MonitoringSample
-	done    chan struct{}
-	started sync.Once
+	store         MonitoringHistoryStore
+	logger        *slog.Logger
+	queue         chan []MonitoringSample
+	done          chan struct{}
+	started       sync.Once
+	flushInterval time.Duration
 }
 
 func NewAsyncMonitoringWriter(store MonitoringHistoryStore, logger *slog.Logger) *AsyncMonitoringWriter {
@@ -231,7 +233,7 @@ func newAsyncMonitoringWriter(store MonitoringHistoryStore, logger *slog.Logger,
 	if queueSize < 1 {
 		queueSize = 1
 	}
-	return &AsyncMonitoringWriter{store: store, logger: logger, queue: make(chan []MonitoringSample, queueSize), done: make(chan struct{})}
+	return &AsyncMonitoringWriter{store: store, logger: logger, queue: make(chan []MonitoringSample, queueSize), done: make(chan struct{}), flushInterval: monitoringHistoryFlushInterval}
 }
 
 func (w *AsyncMonitoringWriter) Start(ctx context.Context) {
@@ -263,7 +265,11 @@ func (w *AsyncMonitoringWriter) run(ctx context.Context) {
 	for {
 		select {
 		case samples := <-w.queue:
-			batch := w.drainBatch(samples)
+			batch := w.collectBatch(ctx, samples)
+			if ctx.Err() != nil {
+				w.flushOnShutdown(batch)
+				return
+			}
 			if !w.writeWithRetry(ctx, batch) {
 				w.flushOnShutdown(batch)
 				return
@@ -273,6 +279,30 @@ func (w *AsyncMonitoringWriter) run(ctx context.Context) {
 			return
 		}
 	}
+}
+
+func (w *AsyncMonitoringWriter) collectBatch(ctx context.Context, first []MonitoringSample) []MonitoringSample {
+	batch := w.drainBatch(first)
+	if len(batch) >= monitoringHistoryBatchSize {
+		return batch
+	}
+	interval := w.flushInterval
+	if interval <= 0 {
+		interval = monitoringHistoryFlushInterval
+	}
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+	for len(batch) < monitoringHistoryBatchSize {
+		select {
+		case samples := <-w.queue:
+			batch = append(batch, samples...)
+		case <-timer.C:
+			return batch
+		case <-ctx.Done():
+			return batch
+		}
+	}
+	return batch
 }
 
 func (w *AsyncMonitoringWriter) drainBatch(first []MonitoringSample) []MonitoringSample {
@@ -322,7 +352,7 @@ func (w *AsyncMonitoringWriter) writeWithRetry(ctx context.Context, samples []Mo
 }
 
 func (w *AsyncMonitoringWriter) flushOnShutdown(initial []MonitoringSample) {
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	pending := append([]MonitoringSample(nil), initial...)
 	for {

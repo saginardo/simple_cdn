@@ -139,6 +139,7 @@ func (*recordingMonitoringHistoryStore) MonitoringHistory(context.Context, Monit
 func TestAsyncMonitoringWriterQueuesWithoutBlockingReporter(t *testing.T) {
 	store := &recordingMonitoringHistoryStore{appended: make(chan []MonitoringSample, 1)}
 	writer := newAsyncMonitoringWriter(store, nil, 1)
+	writer.flushInterval = 20 * time.Millisecond
 	if !writer.EnqueueMonitoring([]MonitoringSample{{NodeID: "node-1", TargetID: "target-1"}}) {
 		t.Fatal("first monitoring report was not queued")
 	}
@@ -157,4 +158,71 @@ func TestAsyncMonitoringWriterQueuesWithoutBlockingReporter(t *testing.T) {
 	}
 	cancel()
 	writer.Wait()
+}
+
+func TestAsyncMonitoringWriterBatchesReportsUntilDeadline(t *testing.T) {
+	store := &recordingMonitoringHistoryStore{appended: make(chan []MonitoringSample, 4)}
+	writer := NewAsyncMonitoringWriter(store, nil)
+	writer.flushInterval = 100 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer func() { cancel(); writer.Wait() }()
+	writer.Start(ctx)
+	writer.EnqueueMonitoring([]MonitoringSample{{NodeID: "node-1"}})
+	select {
+	case <-store.appended:
+		t.Fatal("a small report was written before the batch window elapsed")
+	case <-time.After(20 * time.Millisecond):
+	}
+	writer.EnqueueMonitoring([]MonitoringSample{{NodeID: "node-2"}})
+	select {
+	case samples := <-store.appended:
+		if len(samples) != 2 || samples[0].NodeID != "node-1" || samples[1].NodeID != "node-2" {
+			t.Fatalf("batched reports = %#v", samples)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("a small batch was not flushed by its deadline")
+	}
+}
+
+func TestAsyncMonitoringWriterFlushesFullBatchWithoutWaiting(t *testing.T) {
+	store := &recordingMonitoringHistoryStore{appended: make(chan []MonitoringSample, 1)}
+	writer := NewAsyncMonitoringWriter(store, nil)
+	writer.flushInterval = time.Hour
+	ctx, cancel := context.WithCancel(context.Background())
+	defer func() { cancel(); writer.Wait() }()
+	writer.Start(ctx)
+	writer.EnqueueMonitoring(make([]MonitoringSample, monitoringHistoryBatchSize))
+	select {
+	case samples := <-store.appended:
+		if len(samples) != monitoringHistoryBatchSize {
+			t.Fatalf("full batch size = %d", len(samples))
+		}
+	case <-time.After(time.Second):
+		t.Fatal("a full batch waited for the flush timer")
+	}
+}
+
+func TestAsyncMonitoringWriterFlushesPendingBatchOnShutdown(t *testing.T) {
+	store := &recordingMonitoringHistoryStore{appended: make(chan []MonitoringSample, 1)}
+	writer := NewAsyncMonitoringWriter(store, nil)
+	writer.flushInterval = time.Hour
+	ctx, cancel := context.WithCancel(context.Background())
+	writer.Start(ctx)
+	writer.EnqueueMonitoring([]MonitoringSample{{NodeID: "node-1"}})
+	cancel()
+	done := make(chan struct{})
+	go func() { writer.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("shutdown waited for the batch window")
+	}
+	select {
+	case samples := <-store.appended:
+		if len(samples) != 1 || samples[0].NodeID != "node-1" {
+			t.Fatalf("shutdown batch = %#v", samples)
+		}
+	default:
+		t.Fatal("shutdown lost the queued report")
+	}
 }

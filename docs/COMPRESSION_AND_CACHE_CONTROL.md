@@ -14,7 +14,7 @@ The managed Nginx build pins and compiles ngx_brotli and zstd-nginx-module into 
 
 Each access event records the normalized `Content-Encoding`, compression ratio, and estimated saved bytes. For a successful, non-range GET of a managed static asset, the original object size is known, so saved bytes are exact. For dynamically compressed responses, the edge derives the original size from the module compression ratio and the transmitted body size, then rounds to bytes. Unsupported, malformed, identity, multi-encoding, or otherwise indeterminate responses report zero saved bytes instead of inventing a value.
 
-ClickHouse stores the raw fields for seven days and maintains 30-day minute aggregates for total compressed responses, gzip/Brotli/Zstandard hits, and bytes saved. The site detail page summarizes the latest 24 hours, while individual log details expose the response encoding, ratio, and saved-byte estimate.
+ClickHouse stores the raw fields for seven days and maintains 7-day minute aggregates for total compressed responses, gzip/Brotli/Zstandard hits, and bytes saved. The site detail page summarizes the latest 24 hours, while individual log details expose the response encoding, ratio, and saved-byte estimate.
 
 ## Cache operations workspace
 

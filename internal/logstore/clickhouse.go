@@ -137,19 +137,19 @@ func (c ClickHouse) EnsureSchema(ctx context.Context) error {
 		`ALTER TABLE ` + identifier(c.database()) + `.cdn_access_logs ADD COLUMN IF NOT EXISTS request_range String`,
 		`CREATE TABLE IF NOT EXISTS ` + identifier(c.database()) + `.cdn_site_minute (
  minute DateTime('UTC'), site_id String, node_id String, requests UInt64, bytes Int64, errors UInt64, cache_hits UInt64
-) ENGINE = SummingMergeTree PARTITION BY toDate(minute) ORDER BY (site_id, minute, node_id) TTL minute + INTERVAL 30 DAY DELETE`,
+) ENGINE = SummingMergeTree PARTITION BY toDate(minute) ORDER BY (site_id, minute, node_id) TTL minute + INTERVAL 7 DAY DELETE`,
 		`CREATE MATERIALIZED VIEW IF NOT EXISTS ` + identifier(c.database()) + `.cdn_access_to_minute TO ` + identifier(c.database()) + `.cdn_site_minute AS
 	 SELECT toStartOfMinute(timestamp) AS minute, site_id, node_id, count() AS requests, sum(bytes) AS bytes, countIf(status >= 500) AS errors, countIf(cache_status = 'HIT') AS cache_hits
 	 FROM ` + identifier(c.database()) + `.cdn_access_logs GROUP BY minute, site_id, node_id`,
 		`CREATE TABLE IF NOT EXISTS ` + identifier(c.database()) + `.cdn_status_minute (
 	 minute DateTime('UTC'), site_id String, status UInt16, requests UInt64, downstream_bytes Int64, upstream_bytes Int64
-) ENGINE = SummingMergeTree PARTITION BY toDate(minute) ORDER BY (site_id, minute, status) TTL minute + INTERVAL 30 DAY DELETE`,
+) ENGINE = SummingMergeTree PARTITION BY toDate(minute) ORDER BY (site_id, minute, status) TTL minute + INTERVAL 7 DAY DELETE`,
 		`CREATE MATERIALIZED VIEW IF NOT EXISTS ` + identifier(c.database()) + `.cdn_access_to_status_minute TO ` + identifier(c.database()) + `.cdn_status_minute AS
 	 SELECT toStartOfMinute(timestamp) AS minute, site_id, status, count() AS requests, sum(bytes) AS downstream_bytes, sum(request_bytes) AS upstream_bytes
 	 FROM ` + identifier(c.database()) + `.cdn_access_logs GROUP BY minute, site_id, status`,
 		`CREATE TABLE IF NOT EXISTS ` + identifier(c.database()) + `.cdn_cache_minute (
 	 minute DateTime('UTC'), node_id String, cache_status LowCardinality(String), requests UInt64, bytes Int64
-) ENGINE = SummingMergeTree PARTITION BY toDate(minute) ORDER BY (node_id, minute, cache_status) TTL minute + INTERVAL 30 DAY DELETE`,
+) ENGINE = SummingMergeTree PARTITION BY toDate(minute) ORDER BY (node_id, minute, cache_status) TTL minute + INTERVAL 7 DAY DELETE`,
 		`CREATE MATERIALIZED VIEW IF NOT EXISTS ` + identifier(c.database()) + `.cdn_access_to_cache_minute TO ` + identifier(c.database()) + `.cdn_cache_minute AS
 	 SELECT toStartOfMinute(timestamp) AS minute, node_id, cache_status, count() AS requests, sum(bytes) AS bytes
 	 FROM ` + identifier(c.database()) + `.cdn_access_logs GROUP BY minute, node_id, cache_status`,
@@ -172,7 +172,7 @@ func (c ClickHouse) EnsureSchema(ctx context.Context) error {
 		`INSERT INTO ` + identifier(c.database()) + `.cdn_aggregation_migrations (name) VALUES ('cache_minute_v1')`,
 		`CREATE TABLE IF NOT EXISTS ` + identifier(c.database()) + `.cdn_origin_minute (
 	 minute DateTime('UTC'), site_id String, node_id String, connect_samples UInt64, header_samples UInt64, response_samples UInt64, reused UInt64, connect_seconds Float64, header_seconds Float64, response_seconds Float64
-) ENGINE = SummingMergeTree PARTITION BY toDate(minute) ORDER BY (site_id, minute, node_id) TTL minute + INTERVAL 30 DAY DELETE`,
+) ENGINE = SummingMergeTree PARTITION BY toDate(minute) ORDER BY (site_id, minute, node_id) TTL minute + INTERVAL 7 DAY DELETE`,
 		`DROP VIEW IF EXISTS ` + identifier(c.database()) + `.cdn_access_to_origin_minute`,
 		`CREATE MATERIALIZED VIEW ` + identifier(c.database()) + `.cdn_access_to_origin_minute TO ` + identifier(c.database()) + `.cdn_origin_minute AS
 	 SELECT toStartOfMinute(timestamp) AS minute, site_id, node_id,
@@ -186,7 +186,7 @@ func (c ClickHouse) EnsureSchema(ctx context.Context) error {
 	 FROM ` + identifier(c.database()) + `.cdn_access_logs GROUP BY minute, site_id, node_id`,
 		`CREATE TABLE IF NOT EXISTS ` + identifier(c.database()) + `.cdn_compression_minute (
 	 minute DateTime('UTC'), site_id String, node_id String, compressed_requests UInt64, gzip_requests UInt64, brotli_requests UInt64, zstd_requests UInt64, compression_saved_bytes Int64
-) ENGINE = SummingMergeTree PARTITION BY toDate(minute) ORDER BY (site_id, minute, node_id) TTL minute + INTERVAL 30 DAY DELETE`,
+) ENGINE = SummingMergeTree PARTITION BY toDate(minute) ORDER BY (site_id, minute, node_id) TTL minute + INTERVAL 7 DAY DELETE`,
 		`CREATE MATERIALIZED VIEW IF NOT EXISTS ` + identifier(c.database()) + `.cdn_access_to_compression_minute TO ` + identifier(c.database()) + `.cdn_compression_minute AS
 	 SELECT toStartOfMinute(timestamp) AS minute, site_id, node_id,
 		countIf(content_encoding IN ('gzip', 'br', 'zstd')) AS compressed_requests,
@@ -202,7 +202,7 @@ func (c ClickHouse) EnsureSchema(ctx context.Context) error {
 			return err
 		}
 	}
-	return nil
+	return c.ensureRetention(ctx)
 }
 
 func (c ClickHouse) Append(ctx context.Context, events []domain.AccessLogEvent) error {
