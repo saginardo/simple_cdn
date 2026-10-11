@@ -264,14 +264,16 @@ function handleAuthenticationMutationError(
   toast.error(errorMessage(error));
 }
 
-function ReauthenticationDialog({
+export function ReauthenticationDialog({
   open,
   onOpenChange,
   onSuccess,
+  description,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSuccess: () => void;
+  description?: string;
 }) {
   const [password, setPassword] = useState("");
   const [factor, setFactor] = useState("totp");
@@ -316,7 +318,7 @@ function ReauthenticationDialog({
         <DialogHeader>
           <DialogTitle>{t("重新验证管理员身份")}</DialogTitle>
           <DialogDescription>
-            {t("安全设置需要当前密码和现有双因素凭据")}
+            {description ?? t("安全设置需要当前密码和现有双因素凭据")}
           </DialogDescription>
         </DialogHeader>
         <form

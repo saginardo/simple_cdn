@@ -28,6 +28,7 @@ import (
 	"github.com/google/uuid"
 	"simple_cdn/internal/domain"
 	"simple_cdn/internal/nginx"
+	"simple_cdn/internal/terminal"
 	"simple_cdn/internal/version"
 )
 
@@ -277,6 +278,7 @@ func New(config Config) (*Agent, error) {
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityMachineStatus)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityMachineStatusStream)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityMachineStatusAdaptive)
+	config.Capabilities = appendCapability(config.Capabilities, terminal.Capability)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityNginxFragments)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityRequestTracing)
 	config.Capabilities = appendCapability(config.Capabilities, domain.EdgeCapabilityControlManifest)
@@ -371,6 +373,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	start(func() { a.runMachineOriginStatusLoop(ctx) })
 	start(func() { a.runMachineNetworkLoop(ctx) })
 	start(func() { a.runMachineStatusPolicyLoop(ctx) })
+	start(func() { a.runTerminalLoop(ctx) })
 	start(func() { a.logs.Run(ctx, a.Config.ControlURL, a.client) })
 	if a.security != nil {
 		start(func() { a.security.Run(ctx, a.Config.ControlURL, a.client) })

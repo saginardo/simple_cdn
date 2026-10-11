@@ -1314,6 +1314,214 @@ async function mockAPI(page: Page, overrides: Record<string, unknown> = {}) {
   });
 }
 
+test("node terminal verifies identity, exchanges input, resizes and shows session audit", async ({
+  page,
+}, testInfo) => {
+  const errors = trackPageErrors(page);
+  const node = {
+    id: "node-1",
+    name: "terminal-edge",
+    public_ipv4: "203.0.113.40",
+    status: "active",
+    capabilities: ["terminal_v1"],
+    nginx_capacity: {
+      worker_processes: 0,
+      worker_connections: 4096,
+      worker_rlimit_nofile: 65536,
+    },
+    applied_version: 1,
+    created_at: now.toISOString(),
+    updated_at: now.toISOString(),
+  };
+  await mockAPI(page, {
+    "/api/nodes/node-1": {
+      node,
+      machine: { available: false },
+      traffic: [],
+      sites: [],
+    },
+    "/api/nodes/node-1/uninstall": { node, job: null, blockers: [] },
+  });
+  const base = "/api/nodes/node-1/terminal-sessions";
+  let reauthenticated = false;
+  let created = 0;
+  let sessions: Record<string, unknown>[] = [];
+  let input = "";
+  let resized = false;
+  let finish: (reason: string) => void = () => {};
+  await page.route(`**${base}**`, async (route) => {
+    const method = route.request().method();
+    if (method === "POST") {
+      expect(route.request().headers()["x-csrf-token"]).toBeTruthy();
+      if (!reauthenticated) {
+        await route.fulfill({
+          status: 428,
+          json: {
+            error: "recent authentication is required",
+            code: "reauthentication_required",
+          },
+        });
+        return;
+      }
+      created++;
+      sessions = [
+        {
+          id: "terminal-1",
+          actor: "admin",
+          remote_addr: "192.0.2.1",
+          user: "root",
+          shell: "/bin/bash",
+          status: "running",
+          reason: "",
+          created_at: now.toISOString(),
+          started_at: now.toISOString(),
+        },
+      ];
+      await route.fulfill({ status: 201, json: sessions[0] });
+      return;
+    }
+    if (method === "DELETE") {
+      sessions[0] = {
+        ...sessions[0],
+        status: "closed",
+        reason: "user_closed",
+        ended_at: now.toISOString(),
+      };
+      finish("user_closed");
+      await route.fulfill({ json: { ok: true } });
+      return;
+    }
+    await route.fulfill({
+      json: {
+        connected: true,
+        user: "root",
+        shell: "/bin/bash",
+        idle_timeout_seconds: 600,
+        max_duration_seconds: 3600,
+        sessions,
+      },
+    });
+  });
+  await page.route(
+    "**/api/settings/authentication/reauthenticate",
+    async (route) => {
+      expect(route.request().postDataJSON()).toEqual({
+        password: "test-password",
+        totp: "123456",
+        recovery_code: "",
+      });
+      reauthenticated = true;
+      await route.fulfill({ json: { ok: true } });
+    },
+  );
+  await page.routeWebSocket(`**${base}/*/connect`, (ws) => {
+    finish = (reason) => ws.send(JSON.stringify({ type: "closed", reason }));
+    ws.onMessage((raw) => {
+      const message = JSON.parse(String(raw)) as {
+        type: string;
+        data?: string;
+        cols?: number;
+      };
+      if (message.type === "input") {
+        input += Buffer.from(message.data ?? "", "base64").toString();
+        ws.send(
+          JSON.stringify({
+            type: "output",
+            data: Buffer.from("command received\r\nroot@edge:~# ").toString(
+              "base64",
+            ),
+          }),
+        );
+      }
+      if (message.type === "resize" && (message.cols ?? 0) > 0) resized = true;
+    });
+    ws.send(
+      JSON.stringify({ type: "ready", user: "root", shell: "/bin/bash" }),
+    );
+    ws.send(
+      JSON.stringify({
+        type: "output",
+        data: Buffer.from("terminal-ready\r\nroot@edge:~# ").toString("base64"),
+      }),
+    );
+  });
+  await page.goto("/#/nodes/node-1");
+  await page.getByRole("button", { name: "终端", exact: true }).click();
+  await page.getByRole("button", { name: "连接终端", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "重新验证管理员身份" }),
+  ).toBeVisible();
+  await page.getByLabel("管理员密码", { exact: true }).fill("test-password");
+  await page.getByLabel("6 位验证码", { exact: true }).fill("123456");
+  await page.getByRole("button", { name: "重新验证", exact: true }).click();
+  await expect(page.locator(".xterm-rows")).toContainText("terminal-ready");
+  await page.locator(".xterm-helper-textarea").pressSequentially("pwd");
+  await page.locator(".xterm-helper-textarea").press("Enter");
+  await expect.poll(() => input).toContain("pwd\r");
+  await page.locator(".xterm-helper-textarea").press("Escape");
+  await expect.poll(() => input).toContain("\u001b");
+  await expect(
+    page.getByRole("heading", { name: "节点终端 · terminal-edge" }),
+  ).toBeVisible();
+  await page.setViewportSize({ width: 1000, height: 800 });
+  await expect.poll(() => resized).toBe(true);
+  await expect(
+    page.getByText("连续 10 分钟无输入或累计 60 分钟后关闭"),
+  ).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("node-terminal.png"),
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "结束会话", exact: true }).click();
+  await expect(
+    page.getByRole("cell").filter({ hasText: "手动关闭" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "连接终端", exact: true }),
+  ).toBeEnabled();
+  expect(created).toBe(1);
+  expect(errors).toEqual([]);
+});
+
+test("node terminal explains unsupported agents", async ({ page }) => {
+  const node = {
+    id: "node-1",
+    name: "legacy-edge",
+    public_ipv4: "203.0.113.40",
+    status: "active",
+    capabilities: [],
+    nginx_capacity: {
+      worker_processes: 0,
+      worker_connections: 4096,
+      worker_rlimit_nofile: 65536,
+    },
+    applied_version: 1,
+  };
+  await mockAPI(page, {
+    "/api/nodes/node-1": {
+      node,
+      machine: { available: false },
+      traffic: [],
+      sites: [],
+    },
+    "/api/nodes/node-1/uninstall": { node, job: null, blockers: [] },
+    "/api/nodes/node-1/terminal-sessions": {
+      connected: false,
+      user: "",
+      shell: "",
+      sessions: [],
+      idle_timeout_seconds: 600,
+      max_duration_seconds: 3600,
+    },
+  });
+  await page.goto("/#/nodes/node-1");
+  await page.getByRole("button", { name: "终端", exact: true }).click();
+  await expect(page.getByText("请升级节点 Agent 以启用终端")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "连接终端", exact: true }),
+  ).toBeDisabled();
+});
+
 test("desktop overview renders shadcn chart and aligned navigation", async ({
   page,
 }, testInfo) => {

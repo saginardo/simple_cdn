@@ -13,6 +13,44 @@ export type Locale = "zh-CN" | "en";
 const localeStorageKey = "simple-cdn.locale";
 
 const english = {
+  终端: "Terminal",
+  节点终端: "Node terminal",
+  关闭窗口将结束会话: "Closing this window ends the session",
+  手动关闭: "Closed manually",
+  浏览器连接已断开: "Browser disconnected",
+  节点连接已断开: "Agent disconnected",
+  达到会话时限: "Maximum duration reached",
+  登录已失效: "Login expired",
+  节点授权已失效: "Node authorization revoked",
+  主控重启: "Controller restarted",
+  主控已停止: "Controller stopped",
+  "Shell 已退出": "Shell exited",
+  "Shell 启动失败": "Shell failed to start",
+  终端读写失败: "Terminal I/O failed",
+  终端协议错误: "Terminal protocol error",
+  会话审计写入失败: "Session audit write failed",
+  控制面错误: "Controller error",
+  正在连接: "Connecting",
+  已连接: "Connected",
+  "终端输出过快，连接已关闭":
+    "Terminal output exceeded the buffer; connection closed",
+  请重新验证管理员身份: "Please verify your administrator identity again",
+  执行用户: "Run as",
+  "连续 {idle} 分钟无输入或累计 {maximum} 分钟后关闭":
+    "Closes after {idle} minutes without input or {maximum} minutes total",
+  结束会话: "End session",
+  连接终端: "Connect terminal",
+  "请升级节点 Agent 以启用终端":
+    "Upgrade the node Agent to enable terminal access",
+  终端就绪: "Terminal ready",
+  节点终端离线: "Node terminal offline",
+  交互终端: "Interactive terminal",
+  "会话审计（最近 50 条）": "Session audit (last 50)",
+  "操作者 / 来源 IP": "Actor / source IP",
+  "结束时间 / 原因": "End time / reason",
+  暂无终端会话: "No terminal sessions",
+  连接终端需要当前密码和现有双因素凭据:
+    "Connecting a terminal requires your current password and second factor",
   本月流量: "Traffic this month",
   节点月流量: "Monthly node traffic",
   "所选网卡的系统收发字节 · UTC 自然月":

@@ -14,6 +14,7 @@
 - Go 控制面，包含版本化事务式 SQLite 迁移、Argon2id 密码与 TOTP 登录、Passkey 无密码登录、一次性恢复码、持久化认证限速、TOTP 防重放、CSRF 防护、审计记录，以及紧凑的管理界面。登录失败或浏览器不支持 Passkey 时会回退到密码与 TOTP；“登录与安全”设置可更换 TOTP、添加或关闭 Passkey，而 TOTP 始终保持开启。界面提供独立的节点和站点详情页、持久化消息中心、节点机器状态、最近 24 小时缓存结果、缓存磁盘用量和带二次确认的管理流程。
 - 节点优先注册：先创建待注册节点，复制一条有效期为 15 分钟的一次性引导命令；后续所有边缘请求都绑定到内部签发的 mTLS 客户端证书。
 - 支持从管理界面对单个节点或全部节点执行在线升级，包括资格检查、mTLS 任务下发、所有制品的 SHA-256 校验、独立 systemd 更新器、新代理心跳就绪检查和事务式回滚。
+- 边缘节点网页终端：支持交互式 Shell、Ctrl+C、窗口缩放、会话审计和超时关闭；复用管理员二次验证与节点 mTLS，详见 [docs/NODE_TERMINAL.md](docs/NODE_TERMINAL.md)。
 - 按能力启用的 WAF 处理链：可按站点配置优先级和 AND 条件，检查路径、查询字符串、请求头、请求体、User-Agent 与客户端 IP；支持立即放行、仅记录、拦截和 IPv4 封禁，并内置敏感文件、恶意 PHP、路径穿越、SQL 注入、XSS 和扫描器 UA 六类规则。安全工作区同时提供按站点的浏览器 PoW、边缘本地客户端 IP 限速、持久安全事件和全节点 nftables 封禁对账。详见 [docs/SECURITY_POLICIES.md](docs/SECURITY_POLICIES.md)。
 - 边缘代理以原子方式暂存版本化 Nginx 基础配置、每站点 HTTP 和 `stream` 配置片段及证书；检查本机公网 TCP 与 UDP 端口占用，校验 `/opt/cdn-edge/nginx/sbin/nginx`，重新加载健康的 Nginx，或拉起已失败/停止的 Nginx。代理会确认重新加载确实创建了新一代 worker 进程；失败时恢复最后一份正常配置和 TLS 文件，并在不阻塞心跳循环的前提下上报 Linux 主机状态和 `/opt/cdn-edge/cache` 磁盘用量。
 - 可复现的 AMD64 受管 Nginx bundle：主控镜像内置 1.30.4 作为首次安装兜底，后续稳定版独立发布。每次构建都固定所有源码 SHA-256，启用加固参数、HTTP/2、HTTP/3、stream、NDK、lua-nginx-module、ngx_brotli 和 zstd-nginx-module，并私有携带 OpenResty LuaJIT/runtime。事务安装器记录并卸载 Debian Nginx 软件包，把二进制、配置、运行目录、日志、缓存和服务统一安装到 `/opt/cdn-edge`；失败时恢复准确的软件包版本和 `/etc/nginx`。

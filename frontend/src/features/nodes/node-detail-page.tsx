@@ -88,6 +88,7 @@ import type {
   NodeUninstallStatus,
 } from "@/lib/types";
 import { t, useI18n } from "@/lib/i18n";
+import { NodeTerminal } from "./node-terminal";
 interface CommandResult {
   install_command: string;
   enrollment_required: boolean;
@@ -235,6 +236,7 @@ export function NodeDetailPage() {
         }
         actions={
           <>
+            {node ? <NodeTerminal node={node} /> : null}
             <Button asChild variant="outline">
               <Link to="/nodes">
                 <ArrowLeft />

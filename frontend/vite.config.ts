@@ -13,6 +13,12 @@ export default defineConfig({
   },
   server: {
     proxy: {
+      "^/api/nodes/[^/]+/terminal-sessions/[^/]+/connect": {
+        target: "https://127.0.0.1:8443",
+        ws: true,
+        secure: false,
+        changeOrigin: false,
+      },
       "/api": {
         target: "https://127.0.0.1:8443",
         changeOrigin: true,

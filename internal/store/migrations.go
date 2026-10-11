@@ -58,6 +58,7 @@ var schemaMigrations = []schemaMigration{
 	{Version: 39, Name: "node-upgrade-rollouts", Apply: migrateNodeUpgradeRollouts},
 	{Version: 40, Name: "system-health-snapshot", Apply: migrateSystemHealth},
 	{Version: 41, Name: "node-monthly-traffic", Apply: migrateNodeMonthlyTraffic},
+	{Version: 42, Name: "node-terminal-sessions", Apply: migrateTerminalSessions},
 }
 
 func migrateNodeMonthlyTraffic(tx *sql.Tx) error {
@@ -922,6 +923,9 @@ func (s *Store) Migrate() error {
 	// startup action rather than a one-time schema migration.
 	if _, err := s.FailActiveCertificateTasks("certificate issuance interrupted by control-plane restart; retry Issue TLS"); err != nil {
 		return fmt.Errorf("recover interrupted certificate tasks: %w", err)
+	}
+	if err := s.RecoverTerminalSessions(); err != nil {
+		return fmt.Errorf("recover interrupted terminals: %w", err)
 	}
 	return nil
 }

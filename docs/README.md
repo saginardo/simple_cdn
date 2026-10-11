@@ -24,6 +24,7 @@
 | --------------------------------------- | ------------------------------------------------------------------ |
 | [Nginx 独立更新](NGINX_UPDATES.md)      | 官方 stable 检查、GitHub Release、主控下载、管理员批准和节点升级。 |
 | [Nginx 应用安全](NGINX_APPLY_SAFETY.md) | reload/restart 边界、新 worker 验证、站点 SNI 健康检查。           |
+| [边缘节点终端](NODE_TERMINAL.md) | 交互式 Shell、执行身份、会话审计、超时和连接生命周期。 |
 | [智能路由](SMART_ROUTING.md)            | 评分与时间门控、状态所有权、通知和管理 API。                       |
 | [状态](HEALTH_CENTER.md)            | 定期健康汇总、检查规则、数据时效、证据详情与恢复记录。             |
 

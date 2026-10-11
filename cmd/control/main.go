@@ -299,6 +299,7 @@ func main() {
 		certificateManager.Stop()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
+		server.ShutdownTerminals(shutdownCtx)
 		_ = httpServer.Shutdown(shutdownCtx)
 	}()
 	logger.Info("control plane listening", "address", listen)

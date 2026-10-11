@@ -80,6 +80,8 @@ type Server struct {
 	Logger                      *slog.Logger
 	RestartControl              func()
 	WireGuardEndpointResolver   func(context.Context, string) ([]net.IP, error)
+	terminalOnce                sync.Once
+	terminalHub                 *terminalHub
 	machineStatusMu             sync.RWMutex
 	machineStatuses             map[string]domain.MachineStatus
 	machineNetworkStatuses      map[string]domain.MachineNetworkStatus
@@ -200,6 +202,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/static-assets/{id}/bindings/{bindingID}", s.requireAdmin(s.updateStaticAssetBinding))
 	mux.HandleFunc("DELETE /api/static-assets/{id}/bindings/{bindingID}", s.requireAdmin(s.deleteStaticAssetBinding))
 	mux.HandleFunc("GET /api/nodes", s.requireAdmin(s.listNodes))
+	mux.HandleFunc("GET /api/nodes/{id}/terminal-sessions", s.requireAdmin(s.terminalSessions))
+	mux.HandleFunc("POST /api/nodes/{id}/terminal-sessions", s.requireRecentAdmin(s.createTerminalSession))
+	mux.HandleFunc("DELETE /api/nodes/{id}/terminal-sessions/{sessionID}", s.requireAdmin(s.closeTerminalSession))
+	mux.HandleFunc("GET /api/nodes/{id}/terminal-sessions/{sessionID}/connect", s.requireAdmin(s.connectTerminalSession))
+	mux.HandleFunc("GET /api/edge/v1/terminal", s.requireEdge(s.edgeTerminal))
 	mux.HandleFunc("GET /api/nginx/artifacts", s.requireAdmin(s.nginxArtifactStatus))
 	mux.HandleFunc("POST /api/nginx/artifacts/check", s.requireAdmin(s.checkNginxArtifacts))
 	mux.HandleFunc("POST /api/nginx/artifacts/{sha256}/promote", s.requireAdmin(s.promoteNginxArtifact))
