@@ -48,6 +48,33 @@ must forward WebSocket Upgrade/Connection headers and preserve the original Host
 The Agent must continue connecting directly to the controller's mTLS listener.
 The Vite development proxy includes the terminal WebSocket route.
 
+For Caddy, explicitly preserve the browser's Host when proxying to the controller's
+HTTPS listener. Caddy 2.11 and later otherwise replace it with the upstream host.
+For example, with `CONTROL_PUBLIC_URL=https://cdn.example.com`:
+
+```caddyfile
+cdn.example.com {
+    reverse_proxy https://127.0.0.1:8443 {
+        header_up Host {hostport}
+        header_up X-Real-IP {client_ip}
+        transport http {
+            tls_server_name cdn.example.com
+        }
+    }
+}
+```
+
+Use the controller certificate's domain for `tls_server_name` and trust the proxy's
+address through `TRUSTED_PROXY_CIDRS` as described in the deployment guide. Caddy
+forwards WebSocket upgrades automatically. The Host override is also required for
+the terminal's same-origin check; `tls_server_name` alone does not preserve Host.
+
+If session creation returns `201`, the `/connect` request returns `403`, and the
+audit later records `connect_timeout`, check the proxy's Host forwarding. The
+controller rejects an Origin/Host mismatch before attaching the browser, so the
+pending session eventually reaches its 30-second deadline. Preserve Host rather
+than disabling the same-origin check.
+
 Fixed first-version limits:
 
 - 30 seconds to attach the browser and receive the Agent's shell-ready response.

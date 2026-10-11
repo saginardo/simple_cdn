@@ -38,6 +38,8 @@ The installer creates one operational and backup boundary:
 
 An optional host-network reverse proxy stays outside this directory. It proxies the management URL from public port 443 to the controller's direct TLS listener (the tracked example uses `https://127.0.0.1:8443`). The control container terminates TLS itself so edge mTLS remains end-to-end; do not send edge client certificates through the management proxy.
 
+The management proxy must preserve the public Host and forward WebSocket upgrades for node terminals. With Caddy 2.11+, add `header_up Host {hostport}` inside the controller's HTTPS `reverse_proxy` block; setting only `tls_server_name` still lets Caddy replace Host with the upstream address. See the [node terminal proxy example and troubleshooting](NODE_TERMINAL.md#connection-and-lifetime).
+
 ## GitHub Actions delivery
 
 `.github/workflows/ci-cd.yml` owns compilation, tests, version resolution, and image construction. Pull requests run frontend checks, Go tests/vet, browser smoke tests, Compose validation, and an unpushed Linux AMD64 image build. A successful `main` build embeds `0.0.0-dev+<commit>` and publishes both `main` and `sha-<commit>` tags to `ghcr.io/saginardo/simple_cdn`. A pushed `vMAJOR.MINOR.PATCH` tag is the sole source of a stable release version and publishes only that matching image tag, so it cannot overwrite the development image for the same commit. Every published image includes provenance and SBOM attestations, and its immutable digest is recorded in the job summary. The workflow deliberately contains no production host, credential, SSH, or rollout configuration and never connects to a production environment.
